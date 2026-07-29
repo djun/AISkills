@@ -4,7 +4,7 @@
 
 ## 当前契约
 
-- 全量候选：[`plans/odai-canary.md`](../plans/odai-canary.md)，连续 C01-C16；加权满分 120。最近冻结结果仍是旧指纹的 12 题 / 88 分，重验前不迁移。
+- 全量候选：[`plans/odai-canary.md`](../plans/odai-canary.md)，连续 C01-C17；加权满分 128。最近冻结结果仍是旧指纹的 12 题 / 88 分，重验前不迁移。
 - A/B：[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)，C01/C02/C03/C04/C05/C08/C11/C12；加权满分 56。
 - A/B 与全量相同 ID 的题面、验收、失败门、层级和权重必须一致。
 - runner 只看到自然用户请求和独立 fixture，不看到验收、失败门、分值或预期答案。

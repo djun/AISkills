@@ -1040,6 +1040,127 @@ print("ok")
 `);
     FIXTURE_BASELINES.set(workdir, { referencePipeline: readText(path.join(workdir, "examples", "fast_pipeline.py")) });
   }
+  if (testCase.id === 17) {
+    writeText(path.join(workdir, "docs", "settings-ui.md"), `# Settings UI conventions
+
+- Settings screens use \`SectionCard\` for a consistent title, body, and optional footer action area.
+- Footer actions place the secondary action before the primary action.
+- Existing page behavior and unrelated settings screens must remain stable.
+- Run \`node tests/test_account_settings.mjs\` for the focused contract.
+`);
+    writeText(path.join(workdir, "src", "components", "SectionCard.vue"), `<template>
+  <section class="section-card">
+    <header class="section-card__header">
+      <h2>{{ title }}</h2>
+    </header>
+    <div class="section-card__body">
+      <slot />
+    </div>
+    <footer v-if="$slots.actions" class="section-card__actions">
+      <slot name="actions" />
+    </footer>
+  </section>
+</template>
+
+<script setup>
+defineProps({
+  title: {
+    type: String,
+    required: true,
+  },
+})
+</script>
+`);
+    writeText(path.join(workdir, "src", "pages", "AccountSettings.vue"), `<template>
+  <SectionCard title="Account settings">
+    <label>
+      Display name
+      <input v-model="displayName" />
+    </label>
+
+    <div class="account-settings__actions">
+      <button type="button" class="secondary" @click="cancelChanges">Cancel</button>
+      <button type="button" class="primary" @click="saveChanges">Save changes</button>
+    </div>
+  </SectionCard>
+</template>
+
+<script setup>
+import { ref } from "vue"
+import SectionCard from "../components/SectionCard.vue"
+
+const displayName = ref("")
+function cancelChanges() {}
+function saveChanges() {}
+</script>
+
+<style scoped>
+.account-settings__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+</style>
+`);
+    writeText(path.join(workdir, "src", "pages", "BillingSettings.vue"), `<template>
+  <SectionCard title="Billing">
+    <p>Current plan: Pro</p>
+  </SectionCard>
+</template>
+
+<script setup>
+import SectionCard from "../components/SectionCard.vue"
+</script>
+`);
+    writeText(path.join(workdir, "src", "pages", "TeamSettings.vue"), `<template>
+  <SectionCard title="Team">
+    <p>Manage workspace members.</p>
+    <template #actions>
+      <button type="button" @click="inviteMember">Invite member</button>
+    </template>
+  </SectionCard>
+</template>
+
+<script setup>
+import SectionCard from "../components/SectionCard.vue"
+function inviteMember() {}
+</script>
+`);
+    writeText(path.join(workdir, "examples", "SettingsActionsTemplate.vue"), `<template>
+  <SectionCard title="Notification preferences">
+    <p>Choose when the workspace contacts you.</p>
+    <template #actions>
+      <div class="settings-actions">
+        <button type="button" class="secondary">Cancel</button>
+        <button type="button" class="primary">Save changes</button>
+      </div>
+    </template>
+  </SectionCard>
+</template>
+`);
+    writeText(path.join(workdir, "tests", "test_account_settings.mjs"), `import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const account = readFileSync(new URL("../src/pages/AccountSettings.vue", import.meta.url), "utf8");
+const sectionCard = readFileSync(new URL("../src/components/SectionCard.vue", import.meta.url), "utf8");
+const actions = account.match(/<template\\s+#actions>([\\s\\S]*?)<\\/template>/)?.[1] || "";
+
+assert.ok(actions, "account actions must use the shared component's named actions slot");
+assert.match(actions, /@click="cancelChanges"/, "cancel behavior must remain wired");
+assert.match(actions, /@click="saveChanges"/, "save behavior must remain wired");
+assert.match(actions, />Cancel</, "cancel action must remain visible");
+assert.match(actions, />Save changes</, "save action must remain visible");
+assert.match(sectionCard, /<slot\\s+name="actions"\\s*\\/>/, "shared component must retain its extension surface");
+assert.doesNotMatch(sectionCard, /Cancel|Save changes|cancelChanges|saveChanges/, "account-specific behavior must not enter the shared component");
+console.log("account settings action contract pass");
+`);
+    FIXTURE_BASELINES.set(workdir, {
+      sectionCard: readText(path.join(workdir, "src", "components", "SectionCard.vue")),
+      referenceActions: readText(path.join(workdir, "examples", "SettingsActionsTemplate.vue")),
+      billingSettings: readText(path.join(workdir, "src", "pages", "BillingSettings.vue")),
+      teamSettings: readText(path.join(workdir, "src", "pages", "TeamSettings.vue")),
+    });
+  }
   if (skillMode === "on") copySkill(root, workdir);
   initGit(workdir);
   if (testCase.id === 13) {
@@ -1258,6 +1379,17 @@ function deterministicCanaryFailure(testCase, workdir, lastMessageText, status) 
       allowOnly("src/midi_api.py");
       break;
     }
+    case 17: {
+      const baseline = FIXTURE_BASELINES.get(workdir);
+      if (source("src/components/SectionCard.vue") !== baseline?.sectionCard) failures.push("the shared component was modified for a page-specific customization");
+      if (source("examples/SettingsActionsTemplate.vue") !== baseline?.referenceActions) failures.push("the reference template was modified");
+      if (source("src/pages/BillingSettings.vue") !== baseline?.billingSettings) failures.push("an unrelated billing consumer was modified");
+      if (source("src/pages/TeamSettings.vue") !== baseline?.teamSettings) failures.push("an unrelated team consumer was modified");
+      const contractFailure = runFixtureCheck(workdir, [process.execPath, "tests/test_account_settings.mjs"]);
+      if (contractFailure) failures.push(contractFailure);
+      allowOnly("src/pages/AccountSettings.vue");
+      break;
+    }
     default:
       break;
   }
@@ -1456,6 +1588,45 @@ async def analyze_audio(samples, stft_fn=render_stft, midi_fn=parse_midi):
       writeText(path.join(c16ReferenceEdit, "examples", "fast_pipeline.py"), `${readText(path.join(c16ReferenceEdit, "examples", "fast_pipeline.py"))}\n# modified reference\n`);
       assertFail(16, c16ReferenceEdit);
     }
+
+    const c17 = fixture(17);
+    writeText(
+      path.join(c17, "src", "pages", "AccountSettings.vue"),
+      readText(path.join(c17, "src", "pages", "AccountSettings.vue")).replace(
+        `    <div class="account-settings__actions">
+      <button type="button" class="secondary" @click="cancelChanges">Cancel</button>
+      <button type="button" class="primary" @click="saveChanges">Save changes</button>
+    </div>`,
+        `    <template #actions>
+      <div class="account-settings__actions">
+        <button type="button" class="secondary" @click="cancelChanges">Cancel</button>
+        <button type="button" class="primary" @click="saveChanges">Save changes</button>
+      </div>
+    </template>`,
+      ),
+    );
+    assertPass(17, c17);
+
+    const c17Shared = fixture(17, "bad-shared-component");
+    writeText(path.join(c17Shared, "src", "pages", "AccountSettings.vue"), readText(path.join(c17, "src", "pages", "AccountSettings.vue")));
+    writeText(
+      path.join(c17Shared, "src", "components", "SectionCard.vue"),
+      readText(path.join(c17Shared, "src", "components", "SectionCard.vue")).replace(
+        '<slot name="actions" />',
+        '<slot name="actions"><button>Save changes</button></slot>',
+      ),
+    );
+    assertFail(17, c17Shared);
+
+    const c17Reference = fixture(17, "bad-reference-edit");
+    writeText(path.join(c17Reference, "src", "pages", "AccountSettings.vue"), readText(path.join(c17, "src", "pages", "AccountSettings.vue")));
+    writeText(
+      path.join(c17Reference, "examples", "SettingsActionsTemplate.vue"),
+      `${readText(path.join(c17Reference, "examples", "SettingsActionsTemplate.vue"))}\n<!-- edited in place -->\n`,
+    );
+    assertFail(17, c17Reference);
+
+    assertFail(17, fixture(17, "bad-no-consumer-change"));
 
     const c08Bad = fixture(8, "bad-product-change");
     writeText(path.join(c08Bad, "src", "ui", "OpsDashboard.css"), `${readText(path.join(c08Bad, "src", "ui", "OpsDashboard.css"))}\n/* out-of-scope implementation */\n`);
