@@ -1161,6 +1161,108 @@ console.log("account settings action contract pass");
       teamSettings: readText(path.join(workdir, "src", "pages", "TeamSettings.vue")),
     });
   }
+  if (testCase.id === 18) {
+    writeText(path.join(workdir, "docs", "user-query-api.md"), `# User and organization query APIs
+
+Several endpoints return id/label-shaped options, but they belong to different application scenarios and are not interchangeable.
+
+## General directory search
+
+\`GET /api/users/search?q=:keyword\`
+
+Used by the administration directory. It searches all active users visible to the administrator. It does not apply task-assignment eligibility, reporting-line, or managed-scope rules.
+
+## Organization maintenance
+
+\`GET /api/org/groups?org_id=:orgId\`
+
+Used by the organization settings screen. It returns all groups that can be maintained by an organization administrator, not only groups managed by the current task issuer.
+
+\`GET /api/groups/:groupId/members\`
+
+Used by the group maintenance screen. It includes every current member for maintenance and does not apply task-assignment eligibility.
+
+## Task assignment
+
+\`GET /api/tasks/assignee-options?issuer_id=:issuerId\`
+
+This is the canonical endpoint for the assignee picker when creating or delegating a task. The service derives the issuer's current role and authorization:
+
+- a chief engineer receives the groups they may assign to, with \`type: "group"\`;
+- a team lead receives eligible members of their managed group, with \`type: "user"\`.
+
+The response is \`{ options: Array<{ id, label, type }> }\`. Preserve the returned type. Do not infer the issuer role, combine directory results, or reproduce authorization filters in the client.
+
+Run \`node tests/test_task_assignee_options.mjs\` for the focused contract.
+`);
+    writeText(path.join(workdir, "src", "task-template-assignees.js"), `export async function loadTemplateAssigneeOptions(client, issuerId) {
+  const response = await client.get("/api/tasks/assignee-options", {
+    params: { issuer_id: issuerId },
+  });
+  return response.data.options;
+}
+`);
+    writeText(path.join(workdir, "src", "task-assignee-options.js"), `export async function loadTaskAssigneeOptions(client, context) {
+  if (context.issuerRole === "chief_engineer") {
+    const response = await client.get("/api/org/groups", {
+      params: { org_id: context.orgId },
+    });
+    return response.data.items.map((item) => ({ ...item, type: "group" }));
+  }
+
+  const response = await client.get(\`/api/groups/\${context.groupId}/members\`);
+  return response.data.items.map((item) => ({ ...item, type: "user" }));
+}
+`);
+    writeText(path.join(workdir, "tests", "test_task_assignee_options.mjs"), `import assert from "node:assert/strict";
+import { loadTaskAssigneeOptions } from "../src/task-assignee-options.js";
+
+const calls = [];
+const responseByIssuer = {
+  "chief-7": [{ id: "group-2", label: "Platform", type: "group" }],
+  "lead-9": [{ id: "user-3", label: "Mina", type: "user" }],
+};
+const client = {
+  async get(url, options = {}) {
+    calls.push({ url, options });
+    if (url !== "/api/tasks/assignee-options") {
+      return { data: { items: [{ id: "wrong", label: "Wrong scope" }] } };
+    }
+    return { data: { options: responseByIssuer[options.params?.issuer_id] || [] } };
+  },
+};
+
+const chiefOptions = await loadTaskAssigneeOptions(client, {
+  issuerId: "chief-7",
+  issuerRole: "chief_engineer",
+  orgId: "org-1",
+});
+const leadOptions = await loadTaskAssigneeOptions(client, {
+  issuerId: "lead-9",
+  issuerRole: "team_lead",
+  groupId: "group-2",
+});
+
+assert.deepEqual(calls, [
+  {
+    url: "/api/tasks/assignee-options",
+    options: { params: { issuer_id: "chief-7" } },
+  },
+  {
+    url: "/api/tasks/assignee-options",
+    options: { params: { issuer_id: "lead-9" } },
+  },
+]);
+assert.deepEqual(chiefOptions, responseByIssuer["chief-7"]);
+assert.deepEqual(leadOptions, responseByIssuer["lead-9"]);
+console.log("task assignee scenario contract pass");
+`);
+    FIXTURE_BASELINES.set(workdir, {
+      userQueryApi: readText(path.join(workdir, "docs", "user-query-api.md")),
+      templateAssignees: readText(path.join(workdir, "src", "task-template-assignees.js")),
+      taskAssigneeTest: readText(path.join(workdir, "tests", "test_task_assignee_options.mjs")),
+    });
+  }
   if (skillMode === "on") copySkill(root, workdir);
   initGit(workdir);
   if (testCase.id === 13) {
@@ -1388,6 +1490,16 @@ function deterministicCanaryFailure(testCase, workdir, lastMessageText, status) 
       const contractFailure = runFixtureCheck(workdir, [process.execPath, "tests/test_account_settings.mjs"]);
       if (contractFailure) failures.push(contractFailure);
       allowOnly("src/pages/AccountSettings.vue");
+      break;
+    }
+    case 18: {
+      const baseline = FIXTURE_BASELINES.get(workdir);
+      if (source("docs/user-query-api.md") !== baseline?.userQueryApi) failures.push("the API scenario contract was modified");
+      if (source("src/task-template-assignees.js") !== baseline?.templateAssignees) failures.push("the established task-assignment call was modified");
+      if (source("tests/test_task_assignee_options.mjs") !== baseline?.taskAssigneeTest) failures.push("the focused scenario test was modified");
+      const contractFailure = runFixtureCheck(workdir, [process.execPath, "tests/test_task_assignee_options.mjs"]);
+      if (contractFailure) failures.push(contractFailure);
+      allowOnly("src/task-assignee-options.js");
       break;
     }
     default:
@@ -1627,6 +1739,27 @@ async def analyze_audio(samples, stft_fn=render_stft, midi_fn=parse_midi):
     assertFail(17, c17Reference);
 
     assertFail(17, fixture(17, "bad-no-consumer-change"));
+
+    const c18 = fixture(18);
+    writeText(path.join(c18, "src", "task-assignee-options.js"), `export async function loadTaskAssigneeOptions(client, context) {
+  const response = await client.get("/api/tasks/assignee-options", {
+    params: { issuer_id: context.issuerId },
+  });
+  return response.data.options;
+}
+`);
+    assertPass(18, c18);
+
+    const c18Generic = fixture(18, "bad-generic-user-query");
+    writeText(path.join(c18Generic, "src", "task-assignee-options.js"), `export async function loadTaskAssigneeOptions(client, context) {
+  const response = await client.get("/api/users/search", {
+    params: { q: "", issuer_id: context.issuerId },
+  });
+  return response.data.items.map((item) => ({ ...item, type: "user" }));
+}
+`);
+    assertFail(18, c18Generic);
+    assertFail(18, fixture(18, "bad-scenario-substitution"));
 
     const c08Bad = fixture(8, "bad-product-change");
     writeText(path.join(c08Bad, "src", "ui", "OpsDashboard.css"), `${readText(path.join(c08Bad, "src", "ui", "OpsDashboard.css"))}\n/* out-of-scope implementation */\n`);
