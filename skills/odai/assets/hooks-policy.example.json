@@ -5,6 +5,7 @@
     "vendor/**"
   ],
   "blockUnresolvedWrites": false,
+  "blockOutsideWrites": false,
   "checks": [
     {
       "name": "project tests",

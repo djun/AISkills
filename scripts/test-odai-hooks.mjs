@@ -76,12 +76,42 @@ assert.equal(passedStop.stdout, "");
 
 // Symlink regression tests (V-002)
 
-// Test 1: new file write through a symlink pointing outside the project must be blocked
+// Test 1: escaping the project root stays allowed by default, whatever the route.
 const externalDir = mkdtempSync(path.join(os.tmpdir(), "odai-external-"));
 symlinkSync(externalDir, path.join(project, "outside-link"));
 writePolicy({ version: 1, protectedPaths: [], blockUnresolvedWrites: false, checks: [] });
-const externalSymlinkWrite = runHook("pre-tool", "claude", editPayload("outside-link/new-file.js"));
-assert.equal(externalSymlinkWrite.status, 2, "new file write through external symlink must be blocked");
+for (const [label, target] of [
+  ["symlink", "outside-link/new-file.js"],
+  ["absolute", path.join(externalDir, "new-file.js")],
+  ["parent traversal", "../escape.js"],
+]) {
+  assert.equal(
+    runHook("pre-tool", "claude", editPayload(target)).status,
+    0,
+    `${label} escape must stay allowed while blockOutsideWrites is off`,
+  );
+}
+
+// Test 1b: with blockOutsideWrites on, every escape route is blocked alike.
+writePolicy({ version: 1, protectedPaths: [], blockOutsideWrites: true, checks: [] });
+for (const [label, target, pattern] of [
+  ["symlink", "outside-link/new-file.js", /经由符号链接指向项目根目录之外/],
+  ["absolute", path.join(externalDir, "new-file.js"), /位于项目根目录之外/],
+  ["parent traversal", "../escape.js", /位于项目根目录之外/],
+]) {
+  const escaped = runHook("pre-tool", "claude", editPayload(target));
+  assert.equal(escaped.status, 2, `${label} escape must be blocked when blockOutsideWrites is on`);
+  assert.match(escaped.stderr, pattern);
+}
+assert.equal(
+  runHook("pre-tool", "claude", editPayload("src/index.js")).status,
+  0,
+  "blockOutsideWrites must not affect in-project writes",
+);
+
+// Test 1c: an unknown policy key is still rejected, so the new flag cannot be silently misspelled.
+writePolicy({ version: 1, protectedPaths: [], blockOutsideWrite: true, checks: [] });
+assert.match(runHook("pre-tool", "codex", editPayload("src/index.js")).stderr, /含未知字段/);
 
 // Test 2: write to an existing protected file through an internal symlink must be blocked
 mkdirSync(path.join(project, "examples", "reference"), { recursive: true });
@@ -108,6 +138,13 @@ assert.match(aliasProtectedExisting.stderr, /命中项目只读路径/);
 // Test 5: write to a new file through a symlink whose alias path is protected (but canonical target is not)
 const aliasProtectedNew = runHook("pre-tool", "codex", editPayload("protected-alias/new.js"));
 assert.equal(aliasProtectedNew.status, 2, "write through alias-protected symlink to new file must be blocked");
+
+// Test 6: an outside symlink pointing back into a protected directory must not bypass protectedPaths either.
+symlinkSync(path.join(project, "examples", "reference"), path.join(externalDir, "into-project"));
+writePolicy({ version: 1, protectedPaths: ["examples/reference/**"], blockUnresolvedWrites: false, checks: [] });
+const inboundSymlinkProtected = runHook("pre-tool", "codex", editPayload(path.join(externalDir, "into-project", "demo.js")));
+assert.equal(inboundSymlinkProtected.status, 2, "protected file reached through an outside symlink must be blocked");
+assert.match(inboundSymlinkProtected.stderr, /命中项目只读路径/);
 
 const generatedRoot = mkdtempSync(path.join(os.tmpdir(), "odai-hook-adapters-"));
 const build = run(process.execPath, [builder, "--host", "all", "--out", generatedRoot]);

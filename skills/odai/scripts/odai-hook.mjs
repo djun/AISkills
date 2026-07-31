@@ -33,14 +33,6 @@ export function loadPolicy(projectRoot) {
   return { policy: value, policyPath };
 }
 
-function symlinkEscapes(candidate, cwd, projectRoot) {
-  if (!candidate || candidate.includes("\0")) return false;
-  const absolute = path.isAbsolute(candidate) ? path.normalize(candidate) : path.resolve(cwd, candidate);
-  if (!isInside(projectRoot, absolute)) return false;
-  const real = resolveRealOrNearest(absolute);
-  return !isInside(projectRoot, real);
-}
-
 export function evaluatePreTool(payload, policy, projectRoot) {
   if (!policy) return { blocked: false };
 
@@ -49,19 +41,19 @@ export function evaluatePreTool(payload, policy, projectRoot) {
   if (!WRITE_TOOLS.has(toolName) && !looksLikePatch(toolInput)) return { blocked: false };
 
   const cwd = resolveSessionCwd(payload.cwd, projectRoot);
-  const rawPaths = extractPaths(toolInput);
+  const resolved = extractPaths(toolInput).map((raw) => ({ raw, ...resolveCandidate(raw, cwd, projectRoot) }));
 
-  for (const raw of rawPaths) {
-    if (symlinkEscapes(raw, cwd, projectRoot)) {
+  if (policy.blockOutsideWrites === true) {
+    const escaped = resolved.find((item) => item.outside);
+    if (escaped) {
       return {
         blocked: true,
-        reason: `odai hook：${raw} 经由符号链接指向项目根目录之外，写入被拒绝。`,
+        reason: `odai hook：${escaped.raw} ${escaped.viaSymlink ? "经由符号链接指向" : "位于"}项目根目录之外；项目启用了 blockOutsideWrites，写入被拒绝。`,
       };
     }
   }
 
-  const candidates = rawPaths
-    .flatMap((candidate) => normalizeProjectPath(candidate, cwd, projectRoot) ?? []);
+  const candidates = resolved.flatMap((item) => item.paths);
 
   const protectedPath = candidates.find((candidate) =>
     policy.protectedPaths.some((pattern) => matchGlob(candidate, pattern)),
@@ -190,7 +182,11 @@ function validatePolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("根值必须是对象");
   }
-  rejectUnknownKeys(value, new Set(["version", "protectedPaths", "blockUnresolvedWrites", "checks"]), "策略");
+  rejectUnknownKeys(
+    value,
+    new Set(["version", "protectedPaths", "blockUnresolvedWrites", "blockOutsideWrites", "checks"]),
+    "策略",
+  );
   if (value.version !== 1) throw new Error("version 必须为 1");
 
   if (value.protectedPaths === undefined) value.protectedPaths = [];
@@ -201,6 +197,10 @@ function validatePolicy(value) {
 
   if (value.blockUnresolvedWrites !== undefined && typeof value.blockUnresolvedWrites !== "boolean") {
     throw new Error("blockUnresolvedWrites 必须是布尔值");
+  }
+
+  if (value.blockOutsideWrites !== undefined && typeof value.blockOutsideWrites !== "boolean") {
+    throw new Error("blockOutsideWrites 必须是布尔值");
   }
 
   if (value.checks === undefined) value.checks = [];
@@ -309,15 +309,22 @@ function resolveRealOrNearest(absolute) {
   }
 }
 
-function normalizeProjectPath(candidate, cwd, projectRoot) {
-  if (!candidate || candidate.includes("\0")) return null;
+function resolveCandidate(candidate, cwd, projectRoot) {
+  const empty = { outside: false, viaSymlink: false, paths: [] };
+  if (!candidate || candidate.includes("\0")) return empty;
   const absolute = path.isAbsolute(candidate) ? path.normalize(candidate) : path.resolve(cwd, candidate);
-  if (!isInside(projectRoot, absolute)) return null;
+  const lexicalInside = isInside(projectRoot, absolute);
   const real = resolveRealOrNearest(absolute);
-  if (!isInside(projectRoot, real)) return null;
-  const lexical = normalizeSlashes(path.relative(projectRoot, absolute));
+  if (!isInside(projectRoot, real)) return { outside: true, viaSymlink: lexicalInside, paths: [] };
+
+  // 目标落在项目内：按真实路径匹配只读规则，别名路径也保留，两种写法都不能绕过 protectedPaths。
   const canonical = normalizeSlashes(path.relative(projectRoot, real));
-  return lexical === canonical ? [canonical] : [canonical, lexical];
+  const paths = [canonical];
+  if (lexicalInside) {
+    const lexical = normalizeSlashes(path.relative(projectRoot, absolute));
+    if (lexical !== canonical) paths.push(lexical);
+  }
+  return { outside: false, viaSymlink: false, paths };
 }
 
 function resolveSessionCwd(cwd, projectRoot) {
