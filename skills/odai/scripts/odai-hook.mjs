@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,14 @@ export function loadPolicy(projectRoot) {
   return { policy: value, policyPath };
 }
 
+function symlinkEscapes(candidate, cwd, projectRoot) {
+  if (!candidate || candidate.includes("\0")) return false;
+  const absolute = path.isAbsolute(candidate) ? path.normalize(candidate) : path.resolve(cwd, candidate);
+  if (!isInside(projectRoot, absolute)) return false;
+  const real = resolveRealOrNearest(absolute);
+  return !isInside(projectRoot, real);
+}
+
 export function evaluatePreTool(payload, policy, projectRoot) {
   if (!policy) return { blocked: false };
 
@@ -41,9 +49,19 @@ export function evaluatePreTool(payload, policy, projectRoot) {
   if (!WRITE_TOOLS.has(toolName) && !looksLikePatch(toolInput)) return { blocked: false };
 
   const cwd = resolveSessionCwd(payload.cwd, projectRoot);
-  const candidates = extractPaths(toolInput)
-    .map((candidate) => normalizeProjectPath(candidate, cwd, projectRoot))
-    .filter(Boolean);
+  const rawPaths = extractPaths(toolInput);
+
+  for (const raw of rawPaths) {
+    if (symlinkEscapes(raw, cwd, projectRoot)) {
+      return {
+        blocked: true,
+        reason: `odai hook：${raw} 经由符号链接指向项目根目录之外，写入被拒绝。`,
+      };
+    }
+  }
+
+  const candidates = rawPaths
+    .flatMap((candidate) => normalizeProjectPath(candidate, cwd, projectRoot) ?? []);
 
   const protectedPath = candidates.find((candidate) =>
     policy.protectedPaths.some((pattern) => matchGlob(candidate, pattern)),
@@ -275,11 +293,31 @@ function looksLikePatch(value) {
   return Object.values(value).some((item) => typeof item === "string" && item.includes("*** Begin Patch"));
 }
 
+function resolveRealOrNearest(absolute) {
+  let dir = absolute;
+  const trailing = [];
+  while (true) {
+    try {
+      const real = realpathSync(dir);
+      return path.join(real, ...trailing.reverse());
+    } catch {
+      const parent = path.dirname(dir);
+      if (parent === dir) return absolute;
+      trailing.push(path.basename(dir));
+      dir = parent;
+    }
+  }
+}
+
 function normalizeProjectPath(candidate, cwd, projectRoot) {
   if (!candidate || candidate.includes("\0")) return null;
   const absolute = path.isAbsolute(candidate) ? path.normalize(candidate) : path.resolve(cwd, candidate);
   if (!isInside(projectRoot, absolute)) return null;
-  return normalizeSlashes(path.relative(projectRoot, absolute));
+  const real = resolveRealOrNearest(absolute);
+  if (!isInside(projectRoot, real)) return null;
+  const lexical = normalizeSlashes(path.relative(projectRoot, absolute));
+  const canonical = normalizeSlashes(path.relative(projectRoot, real));
+  return lexical === canonical ? [canonical] : [canonical, lexical];
 }
 
 function resolveSessionCwd(cwd, projectRoot) {
@@ -329,12 +367,15 @@ function globToRegExp(pattern) {
     }
   }
   source += "$";
-  return new RegExp(source);
+  return new RegExp(source); // nosemgrep: detect-non-literal-regexp
 }
 
 function validatePattern(pattern, label) {
   if (path.isAbsolute(pattern) || normalizeSlashes(pattern).split("/").includes("..")) {
     throw new Error(`${label} 只能使用项目内相对 glob：${pattern}`);
+  }
+  if (pattern.length > 256) {
+    throw new Error(`${label} glob 长度不得超过 256 个字符：${pattern}`);
   }
   globToRegExp(pattern);
 }
