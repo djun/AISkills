@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 最近冻结评测基线是 2026-07-20 指纹：GPT-5.6-sol / high 全量 on 为 88/88，配对 A/B 为 on 56/56、off 41/56。
+- 最近冻结评测基线是 2026-07-31 指纹：GPT-5.6-sol / high 与 Grok 4.5 全量 on 为 136/136；完整横向结果见 [`docs/evaluation-results.md`](docs/evaluation-results.md)。
 - 该结果只覆盖 [`docs/evaluation-results.md`](docs/evaluation-results.md) 所列指纹；当前 source 若已发生实质变化，正式结论须等新指纹重验，不得迁移旧分数。
 - 公开文档只保留当前结果；旧版本、试跑、复跑和临时模型故障由 Git 历史与临时证据承担。
 - 仓库的 skill / 评测冻结标签与 `cli/package.json` 的 npm 版本彼此独立。
@@ -25,8 +25,8 @@ skills/odai/                      odai canonical source
 skills/skill-author/              本仓库的 source 维护 skill
 docs/evaluation.md                稳定评测契约
 docs/evaluation-results.md        当前结果的唯一公开记录
-plans/odai-canary.md              16 题全量候选题本
-plans/odai-ab-smoke.md            8 题配对 A/B 题本
+plans/odai-canary.md              18 题全量题本
+plans/odai-ab-smoke.md            12 题配对 A/B 题本
 plans/odai-blind*                 可复用匿名横评定义
 scripts/                          校验、runner、judge 与 harness
 CHANGELOG.md                      冻结版的架构 / 维护变更日志
@@ -60,6 +60,7 @@ odai 之道是：**事由人定，路由实证；法随势变，成由验定；�
 4. 修改 `SKILL.md` 的触发语义、产品定位或宿主展示文案时，同步检查 `agents/openai.yaml`。
 5. 不为缩 token 而删能力，也不为完整感增文件；只看净价值、可发现性和行为证据。
 6. 已验证指纹发现实质问题时，先修真实问题，再以新指纹重建必要证据；不回改题本迎合输出，也不跨指纹拼分。
+7. `SKILL.md` 是高注意力定额，不是可持续追加区；新规则进入入口时应优先合并或替换旧文字，只有行为证据证明净增量时才扩容。
 
 ## 验证与评测
 

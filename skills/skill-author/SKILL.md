@@ -14,14 +14,15 @@ description: 维护本仓库的 skill source、渐进资源结构和相关仓库
 | 独立公开 skill | `skills/<skill-name>/SKILL.md` |
 | odai 总纲、主流程、核心门、加载地图 | `skills/odai/SKILL.md` |
 | 授权、验证、连续性、借力与协作 | `skills/odai/references/dao/` |
-| 规划、设计、诊断与交付、代码审查 | `skills/odai/references/capabilities/` |
+| 规划、设计、诊断与交付、代码审查、文档整理 | `skills/odai/references/capabilities/` |
 | UI 与实时交互领域工艺 | `skills/odai/references/domains/` |
 | 条件触发的重型方法 | `skills/odai/references/techniques/` |
-| agent 产物模板 | `skills/odai/assets/` |
+| 状态、账本与 Hooks 策略示例 | `skills/odai/assets/` |
+| 可选 Hooks 运行时与适配生成器 | `skills/odai/scripts/` |
 | 宿主 UI 元数据 | `skills/<skill-name>/agents/openai.yaml` |
 | 使用、维护、冻结变更 | `README*`、`MAINTAINING.md`、`CHANGELOG.md` |
 
-`references/modules/`、`references/game-plan/`、`references/game-design/`、`references/recipes/` 和旧模块专属目录已退役，不得作为新落点或兼容别名恢复。能力文件统一为 `planning / design / delivery / review`；协作与能力组合归 `dao/leverage.md`，重型审查归 `techniques/review-modes.md`。游戏需求进入通用 capability 和 `domains/interactive-systems.md`，不再新建独立游戏路由。
+`references/modules/`、`references/game-plan/`、`references/game-design/`、`references/recipes/` 和旧模块专属目录已退役，不得作为新落点或兼容别名恢复。能力文件统一为 `planning / design / delivery / review / documentation`；协作与能力组合归 `dao/leverage.md`，重型审查归 `techniques/review-modes.md`。游戏需求进入通用 capability 和 `domains/interactive-systems.md`，不再新建独立游戏路由。
 
 ## 判断新增、修改或退役
 
@@ -63,8 +64,9 @@ source 大改后立即审计：
 
 1. 修改 odai source 后运行 `node scripts/validate-odai-skill.mjs`。
 2. 修改题本 / fixture / harness 后，分别生成 full 与 A/B dry-run，并确认同 ID 对齐。
-3. 修改发布 / 打包路径时运行 `npm --prefix cli run pack:dry-run`，并确认无 `cli/skills/` 残留。
-4. 运行 `git diff --check`，检查本地 Markdown 链接与旧路径引用。
-5. 结果先说改了什么、为什么，再报验证、冻结是否受影响和真实剩余问题。
+3. 修改 Hooks runtime、策略示例或适配生成器后，运行 `node scripts/test-odai-hooks.mjs` 并生成六宿主适配。
+4. 修改发布 / 打包路径时运行 `npm --prefix cli run pack:dry-run`，并确认无 `cli/skills/` 残留。
+5. 运行 `git diff --check`，检查本地 Markdown 链接与旧路径引用。
+6. 结果先说改了什么、为什么，再报验证、冻结是否受影响和真实剩余问题。
 
 分发统一走 skills.sh。不手工维护平台镜像、临时 package snapshot 或平行结果文件。

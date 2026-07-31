@@ -31,7 +31,9 @@ This is not a collage of philosophical schools. It is one decision rule:
 - **Get the task done**: advance the user's task to a verified, deliverable result, while surfacing counterexamples, risks, and a better route when they would change the outcome.
 - **Do not act presumptuously**: do not bend facts, user decisions, or hard boundaries; do not conclude without evidence, exceed authorization, invent work, or treat a discovery as permission to implement it.
 
-The model remains a strategist rather than a passive executor, but initiative is judged by net value. Speed, quality, stability, cost, breadth, and practicality are outcomes to balance against the user's goal and the evidence—not a flat list of slogans, and never substitutes for a real result.
+The person and the model work as partners toward a shared result, not through a one-way command chain. The person contributes intent, context, value judgments, and unacceptable outcomes; the model contributes judgment, evidence, creation, and execution, challenges doubtful premises, and proposes better routes. Both calibrate understanding and trust through real progress, candid uncertainty, and feedback. The person owns goal-level tradeoffs; the model chooses professional implementation details within the agreed boundary. Authorization is not blind obedience, and challenge is not a takeover.
+
+The model's initiative is judged by net value. Speed, quality, stability, cost, breadth, and practicality are outcomes to balance against the user's goal and the evidence—not a flat list of slogans, and never substitutes for a real result.
 
 ### Operating Standard
 
@@ -209,24 +211,19 @@ Grok Build currently exposes `PreToolUse` as the blocking boundary, so its adapt
 
 ## Evaluation
 
-The current results (2026-07-22) contain 12 realistic full-plan tasks and an 8-task paired A/B subset. Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks. This includes user-supplied wrong causes, harmful fixes, ambiguous requirements, long-task recovery, and production boundaries.
+The latest frozen results (2026-07-31) contain 18 realistic full-plan tasks and a 12-task paired A/B subset. They belong only to the fingerprint retained in [`docs/evaluation-results.md`](docs/evaluation-results.md). Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks. Coverage includes wrong premises, harmful fixes, ambiguous requirements, reference and reuse boundaries, trustworthy documentation, durable memory, long-task recovery, and production boundaries.
 
-Each result first receives a 0-4 completion score, then the predefined case weight is applied. The full plan is worth 88 points and the A/B subset 56. Direct, judgment, complex, and boundary work are reported separately, while severe scope, production-risk, and false-verification violations have hard score caps. A perfect treatment score alone is not evidence of value; it must be read against the same model's control result and cost.
+Each result first receives a 0-4 completion score, then the predefined case weight is applied. The full plan is worth 136 points and the A/B subset 88. Direct, judgment, complex, and boundary work are reported separately, while severe scope, production-risk, and false-verification violations have hard score caps. A perfect treatment score alone is not evidence of value; it must be read against the same model's control result and cost.
 
 | Runner | full on | A/B on | A/B off | gain | A/B runner tokens on / off |
 |---|---:|---:|---:|---:|---:|
-| GPT-5.6-sol / high | **88/88** | **56/56** | 41/56 | **+15** | 184,940 / 164,275 (+12.6%) |
-| Claude Opus 4.8 | 83/88 | **53/56** | 42/56 | **+11** | 1,201,072 / 968,460 (+24.0%) |
-| Grok 4.5 | **88/88** | **56/56** | 37/56 | **+19** | 821,671 / 631,716 (+30.1%) |
-| Gemini 3.6 Flash (High) | 74/88 | 46/56 | 31/56 | **+15** | 805,255 / 1,407,955 (-42.8%) |
-| Qwen 3.8 Max Preview | 85/88 | **55/56** | 46/56 | **+9** | 2,004,644 / 1,773,309 (+13.0%) |
-| Kimi K3 | 77/88 | 49/56 | **50/56** | -1 | 1,211,628 / 1,113,107 (+8.9%) |
-| GLM-5.2 | 70/88 | 44/56 | 36/56 | **+8** | 2,224,745 / 1,846,753 (+20.5%) |
-| DeepSeek V4 Pro | 71/88 | 41/56 | 29/56 | **+12** | 2,718,299 / 2,185,050 (+24.4%) |
-| MiMo 2.5 Pro | 68/88 | 42/56 | 33/56 | **+9** | 2,024,644 / 1,334,236 (+51.7%) |
+| GPT-5.6-sol / high | **136/136** | **88/88** | 74/88 | **+14** | 379,438 / 283,719 (+33.7%) |
+| Grok 4.5 | **136/136** | **88/88** | 67/88 | **+21** | 1,385,102 / 964,583 (+43.6%) |
+| Gemini 3.6 Flash / high | **119/136** | **77/88** | 54/88 | **+23** | 1,280,672 / 2,307,196 (-44.5%) |
+| Kimi K3 | **122/136** | **80/88** | 73/88 | **+7** | 1,958,020 / 1,553,657 (+26.0%) |
 
-Across nine models, GPT-5.6, Opus, Grok, Qwen, and K3 pass all eight A/B tasks with odai; Gemini, GLM, and DeepSeek V4 Pro pass six, while MiMo passes five. Every model except K3 gains weighted quality, led by Grok at +19. Gemini rises from 31/56 to 46/56 while runner tokens fall by 42.8%; this comes from materially fewer planning and command rounds in the Antigravity trajectories and does not imply that other models or later runs will always save tokens. The strongest repeated benefit remains wrong-premise and production-risk judgment, without implying that every model follows the same rule reliably. GPT-5.6-sol / high and Grok score 88/88 on the full plan; Opus, Qwen, and K3 pass all twelve tasks, while Gemini, GLM, DeepSeek V4 Pro, and MiMo pass ten, nine, ten, and eight respectively.
+All four complete paired runs show a positive weighted gain, but the shape differs by model: GPT improves in every layer, Grok gains mainly in judgment, Gemini improves in all four layers while using fewer runner tokens in this run, and K3 shows a smaller gain with a two-point boundary improvement. A single run does not prove that odai always costs or saves tokens; use the model-specific evidence rather than treating it as a universal free upgrade. Results from older fingerprints do not migrate, and incomplete model runs stay out of the final table.
 
-See [`docs/evaluation.md`](docs/evaluation.md) for the contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for the latest retained case scores, gaps, support reads, and token details.
+See [`docs/evaluation.md`](docs/evaluation.md) for the current contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for the latest frozen case scores, gaps, support reads, and token details.
 
 Stars and PRs are welcome.

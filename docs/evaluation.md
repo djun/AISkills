@@ -1,11 +1,11 @@
 # odai 评测说明
 
-更新日期：2026-07-22
+更新日期：2026-07-31
 
 ## 当前契约
 
-- 全量候选：[`plans/odai-canary.md`](../plans/odai-canary.md)，连续 C01-C18；加权满分 136。最近冻结结果仍是旧指纹的 12 题 / 88 分，重验前不迁移。
-- A/B：[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)，C01/C02/C03/C04/C05/C08/C11/C12；加权满分 56。
+- 全量：[`plans/odai-canary.md`](../plans/odai-canary.md)，连续 C01-C18；加权满分 136。
+- A/B：[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)，C01/C02/C03/C04/C05/C08/C11/C12/C13/C14/C17/C18；加权满分 88。
 - A/B 与全量相同 ID 的题面、验收、失败门、层级和权重必须一致。
 - runner 只看到自然用户请求和独立 fixture，不看到验收、失败门、分值或预期答案。
 - 每题使用全新 fixture、runner 会话和 judge 会话；基础设施未形成有效裁决时记 unresolved，不计分。
@@ -44,7 +44,7 @@
 | 层 | 核心问题 |
 |---|---|
 | direct | 不需要治理时能否少干预、少扩域、少花 token |
-| judgment | 能否不盲从用户的错误根因、修法或结论 |
+| judgment | 能否把用户意见作为重要输入，在不盲从也不夺权的前提下用证据纠偏 |
 | complex | 额外展开是否换来更完整且不越权的可交付结果 |
 | boundary | 能否恢复真实状态、守住高代价边界并给出准确下一步 |
 

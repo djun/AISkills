@@ -13,18 +13,31 @@ const skillFile = path.join(skillRoot, "SKILL.md");
 if (!existsSync(skillFile)) fail("SKILL.md: missing");
 const skillText = readFileSync(skillFile, "utf8");
 const entryTokenEstimate = estimateTokens(skillText);
-if (entryTokenEstimate > 2200) warn(`SKILL.md: entry token estimate ${entryTokenEstimate} exceeds review threshold 2200; review clarity and semantic rent, but do not trim required behavior to satisfy a quota`);
+if (entryTokenEstimate > 2200) {
+  warn(
+    `SKILL.md: entry token estimate ${entryTokenEstimate} exceeds review threshold 2200; ` +
+    "review clarity and semantic rent, but do not trim required behavior to satisfy a quota",
+  );
+}
 
 validateFrontmatter(skillText);
 validateConstitution(skillText);
+validateBehavioralInvariants();
 validateOpenaiMetadata();
 validateHookSources();
+validateRepositoryAlignment();
 
 const files = listFiles(skillRoot);
 const markdownTokenEstimate = files
   .filter((file) => file.endsWith(".md"))
   .reduce((total, file) => total + estimateTokens(readFileSync(path.join(skillRoot, file), "utf8")), 0);
-if (markdownTokenEstimate > 12000) warn(`skill markdown estimate ${markdownTokenEstimate} exceeds total review threshold 12000; review ownership and duplication, but do not remove useful capability to satisfy a quota`);
+if (markdownTokenEstimate > 12000) {
+  warn(
+    `skill markdown estimate ${markdownTokenEstimate} exceeds total review threshold 12000; ` +
+    "review ownership and duplication, but do not remove useful capability to satisfy a quota",
+  );
+}
+
 const requiredFiles = [
   "assets/hooks-policy.example.json",
   "assets/task-ledger.md",
@@ -46,7 +59,7 @@ const requiredFiles = [
   "scripts/odai-hook.mjs",
 ];
 for (const relativePath of requiredFiles) {
-  if (!files.includes(relativePath)) fail(`${relativePath}: required vNext resource is missing`);
+  if (!files.includes(relativePath)) fail(`${relativePath}: required resource is missing`);
 }
 
 const retiredPrefixes = [
@@ -94,312 +107,111 @@ for (const relativePath of files.filter((file) => file.endsWith(".md"))) {
   });
 }
 
-const discoverabilityChecks = [
+const structureChecks = [
   {
     path: "SKILL.md",
-    label: "adaptive task kernel",
-    fragments: [
-      "行动开始或判断改变时",
+    headings: ["总纲", "一条主线", "按势换挡", "不可绕过的门", "按需借力", "验成与收口"],
+    anchors: [
       "事（用户要什么结果）",
       "实（依据与缺口）",
       "法（当前最轻充分路径）",
-      "充分先于轻",
-      "用户可观察效果、质量底线与主要风险",
       "成（验成证据）",
       "界（授权、风险与止点）",
-      "五项是随时重判的问题，不是阶段或输出模板",
-      "**事**",
-      "**实**",
-      "**法**",
-      "**成**",
-      "**界**",
-      "是否推进“事”或消除真实缺口",
-      "是否有足够事实、授权与必要性",
-      "没有真实缺口就不继续检索",
-      "## 按势换挡",
       "**直达**",
       "**纠偏**",
-      "先把它当假设",
-      "只实施能单独闭合原症状的最窄因果切点",
-      "替代手段与相邻发现冻结为保持项",
-      "相邻异常、自造输入和新增测试只可探索",
-      "补丁两者皆有就先删替代项再验证",
-      "不以健壮性或“保险起见”为由并做",
-      "**目标与参考分离**",
-      "提供证据或借鉴的对象默认只读",
-      "只写用户已授权的目标",
-      "**场景契约**",
-      "多个现成能力返回相似结果时",
-      "不按名称、字段相似或调用便利替代",
-      "只有用途、范围与关键约束有证据等价时才可互换",
-      "先查权威文档与既有调用，再交还用户裁决",
-      "**复用层级**",
-      "供复用的共享对象默认保持",
-      "定制优先落在最接近用户目标的使用处",
-      "只有扩展面不足且修改共享对象对成事确有必要时",
-      "不得把单一场景写入共享默认",
-      "**要义不失**",
-      "用户明确要求，以及证据表明为成事所必需的条件",
-      "不得因压缩、自定主次、新发现或求轻而静默丢失",
-      "收口时逐项给出结果与相称证据，或明确未决、冲突及原因",
-      "也不必复述内部清单",
       "**展开**",
       "**守险**",
-      "交付具体缺口、取证点与通过 / 停止条件",
-      "不是固定流程",
-      "用户要落地且条件已足够时继续交付",
-      "增强不自动扩大范围",
-      "默认 Y 是“事”，X 是待证根因",
-      "X 即使属实也不自动成为独立目标",
-      "只有手段对“事”确有因果必要性时，才随根因获得授权",
-      "祈使、紧急语气和精确数值不把它升级成无条件目标",
+      "**只答不写**",
+      "**目标与参考分离**",
+      "**场景契约**",
+      "**复用层级**",
+      "**写前冻结**",
+      "**要义不失**",
+      "**根因授权**",
       "**高影响参数停止门**",
-      "准备写入超时、重试、并发、资源、权限或外部副作用参数时，先读 `references/dao/authority.md` 与 `references/dao/verification.md`",
-      "方向、幅度与保护链证据须同时成立",
-      "未读、任一缺失或证据反对点名值",
-      "任一缺失或证据反对点名值，整组本轮不写",
-      "精确命令不覆盖此门",
-      "拒绝原值不等于获准另拍数值",
-      "明确标为“待验证的实验候选”且不实施",
-      "待验证的实验候选",
-      "声明、局部观测与端到端验证不得互相冒充",
-      "停在可逆边界交还裁决",
-      "资料逐份加载",
-      "复杂任务随新证据重判",
-      "才换或加下一份",
-      "不并读 planning 与 design 或其他能力资料",
+      "references/dao/authority.md",
+      "references/dao/continuity.md",
+      "references/dao/leverage.md",
+      "references/dao/verification.md",
       "references/capabilities/planning.md",
       "references/capabilities/design.md",
       "references/capabilities/delivery.md",
-      "references/capabilities/documentation.md",
       "references/capabilities/review.md",
-      "references/dao/continuity.md",
-      "references/dao/leverage.md",
+      "references/capabilities/documentation.md",
+      "references/domains/ui-design.md",
+      "references/domains/interactive-systems.md",
       "references/techniques/consensus.md",
       "references/techniques/review-modes.md",
       "`.odai/local.md`",
     ],
   },
   {
-    path: "SKILL.md",
-    label: "minimal hard boundaries",
-    fragments: [
-      "**只答不写**",
-      "最多一次定位加一次源读取",
-      "未见结果不得同批预排候选源、仓库枚举或后续检查",
-      "答案出现立即收口",
-      "不授权执行所问命令、读取旁路实现或验证答案",
-      "**目标与参考分离**",
-      "**场景契约**",
-      "**复用层级**",
-      "**写前冻结**",
-      "**要义不失**",
-      "首次写入前",
-      "可观察结果、允许写域、保持契约和验成证据",
-      "新发现默认不扩大写域",
-      "闭合目标的必要因果切点",
-      "相邻错误与重构先作发现",
-      "测试只覆盖冻结行为与真实回归风险并沿用项目方式",
-      "确认一下",
-      "不自动要求新增长期测试",
-      "无依据不增造要求、事实或指标",
-      "发现不等于获准实施",
-      "验证覆盖什么就只声明什么",
-      "未读、未做、未跑、未验、未调用都直说",
-      "最小安全下一步",
-    ],
-  },
-  {
     path: "references/dao/authority.md",
-    label: "adaptive authority",
-    fragments: [
-      "## 事的所有权",
-      "事由用户定义",
-      "发现或提案不等于新增目标或实施授权",
-      "可自行查证的先查证",
-      "为目标提供证据或借鉴的对象默认只读",
-      "用户把它纳入目标时才改变其写域",
-      "可在已授权的目标对象上行动",
-      "作为证据的对象仍保持只读",
-      "可逆设计探索可以先做",
-      "不自动禁止可逆探索",
-    ],
+    headings: ["事的所有权", "自主与提问", "动作边界", "模糊与感知任务"],
   },
   {
     path: "references/dao/verification.md",
-    label: "risk-proportional verification",
-    fragments: [
-      "## 何谓成事",
-      "用户定义的可观察结果",
-      "验证求最小充分证据",
-      "最接近真实使用场景",
-      "## 高影响参数",
-      "只有真实调用链达到 `verified_end_to_end`",
-      "才能称已有保护、已幂等或可安全重试",
-      "三者不得互相冒充",
-      "候选不冒充生产决定",
-      "待证明的不变量",
-      "跨层关联字段或标识",
-      "不要只说“验证幂等、重试或安全”",
-      "implemented_unverified",
-      "不要默认重新实施",
-    ],
+    headings: ["何谓成事", "选择证据", "高影响参数", "状态与收口", "承接旧任务"],
+    anchors: ["`declared`", "`observed`", "`verified_end_to_end`", "`implemented_unverified`"],
   },
   {
     path: "references/dao/continuity.md",
-    label: "long-task continuity",
-    fragments: ["状态文件是恢复手段，不是交付本身", "短任务不创建状态文件", "已有 TODO、计划、issue 或任务表", "以真实证据更新同一条目", "不另建平行 TODO", "assets/task-state.md", "assets/task-ledger.md", "第二套真相", "`.odai/local.md` 是 odai 的项目叠加规则", "不是任务状态、项目事实、决定或长期记忆载体"],
+    headings: ["主状态", "跨任务记忆", "执行账本", "恢复与队列"],
+    anchors: ["assets/task-state.md", "assets/task-ledger.md", "`.odai/local.md`"],
   },
   {
     path: "references/dao/leverage.md",
-    label: "truthful leverage and coordination",
-    fragments: [
-      "借力是成事手段，不是进度证据",
-      "先服从宿主、项目规则与用户指定资源",
-      "不让用户选择内部包",
-      "不扫描 home",
-      "优先主流程直办",
-      "不要虚构模型",
-      "主流程能够复核",
-      "最小 brief 只含当前所需的事",
-      "写入下放前",
-      "已获得同版",
-      "未携带则在首次写入前读取可访问源",
-      "无法访问或确认同版时降为只读回交",
-      "审查 agent 始终只读",
-      "主流程逐项复验后才关闭",
-      "references/techniques/consensus.md",
-      "## 演进而不自改",
-      "不自动改 skill",
-      "提升进 canonical source",
-      "只作 odai 行为叠加",
-      "不作任务状态、项目事实、决定或长期记忆",
-      "候选数量由真实缺口决定",
-    ],
+    headings: ["先组合能力", "再决定是否下放", "演进而不自改"],
+    anchors: ["references/dao/continuity.md", "references/techniques/consensus.md", "`.odai/local.md`"],
   },
   {
     path: "references/capabilities/planning.md",
-    label: "decision-oriented planning",
-    fragments: ["足以行动的决定", "不制造多方案", "决定已足以行动时停止规划", "不以规格文档存在冒充成事", "不把推荐默认值写成用户决定", "references/domains/interactive-systems.md", "references/capabilities/design.md"],
+    headings: ["形成决定", "开放项与数值"],
   },
   {
     path: "references/capabilities/design.md",
-    label: "automatic design domains",
-    fragments: [
-      "references/domains/ui-design.md",
-      "references/domains/interactive-systems.md",
-      "设计是成事手段",
-      "不得放进实现契约",
-      "同仓库、同领域或关键词相似不够",
-    ],
-  },
-  {
-    path: "references/capabilities/review.md",
-    label: "findings-first review",
-    fragments: ["findings first", "证据不足不判缺陷", "最小修复方向", "不把清单变成仪式", "references/techniques/review-modes.md", "references/capabilities/design.md", "建议数量不替代风险判断"],
+    headings: ["形成可交接设计"],
+    anchors: ["references/domains/ui-design.md", "references/domains/interactive-systems.md"],
   },
   {
     path: "references/capabilities/delivery.md",
-    label: "evidence-led delivery",
-    fragments: [
-      "用户定义的可交付结果",
-      "用户给出的根因与修法是重要假设",
-      "定位不是终点",
-      "继续最窄完整改动",
-      "换正交证据",
-      "做最小而完整的改动",
-      "依赖既有契约时，按项目当前事实与业务场景核对",
-      "结果形状相似不证明用途、范围与关键约束等价",
-      "跨越信任边界的输入与模型输出须校验",
-      "敏感信息不进入上下文和日志",
-      "优先沿用项目现有组件、视觉规范和交互约定",
-      "页面或单一场景的定制先落在消费层",
-      "优先使用既有、公开且稳定的扩展面",
-      "作为参考的模板与示例只取其可迁移结构，不改源对象",
-      "新增通用且向后兼容的扩展面",
-      "不把局部文案、样式或业务动作写进共享默认实现",
-      "不强制 TDD、SDD 或 BDD",
-      "不事后包装成 TDD",
-      "证据相反或副作用未知时不改",
-      "## 命中边界",
-    ],
+    headings: ["先辨因", "再闭合结果", "命中边界"],
+  },
+  {
+    path: "references/capabilities/review.md",
+    headings: ["形成 finding", "覆盖面"],
+    anchors: ["references/techniques/review-modes.md"],
   },
   {
     path: "references/capabilities/documentation.md",
-    label: "evidence-grounded documentation",
-    fragments: [
-      "内容动作不自行扩大为外部提交、发送或系统操作",
-      "实施会使现有权威文档失真",
-      "对象与动作已由用户指令、上下文或既有约定充分明确时，在边界内继续完成",
-      "当前页面、可用工具、待办列表或既有表单的存在本身不构成写入授权",
-      "完成百分比、工时、负责人、日期区间、状态和承诺不得从任务数、提交数或语气推断",
-      "不要为填满模板编造事实",
-      "没有可核实内容时直说",
-      "先沿用受众正在使用的格式与信息粒度",
-      "逐栏对齐标题、日期、分区和必填字段",
-      "不因信息可从上下文推断而省略",
-      "多个独立事项用小节或列表形成可扫读结构",
-      "不压成一段普通摘要",
-      "简洁是去掉重复与无关细节，不是删掉可追踪结构",
-      "问题、风险、待办和下一步与完成项分开表达",
-      "目标模板要求对应栏位时，据实填写、留空或标为待补",
-      "不要求且没有依据或内容时才省略",
-      "先交付其余字段完整、可审阅的正文",
-      "不要把提问或半份摘要冒充日报主体",
-      "有证据的建议可单列为候选，不冒充安排或承诺",
-      "不把讨论中事项写成承诺",
-      "优先更新已有 README、PROJECT 或 docs 入口",
-      "不复制平行指南",
-      "更新直接 owner",
-      "交付前逐项对照",
-      "缺标题、日期、分区、必填值或必要占位都不算完成",
-      "不得用一段摘要替代",
-      "把示例中的旧日期换成本期日期而不是删掉日期标题",
-      "不声称已填报、已发送或“功能完成”",
-    ],
-  },
-  {
-    path: "references/techniques/review-modes.md",
-    label: "heavy review modes",
-    fragments: ["普通单轮审查不读", "clean 计数归零", "references/dao/leverage.md", "references/capabilities/delivery.md", "正式准入输出", "过程完整性", "不按建议数量机械计数"],
-  },
-  {
-    path: "references/techniques/consensus.md",
-    label: "minimum sufficient consensus",
-    fragments: ["最少席位", "没有独立增量就不增加席位", "不按多数票", "不伪装"],
+    headings: ["先定交付与授权", "取证与裁剪", "日报、更新与变更文案", "项目指南", "验成"],
   },
   {
     path: "references/domains/ui-design.md",
-    label: "context-derived visual language",
-    fragments: ["从品牌、内容、场景、平台和既有系统选择视觉语言", "每个显著视觉手段都应服务层级、识别或反馈", "不因流行样式自动加入或禁止"],
+    headings: ["先定骨架", "真实性与压力态", "新建、重设计与验收"],
   },
   {
     path: "references/domains/interactive-systems.md",
-    label: "modality-adaptive input completion",
-    fragments: [
-      "按实际输入方式补齐会改变结果的契约与压力态",
-      "不为每种设备套固定清单",
-      "可命中区域、遮挡、手势冲突",
-      "按下、移动、滑出、抬起、取消 / 中断",
-      "相邻目标、滑动经过、多指或边缘触控中真正相关的压力态",
-      "只覆盖当前系统真实支持的输入",
-      "弱网、低端机、高同屏或中断恢复会影响判定时",
-    ],
+    headings: ["循环、内容与数值", "界面、反馈与表现", "交付与验收"],
+  },
+  {
+    path: "references/techniques/consensus.md",
+    headings: ["组织", "收束"],
+  },
+  {
+    path: "references/techniques/review-modes.md",
+    headings: ["连续审查与修复收敛", "正式准入输出"],
   },
   {
     path: "assets/task-state.md",
-    label: "dao-aligned task state",
-    fragments: ["## 事与界", "用户定义的结果", "授权 / 风险 / 止点", "## 实与成", "验成证据", "## 法", "下一项最轻充分动作"],
+    headings: ["事与界", "实与成", "法"],
+  },
+  {
+    path: "assets/task-ledger.md",
+    headings: ["状态口径", "风险与回退"],
   },
 ];
-for (const check of discoverabilityChecks) {
-  const fullPath = path.join(skillRoot, check.path);
-  if (!existsSync(fullPath)) continue;
-  const text = readFileSync(fullPath, "utf8");
-  for (const fragment of check.fragments) {
-    if (!text.includes(fragment)) fail(`${check.path}: missing ${check.label}: ${fragment}`);
-  }
-}
+for (const check of structureChecks) validateStructure(check);
 
 if (warnings.length > 0) {
   console.log("Warnings:");
@@ -411,7 +223,10 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`- ${failure}`);
   process.exitCode = 1;
 } else {
-  console.log(`odai skill is valid (${files.length} files, ${warnings.length} warnings, entry estimate ${entryTokenEstimate} tokens, total markdown estimate ${markdownTokenEstimate} tokens).`);
+  console.log(
+    `odai skill is valid (${files.length} files, ${warnings.length} warnings, ` +
+    `entry estimate ${entryTokenEstimate} tokens, total markdown estimate ${markdownTokenEstimate} tokens).`,
+  );
 }
 
 function validateFrontmatter(text) {
@@ -458,6 +273,94 @@ function validateConstitution(text) {
   }
 }
 
+function validateBehavioralInvariants() {
+  const checks = [
+    {
+      path: "SKILL.md",
+      label: "collaborative agency",
+      patterns: [
+        /授权不是盲从[^。\n]*质疑也不是夺权/,
+        /价值取舍由用户决定[^。\n]*事实判断以证据校准[^。\n]*界内专业做法由模型自主/,
+        /dao 资料只处理[^。\n]*横切判断[^。\n]*不替代交付工艺/,
+        /即使已经读过 dao[^。\n]*继续读取一份首选 capability/,
+      ],
+    },
+    {
+      path: "SKILL.md",
+      label: "observable stop boundary",
+      patterns: [
+        /\*\*守险\*\*[^。\n]*[\s\S]{0,260}拒绝原手段[^。\n]*承接原目标/,
+        /新证据若会改变用户目标[^。\n]*停在可逆边界[^。\n]*由用户决定后再继续/,
+        /拒绝原值不等于获准另拍数值/,
+        /目标与参考分离[\s\S]{0,220}不因要形成新结果而变成写入目标/,
+        /交付载体未指定[^。\n]*回复足够时直接回复[^。\n]*确需落盘则新建唯一相关产物/,
+        /可计算的结论、区间与端点须实际复算[^。\n]*离散量按约束取整并复验边界/,
+        /局部或定向结果不得概括为项目、全量或场景通过/,
+        /具体对象、输入、位置与通过条件[^。\n]*不得被宽泛类别替代/,
+        /局部缺口只阻断依赖它的部分或动作[^。\n]*先完整交付可用部分[^。\n]*再问最小阻断/,
+        /未验证项写清复验对象、材料已知的具体场景、输入或位置、动作与通过标准/,
+        /责任未指定时明确指出[^。\n]*给出需认领的动作/,
+        /追加前须指出它将改变的决定或区分的假设[^。\n]*说不出就停/,
+      ],
+    },
+    {
+      path: "references/dao/authority.md",
+      label: "two-way evidence correction",
+      patterns: [
+        /价值取舍与事实判断[^。\n]*前者由用户决定[^。\n]*后者共同查证[^。\n]*证据可以推翻任何一方/,
+        /否定、绝对约束或彼此冲突[\s\S]{0,120}由用户决定后再继续/,
+        /只读分析、解释、诊断或审查默认不写入/,
+        /生产、外部通信、付费、删除、迁移或其他难回退动作[^。\n]*确认具体对象、环境、影响、停止条件和可用退路/,
+      ],
+    },
+    {
+      path: "references/dao/verification.md",
+      label: "high-impact evidence gate",
+      patterns: [
+        /`declared`[^。\n]*`observed`[^。\n]*`verified_end_to_end`/,
+        /保护链不足[^。\n]*承接用户原目标[^。\n]*取什么证据[^。\n]*通过、停止或改选路线/,
+        /补证不得假定未证实的环境、权限、工具、数据或责任人存在/,
+        /未知条件只作显式前提[^。\n]*不能成为唯一解锁路径/,
+      ],
+    },
+    {
+      path: "references/dao/leverage.md",
+      label: "overlay precedence and limits",
+      patterns: [
+        /项目叠加优先于通用用户偏好/,
+        /不得覆盖宿主与当前用户指令[^。\n]*不得改变 canonical odai 的总纲、核心门和事实口径/,
+        /普通方法冲突时[^。\n]*当前任务事实择法/,
+      ],
+    },
+    {
+      path: "references/capabilities/documentation.md",
+      label: "stale action continuity",
+      patterns: [
+        /逾期但无完成证据[^。\n]*保留原责任与日期/,
+        /标为待确认或逾期[^。\n]*确认、重排或补负责人 \/ 日期/,
+      ],
+    },
+    {
+      path: "references/capabilities/documentation.md",
+      label: "blocked-field full draft",
+      patterns: [
+        /缺值只阻断保存、发送或个别字段[^。\n]*按既有格式交付其余完整正文并保留待补位/,
+        /既有格式或模板的结构就是交付契约[^。\n]*沿用标题、日期、分区、必填字段与信息粒度/,
+        /不改成普通摘要[^。\n]*不靠删除标题、日期或字段化解缺口/,
+      ],
+    },
+  ];
+
+  for (const check of checks) {
+    const file = path.join(skillRoot, check.path);
+    if (!existsSync(file)) continue;
+    const text = readFileSync(file, "utf8");
+    for (const pattern of check.patterns) {
+      if (!pattern.test(text)) fail(`${check.path}: missing ${check.label}: ${pattern}`);
+    }
+  }
+}
+
 function validateOpenaiMetadata() {
   const openaiFile = path.join(skillRoot, "agents", "openai.yaml");
   if (!existsSync(openaiFile)) return fail("agents/openai.yaml: missing");
@@ -468,7 +371,9 @@ function validateOpenaiMetadata() {
   if (shortDescription && (shortDescription.length < 25 || shortDescription.length > 64)) {
     fail(`agents/openai.yaml: short_description must be 25-64 chars, got ${shortDescription.length}`);
   }
-  if (defaultPrompt && !defaultPrompt.includes("$odai")) fail("agents/openai.yaml: default_prompt must mention $odai");
+  if (defaultPrompt && !defaultPrompt.includes("$odai")) {
+    fail("agents/openai.yaml: default_prompt must mention $odai");
+  }
 }
 
 function validateHookSources() {
@@ -488,7 +393,9 @@ function validateHookSources() {
     return;
   }
   if (policy.version !== 1) fail("assets/hooks-policy.example.json: version must be 1");
-  if (!Array.isArray(policy.protectedPaths)) fail("assets/hooks-policy.example.json: protectedPaths must be an array");
+  if (!Array.isArray(policy.protectedPaths)) {
+    fail("assets/hooks-policy.example.json: protectedPaths must be an array");
+  }
   if (!Array.isArray(policy.checks)) fail("assets/hooks-policy.example.json: checks must be an array");
 
   const runtime = readFileSync(runtimeFile, "utf8");
@@ -512,6 +419,66 @@ function validateHookSources() {
   }
 }
 
+function validateRepositoryAlignment() {
+  const planFile = path.join(repoRoot, "plans", "odai-canary.md");
+  const maintainingFile = path.join(repoRoot, "MAINTAINING.md");
+  const authorFile = path.join(repoRoot, "skills", "skill-author", "SKILL.md");
+  const readmeFile = path.join(repoRoot, "README.md");
+  const readmeZhFile = path.join(repoRoot, "README.zh-CN.md");
+  const resultsFile = path.join(repoRoot, "docs", "evaluation-results.md");
+  for (const file of [planFile, maintainingFile, authorFile, readmeFile, readmeZhFile, resultsFile]) {
+    if (!existsSync(file)) {
+      fail(`${path.relative(repoRoot, file)}: repository alignment source is missing`);
+      return;
+    }
+  }
+
+  const plan = readFileSync(planFile, "utf8");
+  const caseIds = [...plan.matchAll(/^\|\s*(\d+)(?:\s+★)?\s*\|/gm)].map((match) => Number(match[1]));
+  const uniqueIds = [...new Set(caseIds)];
+  if (uniqueIds.length === 0) fail("plans/odai-canary.md: no case rows found");
+  uniqueIds.forEach((id, index) => {
+    if (id !== index + 1) fail(`plans/odai-canary.md: expected continuous case C${String(index + 1).padStart(2, "0")}`);
+  });
+
+  const maintaining = readFileSync(maintainingFile, "utf8");
+  if (!new RegExp(`${uniqueIds.length} 题全量(?:候选)?题本`).test(maintaining)) {
+    fail(`MAINTAINING.md: full plan count must be ${uniqueIds.length}`);
+  }
+
+  const author = readFileSync(authorFile, "utf8");
+  for (const anchor of [
+    "planning / design / delivery / review / documentation",
+    "skills/odai/scripts/",
+    "node scripts/test-odai-hooks.mjs",
+  ]) {
+    if (!author.includes(anchor)) fail(`skills/skill-author/SKILL.md: missing maintenance owner: ${anchor}`);
+  }
+
+  if (!readFileSync(readmeFile, "utf8").includes("latest frozen results")) {
+    fail("README.md: evaluation table must be labeled as the latest frozen results");
+  }
+  if (!readFileSync(readmeZhFile, "utf8").includes("最近冻结结果")) {
+    fail("README.zh-CN.md: evaluation table must be labeled as the latest frozen results");
+  }
+  if (!readFileSync(resultsFile, "utf8").startsWith("# odai 最近冻结评测结果")) {
+    fail("docs/evaluation-results.md: title must identify the current frozen results");
+  }
+}
+
+function validateStructure(check) {
+  const fullPath = path.join(skillRoot, check.path);
+  if (!existsSync(fullPath)) return;
+  const text = readFileSync(fullPath, "utf8");
+  for (const heading of check.headings || []) {
+    const pattern = new RegExp(`^#{1,3}\\s+${escapeRegExp(heading)}\\s*$`, "m");
+    if (!pattern.test(text)) fail(`${check.path}: missing required section: ${heading}`);
+  }
+  for (const anchor of check.anchors || []) {
+    if (!text.includes(anchor)) fail(`${check.path}: missing routing or schema anchor: ${anchor}`);
+  }
+}
+
 function unquote(value) {
   if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) return JSON.parse(value);
   return value;
@@ -519,7 +486,9 @@ function unquote(value) {
 
 function estimateTokens(value) {
   const text = String(value || "");
-  const cjkChars = (text.match(/[\u3000-\u303f\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/g) || []).length;
+  const cjkChars = (
+    text.match(/[\u3000-\u303f\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/g) || []
+  ).length;
   return Math.ceil(cjkChars + (text.length - cjkChars) / 4);
 }
 
@@ -548,6 +517,10 @@ function listFiles(root) {
 function isInside(parent, child) {
   const relative = path.relative(parent, child);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[|\\{}()[\]^$+*?.-]/g, "\\$&");
 }
 
 function fail(message) {
