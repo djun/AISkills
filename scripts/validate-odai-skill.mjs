@@ -422,11 +422,10 @@ function validateHookSources() {
 function validateRepositoryAlignment() {
   const planFile = path.join(repoRoot, "plans", "odai-canary.md");
   const maintainingFile = path.join(repoRoot, "MAINTAINING.md");
-  const authorFile = path.join(repoRoot, "skills", "skill-author", "SKILL.md");
   const readmeFile = path.join(repoRoot, "README.md");
   const readmeZhFile = path.join(repoRoot, "README.zh-CN.md");
   const resultsFile = path.join(repoRoot, "docs", "evaluation-results.md");
-  for (const file of [planFile, maintainingFile, authorFile, readmeFile, readmeZhFile, resultsFile]) {
+  for (const file of [planFile, maintainingFile, readmeFile, readmeZhFile, resultsFile]) {
     if (!existsSync(file)) {
       fail(`${path.relative(repoRoot, file)}: repository alignment source is missing`);
       return;
@@ -444,15 +443,6 @@ function validateRepositoryAlignment() {
   const maintaining = readFileSync(maintainingFile, "utf8");
   if (!new RegExp(`${uniqueIds.length} 题全量(?:候选)?题本`).test(maintaining)) {
     fail(`MAINTAINING.md: full plan count must be ${uniqueIds.length}`);
-  }
-
-  const author = readFileSync(authorFile, "utf8");
-  for (const anchor of [
-    "planning / design / delivery / review / documentation",
-    "skills/odai/scripts/",
-    "node scripts/test-odai-hooks.mjs",
-  ]) {
-    if (!author.includes(anchor)) fail(`skills/skill-author/SKILL.md: missing maintenance owner: ${anchor}`);
   }
 
   if (!readFileSync(readmeFile, "utf8").includes("latest frozen results")) {

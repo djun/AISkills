@@ -22,7 +22,6 @@ skills/odai/                      odai canonical source
   references/techniques/          合议、正式 / 收敛审查等可选重工艺
   assets/                         跨会话状态、任务账本与 Hooks 策略示例
   scripts/                        可选 Hooks 共享运行时与适配生成器
-skills/skill-author/              本仓库的 source 维护 skill
 docs/evaluation.md                稳定评测契约
 docs/evaluation-results.md        当前结果的唯一公开记录
 plans/odai-canary.md              18 题全量题本
@@ -61,6 +60,8 @@ odai 之道是：**事由人定，路由实证；法随势变，成由验定；�
 5. 不为缩 token 而删能力，也不为完整感增文件；只看净价值、可发现性和行为证据。
 6. 已验证指纹发现实质问题时，先修真实问题，再以新指纹重建必要证据；不回改题本迎合输出，也不跨指纹拼分。
 7. `SKILL.md` 是高注意力定额，不是可持续追加区；新规则进入入口时应优先合并或替换旧文字，只有行为证据证明净增量时才扩容。
+8. 只有具备独立用户触发面、可单独分发且不能由现有 owner 承接的能力才新增公开 skill；仓库维护说明归本文与 `AGENTS.md`，不另造无人调用的维护 skill。
+9. 只有重复使用且需要确定性执行的逻辑才新增 script；只有会被 agent 直接复用于交付的内容才新增 asset。新增前先确认现有 owner、真实复用证据与验证方式。
 
 ## 验证与评测
 
