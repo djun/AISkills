@@ -218,11 +218,12 @@ Each result first receives a 0-4 completion score, then the predefined case weig
 | Runner | full on | A/B on | A/B off | gain | A/B runner tokens on / off |
 |---|---:|---:|---:|---:|---:|
 | GPT-5.6-sol / high | **136/136** | **88/88** | 74/88 | **+14** | 379,438 / 283,719 (+33.7%) |
+| Claude Opus 5 | **136/136** | **88/88** | 71/88 | **+17** | 2,246,478 / 1,590,793 (+41.2%) |
 | Grok 4.5 | **136/136** | **88/88** | 67/88 | **+21** | 1,385,102 / 964,583 (+43.6%) |
 | Gemini 3.6 Flash / high | **119/136** | **77/88** | 54/88 | **+23** | 1,280,672 / 2,307,196 (-44.5%) |
 | Kimi K3 | **122/136** | **80/88** | 73/88 | **+7** | 1,958,020 / 1,553,657 (+26.0%) |
 
-All four complete paired runs show a positive weighted gain, but the shape differs by model: GPT improves in every layer, Grok gains mainly in judgment, Gemini improves in all four layers while using fewer runner tokens in this run, and K3 shows a smaller gain with a two-point boundary improvement. A single run does not prove that odai always costs or saves tokens; use the model-specific evidence rather than treating it as a universal free upgrade. Results from older fingerprints do not migrate, and incomplete model runs stay out of the final table.
+All five complete paired runs show a positive weighted gain, but the shape differs by model: GPT and Opus improve in every layer; Grok gains mainly in judgment; Gemini improves in all four layers while using fewer runner tokens in this run; and K3 shows a smaller gain with a two-point boundary improvement. A single run does not prove that odai always costs or saves tokens; use the model-specific evidence rather than treating it as a universal free upgrade. Results from older fingerprints do not migrate, and incomplete model runs stay out of the final table.
 
 See [`docs/evaluation.md`](docs/evaluation.md) for the current contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for the latest frozen case scores, gaps, support reads, and token details.
 
