@@ -211,7 +211,7 @@ Grok Build currently exposes `PreToolUse` as the blocking boundary, so its adapt
 
 ## Evaluation
 
-The latest frozen results (2026-07-31) contain 18 realistic full-plan tasks and a 12-task paired A/B subset. They belong only to the fingerprint retained in [`docs/evaluation-results.md`](docs/evaluation-results.md). Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks. Coverage includes wrong premises, harmful fixes, ambiguous requirements, reference and reuse boundaries, trustworthy documentation, durable memory, long-task recovery, and production boundaries.
+The latest frozen results (2026-08-03) contain 18 realistic full-plan tasks and a 12-task paired A/B subset. They belong only to the fingerprint retained in [`docs/evaluation-results.md`](docs/evaluation-results.md). Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks. Coverage includes wrong premises, harmful fixes, ambiguous requirements, reference and reuse boundaries, trustworthy documentation, durable memory, long-task recovery, and production boundaries.
 
 Each result first receives a 0-4 completion score, then the predefined case weight is applied. The full plan is worth 136 points and the A/B subset 88. Direct, judgment, complex, and boundary work are reported separately, while severe scope, production-risk, and false-verification violations have hard score caps. A perfect treatment score alone is not evidence of value; it must be read against the same model's control result and cost.
 
@@ -222,8 +222,9 @@ Each result first receives a 0-4 completion score, then the predefined case weig
 | Grok 4.5 | **136/136** | **88/88** | 67/88 | **+21** | 1,385,102 / 964,583 (+43.6%) |
 | Gemini 3.6 Flash / high | **119/136** | **77/88** | 54/88 | **+23** | 1,280,672 / 2,307,196 (-44.5%) |
 | Kimi K3 | **122/136** | **80/88** | 73/88 | **+7** | 1,958,020 / 1,553,657 (+26.0%) |
+| DeepSeek V4 Flash / 1M | **130/136** | **84/88** | 61/88 | **+23** | 4,194,246 / 3,345,729 (+25.4%) |
 
-All five complete paired runs show a positive weighted gain, but the shape differs by model: GPT and Opus improve in every layer; Grok gains mainly in judgment; Gemini improves in all four layers while using fewer runner tokens in this run; and K3 shows a smaller gain with a two-point boundary improvement. A single run does not prove that odai always costs or saves tokens; use the model-specific evidence rather than treating it as a universal free upgrade. Results from older fingerprints do not migrate, and incomplete model runs stay out of the final table.
+All six complete paired runs show a positive weighted gain, but the shape differs by model: GPT, Opus, and D4F improve in every layer; Grok gains mainly in judgment; Gemini improves in all four layers while using fewer runner tokens in this run; and K3 shows a smaller gain with a two-point boundary improvement. A single run does not prove that odai always costs or saves tokens; use the model-specific evidence rather than treating it as a universal free upgrade. Results do not migrate across skill, plan, or scoring-semantic changes; behavior-neutral harness I/O fixes do not invalidate complete evidence, and incomplete model runs stay out of the final table.
 
 See [`docs/evaluation.md`](docs/evaluation.md) for the current contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for the latest frozen case scores, gaps, support reads, and token details.
 

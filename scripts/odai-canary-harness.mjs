@@ -456,6 +456,7 @@ function run(command, options = {}) {
     shell: false,
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
+    maxBuffer: 64 * 1024 * 1024,
   });
 }
 
@@ -482,6 +483,7 @@ function runShell(command, options = {}) {
     shell: true,
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
+    maxBuffer: 64 * 1024 * 1024,
   });
 }
 
