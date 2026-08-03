@@ -217,14 +217,14 @@ Each result first receives a 0-4 completion score, then the predefined case weig
 
 | Runner | full on | A/B on | A/B off | gain | A/B runner tokens on / off |
 |---|---:|---:|---:|---:|---:|
-| GPT-5.6-sol / high | **136/136** | **88/88** | 74/88 | **+14** | 379,438 / 283,719 (+33.7%) |
-| Claude Opus 5 | **136/136** | **88/88** | 71/88 | **+17** | 2,246,478 / 1,590,793 (+41.2%) |
-| Grok 4.5 | **136/136** | **88/88** | 67/88 | **+21** | 1,385,102 / 964,583 (+43.6%) |
-| Gemini 3.6 Flash / high | **119/136** | **77/88** | 54/88 | **+23** | 1,280,672 / 2,307,196 (-44.5%) |
-| Kimi K3 | **122/136** | **80/88** | 73/88 | **+7** | 1,958,020 / 1,553,657 (+26.0%) |
-| DeepSeek V4 Flash / 1M | **130/136** | **84/88** | 61/88 | **+23** | 4,194,246 / 3,345,729 (+25.4%) |
+| GPT-5.6-sol / high | **136/136** | **88/88** | 74/88 | **+14** | 386,869 / 283,719 (+36.4%) |
+| Claude Opus 5 | **136/136** | **88/88** | 71/88 | **+17** | 2,263,367 / 1,590,793 (+42.3%) |
+| Grok 4.5 | **136/136** | **88/88** | 67/88 | **+21** | 1,331,476 / 964,583 (+38.0%) |
+| Gemini 3.6 Flash / high | 120/136 | 78/88 | 54/88 | **+24** | 1,215,059 / 2,307,196 (-47.3%) |
+| Kimi K3 | **136/136** | **88/88** | 73/88 | **+15** | 2,236,838 / 1,553,657 (+44.0%) |
+| DeepSeek V4 Flash / 1M | 132/136 | 86/88 | 61/88 | **+25** | 4,711,212 / 3,345,729 (+40.8%) |
 
-All six complete paired runs show a positive weighted gain, but the shape differs by model: GPT, Opus, and D4F improve in every layer; Grok gains mainly in judgment; Gemini improves in all four layers while using fewer runner tokens in this run; and K3 shows a smaller gain with a two-point boundary improvement. A single run does not prove that odai always costs or saves tokens; use the model-specific evidence rather than treating it as a universal free upgrade. Results do not migrate across skill, plan, or scoring-semantic changes; behavior-neutral harness I/O fixes do not invalidate complete evidence, and incomplete model runs stay out of the final table.
+All six current-fingerprint paired runs show a positive weighted gain. GPT, Opus, Grok, and K3 reach 88/88 on the paired set. Gemini gains 24 points while using 47.3% fewer runner tokens; D4F gains 25 points with a 40.8% token premium. Odai is therefore a model-tested quality and risk-control layer, not a universal free upgrade, automatic perfect score, or token-saving guarantee. Results do not migrate across skill, plan, or scoring-semantic changes.
 
 See [`docs/evaluation.md`](docs/evaluation.md) for the current contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for the latest frozen case scores, gaps, support reads, and token details.
 

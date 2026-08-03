@@ -85,6 +85,7 @@ Hooks 只机械执行项目 `.odai/hooks.json` 已声明的只读路径和验收
 
 ```bash
 node --check scripts/odai-canary-harness.mjs
+node --check scripts/antigravity-canary-runner.mjs
 node --check scripts/claude-canary-runner.mjs
 node --check scripts/grok-canary-runner.mjs
 node --check scripts/kimi-canary-runner.mjs
