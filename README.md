@@ -33,6 +33,8 @@ This is not a collage of philosophical schools. It is one decision rule:
 
 The person and the model work as partners toward a shared result, not through a one-way command chain. The person contributes intent, context, value judgments, and unacceptable outcomes; the model contributes judgment, evidence, creation, and execution, challenges doubtful premises, and proposes better routes. Both calibrate understanding and trust through real progress, candid uncertainty, and feedback. The person owns goal-level tradeoffs; the model chooses professional implementation details within the agreed boundary. Authorization is not blind obedience, and challenge is not a takeover.
 
+odai is neither an echo of the user nor a reciter of rules. It takes the person's purpose as its direction and facts and boundaries as its constraints, forms its own judgment and recommendation, holds a justified disagreement when necessary, and changes its mind when the evidence changes. Truth outranks pleasing, effectiveness outranks ceremony, reliable results outrank superficial shortcuts, and long-term trust outranks one-turn performance.
+
 The model's initiative is judged by net value. Speed, quality, stability, cost, breadth, and practicality are outcomes to balance against the user's goal and the evidence—not a flat list of slogans, and never substitutes for a real result.
 
 ### Operating Standard
@@ -111,7 +113,7 @@ trusted memory, agent coordination, independent challenge, or consensus;
 existing memory stays authoritative instead of being mirrored.
 ```
 
-The framework owns the task from understanding through delivery, while capabilities and domain references provide only the craft needed at the moment. There is no separate orchestrator workflow and no user-selected domain package.
+The framework owns the task from understanding through delivery. Five flat references provide only the boundary, craft, verification, support, or external capability guidance needed at the moment; there is no separate orchestrator workflow or user-selected domain package.
 
 ## Internal Map
 
@@ -120,26 +122,15 @@ The internal structure is organized by responsibility, not by mandatory stages:
 | Layer | Purpose |
 | --- | --- |
 | Kernel | Core principle, adaptive progression, minimum boundaries, and loading map |
-| `dao/` | Authority, verification, continuity, and truthful use of host skills, project rules, and agents |
-| `capabilities/` | Planning, design, delivery, review, and evidence-grounded documentation |
-| `domains/` | Optional UI and real-time interaction craft, inferred from the task |
-| `techniques/` | Optional heavy methods for consensus and formal or convergent review |
+| `dao.md` | Goal ownership, factual correction, authorization, read-only references, and high-impact boundaries |
+| `craft.md` | Planning, implementation, design, UI and real-time interaction, writing, and review |
+| `verification.md` | Acceptance, evidence strength, completion, and resuming existing work |
+| `support.md` | Self-calibration, performance recovery, durable state and memory, relationship continuity, consensus, and repeated review |
+| `leverage.md` | External capability discovery, net-benefit decisions, installation, creation, composition, and agent delegation |
 
-The internal capabilities are deliberately plain and task-oriented:
+Domain depth is inferred from the task instead of selected as a package. Game, UI, documentation, and software work use the built-in craft baseline, then borrow project material, host tools, or professional skills only for a named gap. Without an external skill, odai still completes what the current model can do reliably.
 
-| Name | Use it for |
-| --- | --- |
-| `planning` | Cross-domain specs, systems, tradeoffs, numbers, and content |
-| `design` | Cross-domain flows, states, interaction, visuals, brand and asset direction |
-| `delivery` | Evidence-led diagnosis, code changes, tests, and implementation |
-| `review` | Findings-first review of code, diffs, repositories, UI, or design |
-| `documentation` | Evidence-grounded synthesis of facts, progress, changes, decisions, and project knowledge for a real audience |
-
-Planning and design infer the domain from task and repository evidence. Game work is one supported domain, not a separate package the user has to select. Office artifacts use the host's document, spreadsheet, presentation, PDF, browser, or image skill when available; `odai` keeps responsibility for intent, progress, and truthful closure.
-
-Documentation loads only when the task calls for it. A request to write or organize content does not by itself authorize filling, submitting, publishing, or sending through an external system; when the target and action are clear from the request, context, or established convention, odai continues within that boundary. Project guides update the existing documentation owner instead of creating a parallel source of truth.
-
-When complex or long-running work needs handoff, coordination, or recovery, odai writes decisions, plans, state, and acceptance evidence back to the existing documentation or task owner. It also updates authoritative documentation made stale by implementation. When code, tests, or the requested artifact already carry the complete result, complexity alone does not justify another document.
+Content work preserves evidence, existing templates, stale responsibilities, and publication boundaries. Complex or long-running work writes decisions, state, and acceptance evidence back to one existing maintenance location only when that materially improves recovery. Code, tests, or the requested artifact remain sufficient when they already carry the complete result.
 
 ## Good Prompts
 
@@ -211,21 +202,19 @@ Grok Build currently exposes `PreToolUse` as the blocking boundary, so its adapt
 
 ## Evaluation
 
-The latest frozen results (2026-08-03) contain 18 realistic full-plan tasks and a 12-task paired A/B subset. They belong only to the fingerprint retained in [`docs/evaluation-results.md`](docs/evaluation-results.md). Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks. Coverage includes wrong premises, harmful fixes, ambiguous requirements, reference and reuse boundaries, trustworthy documentation, durable memory, long-task recovery, and production boundaries.
+The current candidate baseline (2026-08-06) contains 19 realistic full-plan tasks and a 13-task paired A/B subset. Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks.
 
-Each result first receives a 0-4 completion score, then the predefined case weight is applied. The full plan is worth 136 points and the A/B subset 88. Direct, judgment, complex, and boundary work are reported separately, while severe scope, production-risk, and false-verification violations have hard score caps. A perfect treatment score alone is not evidence of value; it must be read against the same model's control result and cost.
+Each result first receives a 0-4 completion score, then the predefined case weight is applied. The full plan is worth 144 points and the A/B subset 96. Direct, judgment, complex, and boundary work are reported separately, while severe scope, production-risk, and false-verification violations have hard score caps. A perfect treatment score alone is not evidence of value; it must be read against the same model's control result and cost.
 
 | Runner | full on | A/B on | A/B off | gain | A/B runner tokens on / off |
 |---|---:|---:|---:|---:|---:|
-| GPT-5.6-sol / high | **136/136** | **88/88** | 74/88 | **+14** | 386,869 / 283,719 (+36.4%) |
-| Claude Opus 5 | **136/136** | **88/88** | 71/88 | **+17** | 2,263,367 / 1,590,793 (+42.3%) |
-| Grok 4.5 | **136/136** | **88/88** | 67/88 | **+21** | 1,331,476 / 964,583 (+38.0%) |
-| Gemini 3.6 Flash / high | 120/136 | 78/88 | 54/88 | **+24** | 1,215,059 / 2,307,196 (-47.3%) |
-| Kimi K3 | **136/136** | **88/88** | 73/88 | **+15** | 2,236,838 / 1,553,657 (+44.0%) |
-| DeepSeek V4 Flash / 1M | 132/136 | 86/88 | 61/88 | **+25** | 4,711,212 / 3,345,729 (+40.8%) |
+| GPT-5.6-sol / high | **144/144** | **96/96** | 84/96 | **+12** | 394,006 / 288,813 (+36.4%) |
+| Claude Opus 5 | **144/144** | **96/96** | 77/96 | **+19** | 2,320,108 / 1,791,378 (+29.5%) |
+| Grok 4.5 | **144/144** | **96/96** | 69/96 | **+27** | 1,561,761 / 1,020,331 (+53.1%) |
+| Kimi K3 | **144/144** | **96/96** | 79/96 | **+17** | 2,131,289 / 1,604,470 (+32.8%) |
 
-All six current-fingerprint paired runs show a positive weighted gain. GPT, Opus, Grok, and K3 reach 88/88 on the paired set. Gemini gains 24 points while using 47.3% fewer runner tokens; D4F gains 25 points with a 40.8% token premium. Odai is therefore a model-tested quality and risk-control layer, not a universal free upgrade, automatic perfect score, or token-saving guarantee. Results do not migrate across skill, plan, or scoring-semantic changes.
+All four runners reached full scores on both the 19-case on suite and the A/B on arm; paired gains range from 12 to 27 points, with the largest gain still in judgment. Every runner used more tokens with odai, so the evidence supports a task-dependent trade of additional cost for governance, professional judgment, and acceptance quality—not unconditional token savings.
 
-See [`docs/evaluation.md`](docs/evaluation.md) for the current contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for the latest frozen case scores, gaps, support reads, and token details.
+See [`docs/evaluation.md`](docs/evaluation.md) for the current contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for case scores, support reads, and token details.
 
 Stars and PRs are welcome.

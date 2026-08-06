@@ -53,8 +53,8 @@ export async function runMockTask({
     ...args.skills,
     ...matchSkillsInTask(args.task, discovered),
   ]).filter((name) => name && name !== "odai");
-  if (requestedSkills.length > 0 && !skillReferences.includes("references/dao/leverage.md")) {
-    skillReferences.push("references/dao/leverage.md");
+  if (requestedSkills.length > 0 && !skillReferences.includes("references/support.md")) {
+    skillReferences.push("references/support.md");
   }
   const externalSkills = [];
   for (const name of requestedSkills) {

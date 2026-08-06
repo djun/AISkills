@@ -80,43 +80,43 @@ assert.equal(envelope.toolIntents?.[0]?.profile, "challenger");
 // --- skill references on demand (tight signals only) ---
 const baseline = selectSkillReferences({ task: "ping" });
 assert.deepEqual(baseline, []);
-assert.equal(baseline.includes("references/capabilities/delivery.md"), false);
+assert.equal(baseline.includes("references/craft.md"), false);
 
 const governanceBaseline = selectSkillReferences({ task: "ping", includeGovernance: true });
-assert.ok(governanceBaseline.includes("references/dao/authority.md"));
-assert.ok(governanceBaseline.includes("references/dao/verification.md"));
+assert.ok(governanceBaseline.includes("references/dao.md"));
+assert.ok(governanceBaseline.includes("references/verification.md"));
 
 // broad nouns alone must NOT bloat skill pack
-assert.equal(selectSkillReferences({ task: "看看代码和测试" }).includes("references/capabilities/delivery.md"), false);
-assert.equal(selectSkillReferences({ task: "plan next steps" }).includes("references/capabilities/planning.md"), false);
+assert.equal(selectSkillReferences({ task: "看看代码和测试" }).includes("references/craft.md"), false);
+assert.equal(selectSkillReferences({ task: "plan next steps" }).includes("references/craft.md"), false);
 
 const implementRefs = selectSkillReferences({ task: "落地实现这个修复" });
-assert.ok(implementRefs.includes("references/capabilities/delivery.md"));
+assert.ok(implementRefs.includes("references/craft.md"));
 
 const diagnoseRefs = selectSkillReferences({ task: "排查这个性能回归并定位原因" });
-assert.ok(diagnoseRefs.includes("references/capabilities/delivery.md"));
+assert.ok(diagnoseRefs.includes("references/craft.md"));
 
-assert.ok(selectSkillReferences({ task: "部署到生产前确认授权和回退" }).includes("references/dao/authority.md"));
-assert.ok(selectSkillReferences({ task: "验收这个旧任务是否已经完成" }).includes("references/dao/verification.md"));
-assert.ok(selectSkillReferences({ task: "恢复这个跨会话长期任务" }).includes("references/dao/continuity.md"));
+assert.ok(selectSkillReferences({ task: "部署到生产前确认授权和回退" }).includes("references/dao.md"));
+assert.ok(selectSkillReferences({ task: "验收这个旧任务是否已经完成" }).includes("references/verification.md"));
+assert.ok(selectSkillReferences({ task: "恢复这个跨会话长期任务" }).includes("references/support.md"));
 
 const readmeRefs = selectSkillReferences({ task: "整理 README 和 commit message" });
-assert.deepEqual(readmeRefs, baseline);
+assert.ok(readmeRefs.includes("references/craft.md"));
 
 const reviewRefs = selectSkillReferences({ task: "请 code review 这个 diff" });
-assert.ok(reviewRefs.includes("references/capabilities/review.md"));
+assert.ok(reviewRefs.includes("references/craft.md"));
 
 const routingPack = await loadSkillPack({ repoRoot });
 const referenceRouteCases = [
-  ["整理需求规格和方案取舍", "agent_loop", "references/capabilities/planning.md"],
-  ["整理交互设计说明和页面状态矩阵", "agent_loop", "references/capabilities/design.md"],
-  ["设计一个后台工作台页面", "agent_loop", "references/domains/ui-design.md"],
-  ["做游戏策划和关卡设计", "agent_loop", "references/domains/interactive-systems.md"],
-  ["诊断报错后落地修复", "agent_loop", "references/capabilities/delivery.md"],
-  ["下放 agent 做独立挑战", "agent_loop", "references/dao/leverage.md"],
-  ["启动多模型合议模式", "agent_loop", "references/techniques/consensus.md"],
-  ["出正式完整报告并做全仓审查", "agent_loop", "references/techniques/review-modes.md"],
-  ["处理冻结范围", "subagent", "references/dao/leverage.md"],
+  ["整理需求规格和方案取舍", "agent_loop", "references/craft.md"],
+  ["整理交互设计说明和页面状态矩阵", "agent_loop", "references/craft.md"],
+  ["设计一个后台工作台页面", "agent_loop", "references/craft.md"],
+  ["做游戏策划和关卡设计", "agent_loop", "references/craft.md"],
+  ["诊断报错后落地修复", "agent_loop", "references/craft.md"],
+  ["下放 agent 做独立挑战", "agent_loop", "references/support.md"],
+  ["启动多模型合议模式", "agent_loop", "references/support.md"],
+  ["出正式完整报告并做全仓审查", "agent_loop", "references/support.md"],
+  ["处理冻结范围", "subagent", "references/support.md"],
 ];
 for (const [task, mode, expectedReference] of referenceRouteCases) {
   const references = selectSkillReferences({ task, mode });
@@ -542,7 +542,7 @@ const external = await (await import("../../src/core/skill-discovery.mjs")).load
 });
 const composed = await composeTaskPromptPack({
   odaiPack,
-  odaiReferences: ["references/dao/authority.md"],
+  odaiReferences: ["references/dao.md"],
   externalSkills: [external],
 });
 assert.ok(composed.promptPack.includes("odai skill entry"));
@@ -556,7 +556,7 @@ const skillRun = await runMockTask({
 });
 assert.equal(skillRun.status, "ready");
 assert.ok(skillRun.skill.external.includes("demo-craft"));
-assert.ok(skillRun.skill.references.includes("references/dao/leverage.md"));
+assert.ok(skillRun.skill.references.includes("references/support.md"));
 assert.ok(skillRun.skill.promptPackBytes > 0);
 
 console.log("optimizations: ok");

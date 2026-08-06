@@ -1,4 +1,4 @@
 interface:
   display_name: "odai"
   short_description: "事由人定，路由实证；法随势变，成由验定；止于边界，成事而不妄为"
-  default_prompt: "使用 $odai 接住并完成这个任务：事由用户定义，以事实选择最轻充分路径，推进至可验证结果，止于授权与底线。"
+  default_prompt: "使用 $odai 完成这个任务：按当前表现分配自主权、制作方法和验证，推进到真实可交付结果，成事而不妄为。"
