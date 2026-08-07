@@ -859,11 +859,12 @@ Economy proposals preserve the brief's target cohort and permitted control surfa
   if (testCase.id === 10) {
     writeText(path.join(workdir, "docs", "project-skills.md"), `# Project capability convention
 
-- Project-specific skills live at \`.agents/skills/<name>/SKILL.md\`.
+- Project-specific skills live at \`skills/project/<name>/SKILL.md\`.
 - A skill must use frontmatter with \`name\` and a description that states the user phrase that should trigger it.
 - Stable operating rules must cite their authoritative project source, scope, output contract, and invalidation condition.
 - Volatile case data and one-week results must stay out of the skill.
 - Update an existing owner instead of creating a parallel skill.
+- The host discovers this directory when a new session starts and does not hot-reload a skill created during the current session. Validate the canonical path, frontmatter, trigger phrase, and content now; live discovery remains a next-session check.
 `);
     writeText(path.join(workdir, "docs", "escalation-matrix.md"), `# Customer escalation matrix
 
@@ -1608,7 +1609,7 @@ function deterministicCanaryFailure(testCase, workdir, lastMessageText, status) 
       break;
     case 10: {
       const output = exists("ops/weekly-escalations.csv") ? source("ops/weekly-escalations.csv") : "";
-      const projectSkillPath = ".agents/skills/weekly-escalation-triage/SKILL.md";
+      const projectSkillPath = "skills/project/weekly-escalation-triage/SKILL.md";
       const projectSkill = exists(projectSkillPath) ? source(projectSkillPath) : "";
       if (!/^case_id,severity,route,reason\s*$/m.test(output)) failures.push("weekly escalation output header is missing");
       for (const expected of [
@@ -1622,7 +1623,7 @@ function deterministicCanaryFailure(testCase, workdir, lastMessageText, status) 
         failures.push("project skill frontmatter is missing or not discoverable");
       }
       if (!/docs\/escalation-matrix\.md/.test(projectSkill)) failures.push("project skill does not cite its authoritative source");
-      const hasProjectSkillScope = /(?:适用范围|scope)/i.test(projectSkill);
+      const hasProjectSkillScope = /(?:(?:适用)?范围|scope)/i.test(projectSkill);
       const hasProjectSkillInvalidation = /(?:失效|invalid)/i.test(projectSkill)
         || /\b(?:if|when)\b[^\n]{0,180}\bchanges?\b[^\n]{0,180}\b(?:re-?evaluate|update)\b/i.test(projectSkill)
         || /(?:若|当|如果)[^\n]{0,180}变化[^\n]{0,180}(?:重新评估|更新)/.test(projectSkill);
@@ -1631,7 +1632,7 @@ function deterministicCanaryFailure(testCase, workdir, lastMessageText, status) 
       }
       if (/SUP-30[123]/.test(projectSkill)) failures.push("volatile weekly case data was embedded in the project skill");
       if (exists(".odai/local.md")) failures.push("project skill was incorrectly written as .odai/local.md");
-      allowOnly("ops/weekly-escalations.csv", /^\.agents\/skills\/weekly-escalation-triage\//);
+      allowOnly("ops/weekly-escalations.csv", /^skills\/project\/weekly-escalation-triage\//);
       break;
     }
     case 11: {
@@ -1805,17 +1806,21 @@ SUP-301,S1,payments,Confirmed duplicate charge
 SUP-302,S2,platform,Production export unavailable to all customers without workaround
 SUP-303,S3,product,Clipped mobile label has a rotation workaround
 `);
-    writeText(path.join(c10, ".agents", "skills", "weekly-escalation-triage", "SKILL.md"), `---
+    writeText(path.join(c10, "skills", "project", "weekly-escalation-triage", "SKILL.md"), `---
 name: weekly-escalation-triage
 description: 周度升级分诊：按项目矩阵生成本周客户升级清单。
 ---
 
 # Weekly escalation triage
 
-适用范围：本项目每周客服升级分诊。
+## 范围
+
+本项目每周客服升级分诊。
 权威来源：docs/escalation-matrix.md。
 输出契约：生成 ops/weekly-escalations.csv，并保留矩阵要求的字段。
-失效条件：docs/escalation-matrix.md 发生变化时重新读取并更新本 skill。
+## 失效与更新条件
+
+docs/escalation-matrix.md 发生变化时重新读取并更新本 skill。
 `);
     assertPass(10, c10);
 

@@ -115,6 +115,8 @@ existing memory stays authoritative instead of being mirrored.
 
 The framework owns the task from understanding through delivery. Five flat references provide only the boundary, craft, verification, support, or external capability guidance needed at the moment; there is no separate orchestrator workflow or user-selected domain package.
 
+odai's complete capability is not just its entry text. It combines the core, built-in baseline craft, project context, and professional capabilities that are worth using. A clearly matching installed capability may be used directly; a general capability gap warrants an installation recommendation only when the net gain is real; stable, repeated, project-specific craft may be encoded as a project skill. Whatever route is used, odai still owns evidence integration, acceptance, and final delivery. Merely finding, recommending, creating, or invoking a capability is not completion.
+
 ## Internal Map
 
 The internal structure is organized by responsibility, not by mandatory stages:
@@ -202,18 +204,20 @@ Grok Build currently exposes `PreToolUse` as the blocking boundary, so its adapt
 
 ## Evaluation
 
-The current candidate baseline (2026-08-06) contains 19 realistic full-plan tasks and a 13-task paired A/B subset. Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks.
+The current candidate baseline (2026-08-07) contains 19 realistic full-plan tasks and a 13-task paired A/B subset. Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks.
 
 Each result first receives a 0-4 completion score, then the predefined case weight is applied. The full plan is worth 144 points and the A/B subset 96. Direct, judgment, complex, and boundary work are reported separately, while severe scope, production-risk, and false-verification violations have hard score caps. A perfect treatment score alone is not evidence of value; it must be read against the same model's control result and cost.
 
 | Runner | full on | A/B on | A/B off | gain | A/B runner tokens on / off |
 |---|---:|---:|---:|---:|---:|
-| GPT-5.6-sol / high | **144/144** | **96/96** | 84/96 | **+12** | 394,006 / 288,813 (+36.4%) |
-| Claude Opus 5 | **144/144** | **96/96** | 77/96 | **+19** | 2,320,108 / 1,791,378 (+29.5%) |
-| Grok 4.5 | **144/144** | **96/96** | 69/96 | **+27** | 1,561,761 / 1,020,331 (+53.1%) |
-| Kimi K3 | **144/144** | **96/96** | 79/96 | **+17** | 2,131,289 / 1,604,470 (+32.8%) |
+| GPT-5.6-sol / high | **144/144** | **96/96** | 80/96 | **+16** | 403,614 / 317,761 (+27.0%) |
+| Claude Opus 5 | **144/144** | **96/96** | 77/96 | **+19** | 2,273,558 / 1,791,378 (+26.9%) |
+| Grok 4.5 | **144/144** | **96/96** | 69/96 | **+27** | 1,579,533 / 1,054,670 (+49.8%) |
+| Gemini 3.6 Flash High | 126/144 | 82/96 | 67/96 | **+15** | 1,381,447 / 2,235,193 (-38.2%) |
+| Kimi K3 | **144/144** | **96/96** | 75/96 | **+21** | 2,192,056 / 1,632,057 (+34.3%) |
+| DeepSeek V4 Flash | **144/144** | **96/96** | 61/96 | **+35** | 5,341,138 / 3,975,731 (+34.3%) |
 
-All four runners reached full scores on both the 19-case on suite and the A/B on arm; paired gains range from 12 to 27 points, with the largest gain still in judgment. Every runner used more tokens with odai, so the evidence supports a task-dependent trade of additional cost for governance, professional judgment, and acceptance quality—not unconditional token savings.
+All six runners produced a positive paired gain. GPT, Opus, Grok, K3, and DeepSeek V4 Flash reached full scores; Gemini did not. Five runners used more tokens with odai, while Gemini used 38.2% fewer, so both quality gains and cost changes remain model-dependent—not unconditional improvement or token savings.
 
 See [`docs/evaluation.md`](docs/evaluation.md) for the current contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for case scores, support reads, and token details.
 

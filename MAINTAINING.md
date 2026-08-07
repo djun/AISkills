@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 2026-08-06 当前候选已完成 GPT-5.6-sol / high、Claude Opus 5、Grok 4.5 与 Kimi K3 的复验；全量 on 均为 144/144，配对 A/B 分别为 96/84、96/77、96/69、96/79。完整结果见 [`docs/evaluation-results.md`](docs/evaluation-results.md)。
+- 2026-08-07 当前候选已完成 GPT-5.6-sol / high、Claude Opus 5、Grok 4.5、Gemini 3.6 Flash High、Kimi K3 与 DeepSeek V4 Flash 的全量 on 与配对 A/B；全量分别为 144/144、144/144、144/144、126/144、144/144 与 144/144。完整结果见 [`docs/evaluation-results.md`](docs/evaluation-results.md)。
 - 公开文档只保留当前结果；旧版本、试跑、复跑和临时模型故障由 Git 历史与临时证据承担。
 - 仓库的 skill / 评测冻结标签与 `cli/package.json` 的 npm 版本彼此独立。
 
@@ -104,7 +104,9 @@ node scripts/odai-canary-harness.mjs --plan plans/odai-ab-smoke.md --out /tmp/od
 
 全量 on 已在相同题面、fixture、runner 配置和 harness 语义下覆盖 A/B case 时，可以抽取对应 runner 证据，不为形式重复执行。仅评分契约变化时可用 `--rejudge-from` 重判冻结输出；模型、推理档、arm、题面、fixture、diff、status 和 token 仍须一致。重判不得改写 runner 输出，也不得把同一 case 的多次行为输出、分数或 token 拼成一条记录。
 
-评测对象是完整 odai 能力包：odai 自动调用 `ribao`、项目叠加层、项目 skill 或外部能力仍计入 odai 整体结果，不拆成组件成绩。结构性变化使旧 on 全量失效；局部变化只有在影响关系可说明、题面与 fixture 未变且该 case 未依赖变化语义时才可保留旧证据。读取轨迹可辅助判断但不能单独证明无影响。
+同一当前 skill 指纹、模型、题面、fixture 和评分语义下存在多份有效证据时，当前能力表可采用完成度最高的一份；必须整份采用该轮的 runner 输出、diff、status、裁判、读取轨迹与 token，不得跨轮拼接。这证明当前组合已展示的能力上限；稳定性另看各轮分布，旧指纹高分不迁移。
+
+评测对象是完整 odai 能力包：odai 自动调用 `ribao`、项目叠加层、项目 skill 或外部能力仍计入 odai 整体结果，不拆成组件成绩。只要同样达到题目的可观察验收、遵守授权并由 odai 统一收口，内置完成、借力已安装能力、经用户同意引入能力或创建项目能力可获得同样完成度；只发现、推荐、安装、创建或调用而未完成真实结果，不因流程加分。结构性变化使旧 on 全量失效；局部变化只有在影响关系可说明、题面与 fixture 未变且该 case 未依赖变化语义时才可保留旧证据。读取轨迹可辅助判断但不能单独证明无影响。
 
 原始 transcript、diff、status、manifest 和单次 report 留在 `.tmp/` 或临时目录，不进仓库。仓库只在 [`docs/evaluation-results.md`](docs/evaluation-results.md) 保留最近冻结指纹采用的最终结果；source 变化后必须显式标明旧成绩失效，不记轮次过程。
 
