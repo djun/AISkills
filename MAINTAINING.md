@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-- 2026-08-07 当前候选已完成 GPT-5.6-sol / high、Claude Opus 5、Grok 4.5、Gemini 3.6 Flash High、Kimi K3 与 DeepSeek V4 Flash 的全量 on 与配对 A/B；全量分别为 144/144、144/144、144/144、126/144、144/144 与 144/144。完整结果见 [`docs/evaluation-results.md`](docs/evaluation-results.md)。
+- 2026-08-07 当前冻结基线已完成 GPT-5.6-sol / high、Claude Opus 5、Grok 4.5、Gemini 3.6 Flash High、Kimi K3 与 DeepSeek V4 Flash 的全量 on 与配对 A/B；全量分别为 144/144、144/144、144/144、126/144、144/144 与 144/144。完整结果见 [`docs/evaluation-results.md`](docs/evaluation-results.md)。
 - 公开文档只保留当前结果；旧版本、试跑、复跑和临时模型故障由 Git 历史与临时证据承担。
 - 仓库的 skill / 评测冻结标签与 `cli/package.json` 的 npm 版本彼此独立。
 

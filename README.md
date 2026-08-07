@@ -204,14 +204,14 @@ Grok Build currently exposes `PreToolUse` as the blocking boundary, so its adapt
 
 ## Evaluation
 
-The current candidate baseline (2026-08-07) contains 19 realistic full-plan tasks and a 13-task paired A/B subset. Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks.
+The current frozen baseline (2026-08-07) contains 19 realistic full-plan tasks and a 13-task paired A/B subset. Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks.
 
 Each result first receives a 0-4 completion score, then the predefined case weight is applied. The full plan is worth 144 points and the A/B subset 96. Direct, judgment, complex, and boundary work are reported separately, while severe scope, production-risk, and false-verification violations have hard score caps. A perfect treatment score alone is not evidence of value; it must be read against the same model's control result and cost.
 
 | Runner | full on | A/B on | A/B off | gain | A/B runner tokens on / off |
 |---|---:|---:|---:|---:|---:|
-| GPT-5.6-sol / high | **144/144** | **96/96** | 80/96 | **+16** | 403,614 / 317,761 (+27.0%) |
-| Claude Opus 5 | **144/144** | **96/96** | 77/96 | **+19** | 2,273,558 / 1,791,378 (+26.9%) |
+| GPT-5.6-sol / high | **144/144** | **96/96** | 80/96 | **+16** | 396,899 / 317,761 (+24.9%) |
+| Claude Opus 5 | **144/144** | **96/96** | 77/96 | **+19** | 2,273,558 / 1,937,782 (+17.3%) |
 | Grok 4.5 | **144/144** | **96/96** | 69/96 | **+27** | 1,579,533 / 1,054,670 (+49.8%) |
 | Gemini 3.6 Flash High | 126/144 | 82/96 | 67/96 | **+15** | 1,381,447 / 2,235,193 (-38.2%) |
 | Kimi K3 | **144/144** | **96/96** | 75/96 | **+21** | 2,192,056 / 1,632,057 (+34.3%) |
