@@ -3,6 +3,10 @@
 
 # odai
 
+<p align="center">
+  <img src="assets/odai-readme-badge.png" alt="Dai, the odai mascot" width="720">
+</p>
+
 `odai` is a governance-powered general task-execution framework for AI agents.
 
 It embeds governance into execution: align the real objective, facts, assumptions, authorization, risks, and acceptance; then choose the shortest sufficient path, combine the right capabilities, act, verify, and keep moving until the task is genuinely deliverable. It does not replace the model's judgment with a rigid workflow.

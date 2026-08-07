@@ -3,6 +3,10 @@
 
 # odai
 
+<p align="center">
+  <img src="assets/odai-readme-badge.png" alt="odai 看板娘岱" width="720">
+</p>
+
 `odai` 是面向 AI agent 的治理内核驱动的通用任务执行框架。
 
 它把治理融入执行：对齐真实目标、事实、假设、授权、风险与验收，再选择最短充分路径、组合合适能力、行动、验证，并持续推进到真正可交付的结果；不会用僵硬流程替代模型判断。
