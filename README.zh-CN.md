@@ -183,6 +183,29 @@ npx skills add https://github.com/orziz/odai#old
 
 canonical source 都在 `skills/` 下。分发走 [skills.sh](https://skills.sh) 安装流程；本仓库不再维护各平台镜像产物。当前 source、验证、冻结与发布口径见 [MAINTAINING.md](MAINTAINING.md)，已冻结架构变更见 [CHANGELOG.md](CHANGELOG.md)。
 
+## Dai Codex 桌宠
+
+本仓库还提供可选的 Codex v2 桌宠 [Dai](pets/dai/)，包含 9 组标准动画和 16 个观察方向。安装 `odai` skill 不会自动安装桌宠。
+
+克隆或下载本仓库后，将两个运行文件复制到 Codex 的桌宠目录。
+
+Windows PowerShell：
+
+```powershell
+$petDir = Join-Path $env:USERPROFILE ".codex\pets\dai"
+New-Item -ItemType Directory -Force $petDir | Out-Null
+Copy-Item -LiteralPath "pets\dai\pet.json","pets\dai\spritesheet.webp" -Destination $petDir -Force
+```
+
+macOS 或 Linux：
+
+```bash
+mkdir -p "$HOME/.codex/pets/dai"
+cp pets/dai/pet.json pets/dai/spritesheet.webp "$HOME/.codex/pets/dai/"
+```
+
+然后打开 **Codex 设置 → Pets**，刷新列表并选择 **dai**；也可以用 `/pet` 打开桌宠选择器。预览和格式说明见 [Dai 分发包 README](pets/dai/README.md)。
+
 ## 可选 Hooks 增强
 
 skill 负责判断，Hooks 只把项目已经明确的边界变成机械护栏。它们默认不安装、不启用，也不改变 `odai` 的主流程；只有项目创建 `.odai/hooks.json` 后，才会保护显式只读路径，并在收口时运行显式声明且与当前变更相关的验收命令。没有策略文件时完全静默。
