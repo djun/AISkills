@@ -183,28 +183,30 @@ Use `old` only if you still depend on the previous standalone skill layout or ar
 
 Canonical source lives in `skills/`. Distribution is handled through the [skills.sh](https://skills.sh) install flow; this repository no longer keeps per-platform mirror outputs. See [MAINTAINING.md](MAINTAINING.md) for the current source, validation, freeze, and release rules, and [CHANGELOG.md](CHANGELOG.md) for frozen architecture changes.
 
-## Dai Codex Pet
+## Codex Pets
 
-This repository also includes [Dai](pets/dai/), an optional Codex v2 desktop pet with nine standard animations and 16 look directions. Installing the `odai` skill does not install the pet automatically.
+This repository includes two optional Codex v2 desktop pets. [dai](pets/dai/) is the black-and-teal original; [odai](pets/odai/) is the silver-white and blue variant. Each includes nine standard animations and 16 look directions. Installing the `odai` skill does not install either pet automatically.
 
-From a cloned or downloaded copy of this repository, copy the two runtime files into your Codex pet directory.
+From a cloned or downloaded copy, choose a pet and copy its two runtime files into the matching Codex pet directory.
 
-Windows PowerShell:
+Windows PowerShell (`odai`; replace both occurrences with `dai` for the black version):
 
 ```powershell
-$petDir = Join-Path $env:USERPROFILE ".codex\pets\dai"
+$petName = "odai"
+$petDir = Join-Path $env:USERPROFILE ".codex\pets\$petName"
 New-Item -ItemType Directory -Force $petDir | Out-Null
-Copy-Item -LiteralPath "pets\dai\pet.json","pets\dai\spritesheet.webp" -Destination $petDir -Force
+Copy-Item -LiteralPath "pets\$petName\pet.json","pets\$petName\spritesheet.webp" -Destination $petDir -Force
 ```
 
 macOS or Linux:
 
 ```bash
-mkdir -p "$HOME/.codex/pets/dai"
-cp pets/dai/pet.json pets/dai/spritesheet.webp "$HOME/.codex/pets/dai/"
+pet_name="odai" # use "dai" for the black version
+mkdir -p "$HOME/.codex/pets/$pet_name"
+cp "pets/$pet_name/pet.json" "pets/$pet_name/spritesheet.webp" "$HOME/.codex/pets/$pet_name/"
 ```
 
-Then open **Codex Settings → Pets**, refresh the list, and select **dai**. You can also open the pet picker with `/pet`. See the [Dai package README](pets/dai/README.md) for its preview and format details.
+Then open **Codex Settings → Pets**, refresh the list, and select `dai` or `odai`. You can also open the pet picker with `/pet`. See the [dai package README](pets/dai/README.md) or [odai package README](pets/odai/README.md) for previews and format details.
 
 ## Optional Hook Guardrails
 
