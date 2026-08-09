@@ -185,7 +185,16 @@ Canonical source lives in `skills/`. Distribution is handled through the [skills
 
 ## Codex Pets
 
-This repository includes two optional Codex v2 desktop pets. [dai](pets/dai/) is the black-and-teal original; [odai](pets/odai/) is the silver-white and blue variant. Each includes nine standard animations and 16 look directions. Installing the `odai` skill does not install either pet automatically.
+This repository includes two optional, complementary Codex v2 desktop pets rather than two simple recolors:
+
+| Pet | Character | Personality | Role |
+|---|---|---|---|
+| [Dai (`dai`)](pets/dai/) | Black-and-teal operations officer | Calm, reliable, restrained | Moves the task forward, executes, verifies, and closes the work |
+| [Odai (`odai`)](pets/odai/) | Silver-white and blue-violet mascot | Lively, friendly, curious | Keeps you company, reacts to progress, cheers you on, and celebrates completion |
+
+Dai gets the work done; Odai makes the process feel accompanied. Each includes nine standard animations and 16 look directions. Installing the `odai` skill does not install either pet automatically.
+
+See the separate character bibles for [Dai](docs/阿岱%20设定档案.md) and [Odai](docs/欧黛%20设定档案.md).
 
 From a cloned or downloaded copy, choose a pet and copy its two runtime files into the matching Codex pet directory.
 

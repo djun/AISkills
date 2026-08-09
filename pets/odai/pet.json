@@ -1,7 +1,7 @@
 {
   "id": "odai",
-  "displayName": "odai",
-  "description": "odai 的银白蓝紫行事官，陪你推进并验证 Codex 任务。",
+  "displayName": "欧黛 Odai",
+  "description": "odai 的银白蓝紫吉祥物：活泼亲近，负责陪伴、卖萌、打气与回应任务进展。",
   "spriteVersionNumber": 2,
   "spritesheetPath": "spritesheet.webp"
 }
