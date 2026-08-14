@@ -22,6 +22,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { emitCanaryIsolation } from "./canary-isolation.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -109,6 +110,7 @@ function readSessionUsage(sessionId) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+emitCanaryIsolation("kimi");
 const prompt = readFileSync(args.promptFile, "utf8");
 const skillsDir = path.join(args.cwd, "skills");
 mkdirSync(skillsDir, { recursive: true });

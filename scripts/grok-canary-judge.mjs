@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { emitCanaryIsolation } from "./canary-isolation.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -33,7 +34,7 @@ function parseArgs(argv) {
 
 function resolveGrokBin(bin) {
   if (bin !== "grok" && existsSync(bin)) return bin;
-  const home = process.env.USERPROFILE || process.env.HOME || "";
+  const home = process.env.ODAI_CANARY_SOURCE_HOME || process.env.USERPROFILE || process.env.HOME || "";
   const candidate = path.join(home, ".grok", "bin", process.platform === "win32" ? "grok.exe" : "grok");
   if (existsSync(candidate)) return candidate;
   return bin;
@@ -50,6 +51,7 @@ function readStdin() {
 }
 
 const args = parseArgs(process.argv.slice(2));
+emitCanaryIsolation("grok", "judge");
 const prompt = await readStdin();
 if (!prompt.trim()) {
   console.error("judge prompt on stdin is empty");

@@ -2,6 +2,40 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-14 — DSH Plugin 与 Agent 首发
+
+### 分发与配置
+
+- 新增 `odai-dsh-plugin@0.0.1`：把 canonical skill、共享 runtime、治理、自动路由和证据监听作为 profile-wide DSH bundle 分发。
+- 新增 `odai-dsh-agent@0.0.1`：安装包含同一 canonical skill 与 runtime 的 session-scoped `Odai` Agent preset，不依赖 Plugin，也不修改 profile bundle。
+- 两个包都不内置 planner、executor 或 reviewer 模型映射。用户自然指定责任、provider、model 与可选推理档后，controller 通过 `odai_routing_config` 持久化到 `$DSH_HOME/odai/routing.json`；未使用的缺失责任不提示，真实需要时才询问。
+- Plugin 适合一个 profile 全局生效，Agent 适合按 session 选择；通常二选一。两者刻意共存时读取同一用户映射，并按 scope shadow prompt、去重 route/tool evidence、保持权限拒绝单调。
+
+### 路由与保护
+
+- 默认 `auto` 保持普通任务由当前 controller 直接闭环；配置后的完整上下文判断缺口同 turn upgrade，明确独立规划或复核才使用 child。`execute`、`observe`、`off` 保留为显式模式。
+- planner、executor、reviewer 的缺失、失败或不可信高影响路线统一 fail-closed。损坏 routing store 不阻止治理加载；下一次用户明确 set 时保留损坏副本并自动修复。共享 store 更新使用跨进程锁和原子替换。
+- 真实 DSH load、Agent Web live-session 工具 dispatch、Plugin/Agent 单测、隔离 runner 和 dry-run pack 均通过；当前质量与成本口径见 [`docs/routing-results.md`](docs/routing-results.md)。
+
+## 2026-08-13 — 证据合并、跨平台隔离与可选宿主路由
+
+### 能力与架构
+
+- 普通 odai 继续以单一充分能力总控直接闭环；总控是持续持有目标、全局状态、失败恢复与最终交付的任务线程，不是必须额外启动的角色。
+- 新增可选宿主路由安装、更新、卸载与运行时核验。`auto` 只注册能力并保持普通单总控路径；用户明确选择且真实任务证明净收益时，才用从任务起点显式运行的 `stage` runner 机械分离 planner、executor 或 reviewer。
+- 默认 `auto` 不安装每轮路由 Hook 或机械 runner；Codex 安装会保留无关配置并记录原始总控设置，卸载时在无漂移前提下精确恢复。
+- Codex 提供显式 `stage` runner、四责任注册与实际模型 / usage 核验；Claude Code 与 GitHub Copilot 只生成角色配置，未取得等价宿主证据前不宣称同等自动化。
+- 路由角色正文保持单一 owner，宿主目录只保留必要外壳。实测证明 `PreToolUse` 透明接管无法承接外层只读证据、会重复调查，因此退役能力路由 Hook；项目写入护栏 Hook 仍独立保留。
+
+### 评测与报告
+
+- 普通模型结果表合并 GPT-5.6 Sol、Claude Opus 5、Grok 4.6 / 4.5、Gemini 3.6 Flash High、DeepSeek V4 Pro / Flash 与 Kimi K3。八个 runner 的历史配对 A/B 均取得正增益；除 Gemini 外，其余全量 on 与 A/B on 均满分。
+- 新增统一的 `odai-canary-isolation/v1`：Codex / GPT、Claude Code 及兼容 provider、Grok、Kimi、Antigravity / Gemini、OpenAI-compatible runner 与 judge 分别使用隔离 HOME，只复用鉴权或连接材料；off 不加载 odai、ribao、项目叠加层、仓库指令、路由、Hooks、插件、MCP、记忆或旧会话。旧表保留为隔离契约前的历史能力证据，不冒充已按新口径重跑。
+- 指纹回归复现用途，不再因未触达题目运行语义的路由资产、维护文档或其他无关变化整表作废；受影响 case 仍必须整份替换 runner、diff、status、judge 与 token 证据。
+- GPT-5.6 Sol 全量主口径采用可拆分的 3,698,792 总处理 token，并同步披露 554,088 非缓存输入加输出；旧 618,944 CLI footer 只作历史口径说明。
+- 模型全量 / A/B 与可选宿主路由分成两份报告。正式报告不记录失败管线、复跑流水、临时目录或已退役角色实验。
+- 默认 `auto` 的 C01 对照为 4/4，100% 使用 Luna/max，未启动其他责任；历史强制预规划全量只作为退役压力对照，不冒充按需智能路由。
+
 ## 2026-08-07 — 轻量通用成事内核
 
 ### 架构与思想

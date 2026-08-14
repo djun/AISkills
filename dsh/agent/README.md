@@ -1,0 +1,86 @@
+# odai dsh agent
+
+`odai-dsh-agent` installs a selectable, session-scoped Odai Agent preset for DeepSeek Harness (`dsh`). It is independent from the profile-wide `odai-dsh-plugin`: installing this package does not edit any DSH profile or activate a global bundle.
+
+The installed preset is self-contained:
+
+```text
+$DSH_HOME/.agent-presets/odai/
+  agent.cordis.yml
+  preset.yml
+  runtime/*.mjs
+  skills/odai/**
+  .odai-agent.json
+```
+
+The composition is pinned to the standard agent surface from `@deepseek-ai/dsh@0.1.0-rc.6`, then adds the scoped Odai runtime in default `auto` mode. Host-owned persistence, sandbox, approval, registries, and base controller selection remain in the selected DSH profile. Ordinary requests stay on that controller. A complete contextual high-impact decision gap upgrades the same turn only when a planner mapping exists; the controller's durable `request/header` proves the actual route. Explicit independent planning/review requests still start a verified child when their mappings exist. `execute` remains an explicit all-delegation comparison mode. `observe` changes no model and starts no child; it injects a local evidence-and-decision protocol and makes an unresolved high-impact turn read-only.
+
+## Install
+
+With DSH already installed, run the single Agent package command below. The package already contains the canonical skill and shared runtime; it does not require the Plugin or a separate skill installation:
+
+```sh
+npx odai-dsh-agent install
+```
+
+The installer checks `dsh -V` and currently requires exactly `0.1.0-rc.6`; a preset built from one developer-preview composition is not silently installed into another version.
+
+`DSH_HOME` is honored. An explicit location can be supplied without changing the environment:
+
+```sh
+npx odai-dsh-agent install --dsh-home /path/to/dsh-home
+```
+
+Open a new DSH session and select `Odai` from the Agent preset picker. Existing sessions retain the preset they were composed with.
+
+In `dsh@0.1.0-rc.6`, the one-shot `--profile headless` driver creates a global agent directly and neither mounts nor accepts a session Agent preset. Automated Agent runs must create a Web session with `agentPreset: odai`; use the profile-wide Plugin for one-shot headless tasks.
+
+The installer copies through a mode-tightened staging directory and atomically publishes the preset. Updates verify every previously managed file first, refuse to overwrite local edits, and always change the composition generation key so new sessions in a running DSH process do not reuse stale runtime code.
+
+DSH classifies this as a `trust: user` preset. User presets have the same privileges as shell access, so install only reviewed package versions; the installer repeats this trust notice in both plain and JSON output.
+
+## Responsibility models
+
+The Agent ships no planner, executor, or reviewer model mapping. It stays quiet when an unconfigured responsibility is not needed. If a real task gap needs one, Odai says which responsibility is missing, confirms that no route ran, and asks for the provider, model, and optional reasoning effort in natural language. For example:
+
+```text
+规划用 provider-x/model-plan，推理档 high。
+执行模型设为 provider-x/model-y。
+验收改用 provider-z/model-review，推理档 max。
+```
+
+The controller calls `odai_routing_config` to persist that explicit choice. The user does not edit Agent files, YAML, or JSON and does not add trigger terms to later tasks. Mappings live in `$DSH_HOME/odai/routing.json`, outside the managed preset, so installer updates do not report them as drift. Changes apply from the next user turn. If reasoning effort is omitted, the target provider/model uses its own default rather than inheriting the source controller's setting. Plugin and Agent read the same store when both are deliberately present.
+
+Planner, executor, and reviewer are independent optional responsibilities. If any needed one has no mapping, high-impact work fails closed and remains read-only; lower-impact work continues only where it does not depend on the missing independent responsibility. Odai never chooses a model on the user's behalf.
+
+## Status and uninstall
+
+```sh
+npx odai-dsh-agent status
+npx odai-dsh-agent status --json
+npx odai-dsh-agent uninstall
+```
+
+`status` reports `absent`, `installed`, or `drifted`. Update and uninstall fail closed when managed files were changed or unmanaged files were added. Uninstall also refuses while `agent-presets.default` still names `odai`; select another default first so the next session cannot fail on a missing preset.
+
+## Plugin versus Agent
+
+Use only the surface that matches the desired scope:
+
+- `odai-dsh-plugin`: profile-wide governance for every preset in that profile.
+- `odai-dsh-agent`: selectable Odai governance for only sessions using this preset.
+- both: supported only for a deliberate combination of profile-wide and Agent-scoped behavior; normally redundant, so it is not the default recommendation.
+
+When both are deliberate, durable tool and route evidence is deduplicated and denials remain monotonic. Neither package installs or changes the provider-neutral `odai-cli`.
+
+## Development
+
+`dsh/runtime/` and `skills/odai/` remain the only editable sources. `npm pack` generates the preset's `runtime/` and `skills/` directories and removes them immediately afterward:
+
+```sh
+npm --prefix dsh/agent test
+npm --prefix dsh/agent run verify:dsh
+npm --prefix dsh/agent run pack:dry-run
+```
+
+The DSH verification uses a temporary home and one isolated Web process. It creates standard and Odai sessions, proves the canonical prompt appears only for Odai, dispatches `odai_routing_config` through the live Odai session and checks its persisted mapping, and proves the child write guard does not leak into the standard preset.

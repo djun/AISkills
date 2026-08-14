@@ -10,6 +10,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { emitCanaryIsolation } from "./canary-isolation.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -38,7 +39,7 @@ function parseArgs(argv) {
 
 function resolveCodexBin(bin) {
   if (bin !== "codex" && existsSync(bin)) return bin;
-  const home = process.env.USERPROFILE || process.env.HOME || "";
+  const home = process.env.ODAI_CANARY_SOURCE_HOME || process.env.USERPROFILE || process.env.HOME || "";
   const desktopBinRoot = path.join(process.env.LOCALAPPDATA || "", "OpenAI", "Codex", "bin");
   const candidates = [
     path.join(home, ".codex", ".sandbox-bin", process.platform === "win32" ? "codex.exe" : "codex"),
@@ -66,6 +67,7 @@ function readStdin() {
 }
 
 const args = parseArgs(process.argv.slice(2));
+emitCanaryIsolation("codex", "judge");
 const prompt = await readStdin();
 if (!prompt.trim()) {
   console.error("judge prompt on stdin is empty");
@@ -77,6 +79,9 @@ const cmd = [
   codex,
   "exec",
   "--ephemeral",
+  "--ignore-user-config",
+  "--ignore-rules",
+  "--skip-git-repo-check",
   "--sandbox", "read-only",
   "--model", args.model,
   "-c", `model_reasoning_effort=${JSON.stringify(args.reasoningEffort)}`,

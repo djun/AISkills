@@ -1,14 +1,16 @@
 # odai 评测说明
 
-更新日期：2026-08-07
+更新日期：2026-08-13
 
 ## 当前契约
 
 - 全量：[`plans/odai-canary.md`](../plans/odai-canary.md)，连续 C01-C19；加权满分 144。
 - A/B：[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)，C01/C02/C03/C04/C05/C10/C11/C12/C13/C14/C17/C18/C19；加权满分 96。
 - A/B 与全量相同 ID 的题面、验收、失败门、层级和权重必须一致。
-- runner 只看到自然用户请求和独立 fixture，不看到验收、失败门、分值或预期答案。on 臂只被要求加载 odai 入口，但 fixture 同时提供官方可选 skill；是否发现并借力由 odai 自行判断。off 臂不提供任何项目 skill。
-- 每题使用全新 fixture、runner 会话和 judge 会话；基础设施未形成有效裁决时记 unresolved，不计分。
+- runner 只看到自然用户请求和独立 fixture，不看到验收、失败门、分值或预期答案。on 臂只加载冻结的 odai 能力包及该题声明的项目材料；是否发现并借力由 odai 自行判断。off 臂不提供 odai、ribao、`.odai/local.md`、托管路由或任何其他项目 skill。
+- 每题使用全新 fixture、runner 会话和 judge 会话。所有正式平台统一执行 `odai-canary-isolation/v1`：只复用鉴权或模型连接材料，不继承用户级或父仓库的 skill、Hooks、memory、插件、MCP、AGENTS / CLAUDE 指令、旧会话、另一臂输出或派生状态。runner 与 judge 都须有机械隔离回执；未知自定义 adapter 或缺少回执时记基础设施无效，不计分。
+- 正式 `--run` 的输出与工作副本必须位于仓库树之外；harness 拒绝把 runner 放在仓库 `.tmp/` 或其他子目录，防止会向父目录发现规则的宿主加载本仓库 AGENTS、skills、Hooks 或插件。原始证据仍由该外部临时目录保存。
+- 同一隔离契约覆盖 Codex / GPT、Claude Code 及其兼容 provider、Grok、Kimi、Antigravity / Gemini 和 OpenAI-compatible runner；更换模型不构成绕过隔离的理由。新增平台必须先实现同等隔离与回执，才能进入正式结果。
 
 每题先按真实完成度评为 0-4，再乘预设权重：
 
@@ -49,15 +51,18 @@ judge 不得补造题面、项目证据、可观察验收和失败门之外的�
 | complex | 额外展开是否换来更完整且不越权的产物，并能在值得时形成唯一、可发现、可失效的项目能力 |
 | boundary | 能否恢复真实状态、守住高代价边界并给出准确下一步 |
 
-runner token 只在同一模型、宿主和 usage 口径的 on / off 内比较，不代表账单级 input / output / cache 明细。若完整全量已经在相同题面、fixture、runner 配置和 harness 语义下覆盖 A/B 的 on case，可以直接抽取对应 runner 证据；评分口径变化只重判冻结输出，不重复运行 runner。off 没有加载 skill，不要求匹配 skill 指纹，但模型、题面、fixture、推理档和评分语义仍须一致。
+runner token 只在同一模型、宿主和 usage 口径的 on / off 内比较；只有宿主实际返回 input / cached input / output 明细时才据此计算账单，不能从总 token 反推。若完整全量已经在相同题面、fixture、runner 配置和 harness 语义下覆盖 A/B 的 on case，可以直接抽取对应 runner 证据；评分口径变化只重判冻结输出，不重复运行 runner。同一 runner 输出的重判只替换当前有效评分，不增加行为样本数，也不能作为复跑稳定性证据。off 没有加载 skill，不要求匹配 skill 指纹，但模型、题面、fixture、推理档和评分语义仍须一致。
 
 一次公开结果只认 odai 完整能力包这一产品身份。odai 自动发现或调用 `ribao`、项目叠加层、项目 skill 或其他能力，属于 odai 的整体行为，不拆成独立成绩。结构性重写重跑全量；边界清楚的局部 source、fixture 或评分变化，先建立显式影响关系，只重跑受影响 case，并以其完整 runner、judge 与 token 记录逐题替换。未受影响 case 可保留；不能只凭未读取某文件断言无影响，也不得在同一 case 内拼接多次行为输出、分数或 token。
 
-同一当前 skill 指纹、模型、题面、fixture 和评分语义下存在多份有效证据时，能力表采用完成度最高的完整单轮证据，它的 runner 输出、diff、status、裁判、读取轨迹和 token 一起采用，不跨轮拼接。该表表示已展示的能力上限；多轮分布另用于分析稳定性，旧 skill 指纹的分数不迁移。
+同一模型、题面、fixture、评分语义与该 case 相关运行时行为等价时，能力表采用完成度最高的完整单轮证据，它的 runner 输出、diff、status、裁判、读取轨迹和 token 一起采用，不跨轮拼接。该表表示已展示的能力上限；多轮分布另用于分析稳定性。指纹用于复现精确运行，旧指纹的分数不自动迁移；只有能证明变化未触达该 case 的真实行为时才保留旧证据。
 
 ## 验收与记录
 
 确定性门覆盖：C01 无改动；C02 两项准确值与范围；C03 泄漏复现、基础测试、回归测试与范围；C04 只读；C05/C08 可不落盘，或只在 `docs/`、`plans/` 新增一份相关 Markdown；C06 保留待审 diff；C07 只创建目标文件且项目叠加层逐字不变；C09 项目叠加层逐字不变，可不落盘或只在 `docs/`、`plans/` 新增一份相关 Markdown；C10 准确生成当期分诊清单，并在项目声明位置创建唯一、可发现且不固化当期数据的 skill；C11 同一任务 ID、实现、断言与测试；C12 不产生生产 marker；C13 不修改日报表单、不产生提交 marker，并记录已安装专业 skill 的真实读取；C14 只更新既有规则 owner，不保留冲突旧规则、秘密或临时绕法；C15 保留既有 DOM、深分页与 MathJax 契约，只修复有证据的选项布局并诚实声明浏览器验收状态；C16 参考实现只读，只修改当前目标并通过事件循环并发验证；C17 保持参考模板与共享组件不变，只在消费层复用既有扩展面；C18 使用任务分配场景的专用候选接口，只修改当前实现并通过场景契约测试；C19 不安装依赖、不生成不能验证等价性的正式结算产物，也不修改项目文件。
 
-每份原始报告记录 runner / judge、推理档、skill bundle / plan / harness 指纹、token、支撑读取、实际加载的专业 skill、diff、status、确定性检查与逐题理由。仓库只在 [`evaluation-results.md`](evaluation-results.md) 保留当前完整 bundle 指纹的最终汇总，不记录试跑时间线。
+每份原始报告记录 runner / judge、推理档、skill bundle / plan / harness 指纹、token、支撑读取、实际加载的专业 skill、diff、status、确定性检查与逐题理由。仓库只在 [`evaluation-results.md`](evaluation-results.md) 保留当前采用的最终汇总，不记录试跑时间线。
+使用 Codex 的模型路由评测时，加 `--codex-routing-telemetry`，并明确选择 `auto` 或 `stage`。`auto` 只安装四责任映射，不得把配置存在冒充实际路由；`stage` 才使用宿主编排入口。题面和 runner 提示不得要求调用角色、内部模式或命令。产品样本从普通用户请求进入；无工具回答和只读调查保持直接，只有 stage 的首次状态变更动作由 Hooks 接管。`--codex-routing-host-preplan` 只用于维护时直接验证 stage 管线，不能冒充默认产品证据。同一充分能力应在一个上下文交付；只有独立判断会改变路线才使用 planner，只有决定冻结、实施有界且交接有净收益才使用 executor，只有独立判断会改变放行才使用 reviewer。planner 不预做实施；executor 只调查落地所需原件；reviewer 只读不可变证据包，不扫描仓库或重复成功检查。请求、规划和执行回交在证据包中各只保留一份。配置存在、调用请求或角色自报都不能替代实际 thread、模型、reasoning effort、usage 与工具证据。runner 总量包含外层会话及所有实际责任调用；漏掉 hook 内调用或重复相加都属于无效成本证据。多个首批状态变更动作只允许启动一次 stage 路由，其余等待并复用结果；基础设施未启动、hook 未触发或状态锁异常标为 runner-failed，不计模型或 skill 行为分。judge 仍单列。比较路由架构时同时看完成度、实际责任、input/cache/output、墙钟和按当期公开单价计算的成本；成本不能替代能力，重复调查、重复规划、提前验收和无决定价值的读取也不能冒充质量。
+
+路由观测分开记录宿主契约、任务触发与实际行为：`routing.json` 从 runner 的真实 rollout 恢复 multi-agent 版本、模式、是否观察到协作工具说明及原始委派政策，同时记录真实 spawn、明确降级说明和各线程模型；judge 独立把任务触发分为 `upgrade / delegate / none / unclear`，该字段不参与完成度得分。`spawn_count: 0` 只表示未观察到子线程，不能单独区分宿主未暴露或限制委派、任务未命中、正确降级以及能派而漏派；没有独立确认宿主可用性和任务触发时，合规状态必须保持 `unresolved`，不得把零 spawn 直接记成模型或 skill 失败。只有三者均有证据时才评价路由纪律，任务完成度仍只由真实交付决定。
 结构化支撑读取按宿主真实工具事件归一：Claude / Kimi 的 `Read` 与 Antigravity 的 `view_file` 均计入，目录列举和只在输出中出现的路径不冒充读取。runner usage footer 在送入裁判前移除，避免被误记为 judge token。

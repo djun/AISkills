@@ -23,6 +23,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { emitCanaryIsolation } from "./canary-isolation.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -292,6 +293,7 @@ function emitToolUse(call, input) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+emitCanaryIsolation("openai-compatible");
 const root = realpathSync(args.cwd);
 const prompt = readFileSync(args.promptFile, "utf8");
 const { apiRoot, apiKey } = loadConnection(args);

@@ -72,6 +72,46 @@ npx skills add https://github.com/orziz/odai --skill odai
 
 你不需要记住内部结构，也不需要选择方法论。`odai` 会根据任务和项目证据自动判断处理深度、所需能力、领域知识和验证强度。
 
+### DeepSeek Harness 独立包
+
+DSH 用户可以按需要独立安装两种形态：
+
+```sh
+# 对一个 profile 中的所有 agent preset 生效
+dsh plugin --profile web add odai-dsh-plugin
+
+# 安装可选择、按 session 生效的 Odai Agent preset
+npx odai-dsh-agent install
+```
+
+Plugin 安装命令要求 `pnpm` 已在 `PATH` 中；Agent 安装器当前严格要求 `dsh@0.1.0-rc.6`。两个包都已经包含 canonical Odai skill 与共享 DSH runtime。Plugin 无需另装 skill 或 Agent；Agent 也无需另装 skill 或 Plugin。需要 profile-wide 行为就选 Plugin，需要可选择的专用 preset 就选 Agent。两者同时安装通常是重复的，只适合刻意组合这两种作用域。现有 provider-neutral `odai-cli` 继续作为独立产品。
+
+两个 DSH 包都不会自行选择 planner、executor 或 reviewer 模型。用户只需自然地告诉 Odai，例如“规划用 provider/model，推理档 high”，模型就会为 Plugin 和 Agent 共用的机制持久化这项明确选择。真实任务需要某项尚未配置的职责时，Odai 会说明缺少哪一项并询问模型，而不会声称该路线已经运行。
+
+包边界、自然语言配置与验证方式见 [`dsh/README.md`](dsh/README.md)。
+
+### 宿主能力路由
+
+用户只在首次设置时说明“谁负责什么”，或让 odai 按宿主真实能力目录推荐映射。确认并安装后，项目持久保存这份映射；之后任何对话和操作仍只用 `/odai` 或自然语言交任务，不再声明模型、角色、规划模式或路由命令，也不需要观看内部交接。模型变化时原地更新一次映射即可。
+
+总控是持续持有目标、全局状态、修正回路与最终交付的任务线程，不是每轮额外启动的一名角色。判断、实施与验收是内部责任，不是用户工作流：同一能力足够就一把做完；映射确实提供不同责任能力时，宿主自动取得所需判断、实施或验收，再把唯一结果送回当前对话。可靠的无工具回答保持直答；后续对话自动承接最近交付和未决项，不要求用户重述。
+
+这项路由受宿主能力约束，单靠 Skill 文本不能机械保证。宿主不能核实换档或委派时，odai 使用单一充分总控继续完成安全可做的部分，不虚构升档或下放。路由器不是普通使用的前置步骤；只有用户要求托管能力路由时才安装。
+
+托管能力路由与下文项目护栏 Hooks 是两套机制。路由只注册宿主角色；实验性 `stage` 只提供从任务起点显式运行的 runner，不注入隐藏的每轮 Hook。项目护栏只执行项目明确声明的只读路径和验收命令，不负责模型路由。
+
+受支持宿主的用户需要托管角色路由时，不用找路径、填写模型或手工合并配置；安装 skill 后直接说：
+
+```text
+/odai 为当前项目安装并验证能力路由。
+```
+
+odai 会从当前宿主的真实能力目录选择四项责任映射，说明持久化影响并请求一次确认，然后安装并检查冲突。默认 `auto` 只注册能力：由单一总控直接闭环，planner、executor、reviewer 仍只在独立判断或有界交接能改变结果时按宿主真实能力调用，不增加隐藏的每轮前置流程。只有用户明确选择且真实任务证明净收益时，才安装实验性 Codex `stage`；它必须从任务边界开始，让规划和执行共用一条证据链。可靠直答和只读查询不为展示路由调用其他角色。
+
+不再使用时可以说“用 odai 卸载当前项目的能力路由”。安装器会合并既有宿主设置，记录原始 Codex 总控配置以便精确恢复，只删除清单中仍未被外部修改的托管文件，并保留无关设置；安装、更新或实际卸载后须开启新会话。默认只影响当前项目。自动安装器可为 Codex、Claude Code 与 GitHub Copilot CLI 生成托管角色配置；只有明确启用的 Codex `stage` 额外提供从任务起点执行的 runner 和实际模型核验，另外两个宿主尚未取得等价证据时不能宣称同等程度的自动路由。
+
+只有明确启用 `stage` 时，`.codex/odai-run-routing.mjs` 才作为显式实验与维护测试面安装；它不是日常透明入口。默认 `auto` 不安装它；两种策略都不安装路由 Hook。
+
 ## 它怎么判断
 
 `odai` 持续判断四个维度：
@@ -132,7 +172,7 @@ odai 的完整能力不只是入口文本，而是“内核 + 内置基本工艺
 | `craft.md` | 规划、实施、设计、UI / 实时交互、文档与审查 |
 | `verification.md` | 验收、证据强度、完成判断与旧任务恢复 |
 | `support.md` | 自我校准、表现恢复、长期状态与记忆、关系连续性、合议与连续审查 |
-| `leverage.md` | 外部能力的发现、净增益、安装、创建、组合与 agent 协作 |
+| `leverage.md` | 能力升降、外部能力的发现、净增益、安装、创建、组合与 agent 协作 |
 
 领域深度由任务事实自动判断，不让用户选择内部资料包。游戏、UI、文档和软件任务先使用内置工艺，再只为明确缺口借用项目资料、宿主工具或专业技能；没有外部技能时，odai 仍完成当前模型能够可靠完成的部分。
 
@@ -170,7 +210,7 @@ npx skills add https://github.com/orziz/odai --skill odai
 
 ```bash
 # 安装仓库里的所有 skill
-npx skills add https://github.com/orziz/odai
+npx skills add https://github.com/orziz/odai --all
 
 # 安装更省 token 的分支
 npx skills add https://github.com/orziz/odai#mini
@@ -221,6 +261,8 @@ cp "pets/$pet_name/pet.json" "pets/$pet_name/spritesheet.webp" "$HOME/.codex/pet
 
 skill 负责判断，Hooks 只把项目已经明确的边界变成机械护栏。它们默认不安装、不启用，也不改变 `odai` 的主流程；只有项目创建 `.odai/hooks.json` 后，才会保护显式只读路径，并在收口时运行显式声明且与当前变更相关的验收命令。没有策略文件时完全静默。
 
+这是 odai 管理的唯一每轮 Hook。能力路由安装器不安装 Hook，也不能替代项目护栏。
+
 仓库维护一份无依赖运行时，按需生成宿主原生适配，不常驻六套平台镜像：
 
 ```bash
@@ -242,7 +284,7 @@ Grok Build 当前只有 `PreToolUse` 是可阻断边界，因此适配器不会�
 
 ## 评测
 
-当前冻结基线（2026-08-07）包含 19 条全量现实委托和其中 13 条配对 A/B。只有 2 题是明确低风险对照；其余只给自然症状、意见或宽泛请求，关键事实藏在项目代码、日志、brief、diff、任务状态和 runbook 中。
+当前结果覆盖 19 条全量现实委托和其中 13 条配对 A/B。只有 2 题是明确低风险对照；其余只给自然症状、意见或宽泛请求，关键事实藏在项目代码、日志、brief、diff、任务状态和 runbook 中。指纹用于复现精确运行；只要题面、fixture、模型配置、评分语义和该题实际依赖的 skill 行为等价，无关的路由资产或维护改动不会让整张成绩自动失效。Gemini 3.7 与 DeepSeek V4 Pro（DSH）按跨平台 `odai-canary-isolation/v1` 运行；其余公开行形成于该契约生效前，只保留为历史能力证据。
 
 结果先按真实完成度评为 0-4，再乘预设权重；全量满分 144，A/B 满分 96。direct、judgment、complex、boundary 四层分别报告，严重越权、生产风险和虚报验证另设硬封顶。on 臂满分本身不算价值证明，必须与同模型 off 的结果和成本一起看。
 
@@ -250,13 +292,16 @@ Grok Build 当前只有 `PreToolUse` 是可阻断边界，因此适配器不会�
 |---|---:|---:|---:|---:|---:|
 | GPT-5.6-sol / high | **144/144** | **96/96** | 80/96 | **+16** | 396,899 / 317,761（+24.9%） |
 | Claude Opus 5 | **144/144** | **96/96** | 77/96 | **+19** | 2,273,558 / 1,937,782（+17.3%） |
+| Grok 4.6 / default high | **144/144** | **96/96** | 67/96 | **+29** | 2,236,506 / 1,285,461（+74.0%） |
 | Grok 4.5 | **144/144** | **96/96** | 69/96 | **+27** | 1,579,533 / 1,054,670（+49.8%） |
+| Gemini 3.7 Flash High | 134/144 | 88/96 | 72/96 | **+16** | 1,813,203 / 1,580,475（+14.7%） |
 | Gemini 3.6 Flash High | 126/144 | 82/96 | 67/96 | **+15** | 1,381,447 / 2,235,193（-38.2%） |
 | Kimi K3 | **144/144** | **96/96** | 75/96 | **+21** | 2,192,056 / 1,632,057（+34.3%） |
+| DeepSeek V4 Pro / max（DSH） | **144/144** | **96/96** | 63/96 | **+33** | 2,131,373 / 1,652,030（+29.0%） |
 | DeepSeek V4 Flash | **144/144** | **96/96** | 61/96 | **+35** | 5,341,138 / 3,975,731（+34.3%） |
 
-六个 runner 的 A/B 均有正增益；GPT、Opus、Grok、K3 与 DeepSeek V4 Flash 达到满分，Gemini 未满分。五个 runner 的 on token 更高，Gemini 则下降 38.2%，因此质量增益和成本变化都依模型而异，不支持无条件提质或无条件省 token。
+九个 runner 的 A/B 均有正增益；除两款 Gemini 外，其余 runner 的全量 on 与 A/B on 达到满分。八个 runner 的 on token 更高，Gemini 3.6 则下降 38.2%，因此质量增益和成本变化都依模型而异，不支持无条件提质或无条件省 token。
 
-当前评测契约见 [`docs/evaluation.md`](docs/evaluation.md)，逐题分数、支撑读取和 token 明细见 [`docs/evaluation-results.md`](docs/evaluation-results.md)。
+当前评测契约见 [`docs/evaluation.md`](docs/evaluation.md)，模型全量 / A/B 的逐题分数、支撑读取和 token 明细见 [`docs/evaluation-results.md`](docs/evaluation-results.md)，可选宿主能力路由的质量、角色 usage、耗时和成本实验见 [`docs/routing-results.md`](docs/routing-results.md)。
 
 欢迎 star，也欢迎 PR。

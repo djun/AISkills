@@ -11,6 +11,7 @@
 import { spawnSync } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { emitCanaryIsolation } from "./canary-isolation.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -37,7 +38,7 @@ function parseArgs(argv) {
 
 function resolveClaudeBin(bin) {
   if (bin !== "claude" && existsSync(bin)) return bin;
-  const home = process.env.USERPROFILE || process.env.HOME || "";
+  const home = process.env.ODAI_CANARY_SOURCE_HOME || process.env.USERPROFILE || process.env.HOME || "";
   const candidates = [
     path.join(home, ".vscode", "extensions"),
     path.join(home, ".cursor", "extensions"),
@@ -56,6 +57,7 @@ function resolveClaudeBin(bin) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+emitCanaryIsolation("claude");
 const claude = resolveClaudeBin(args.claudeBin);
 const prompt = readFileSync(args.promptFile, "utf8");
 
@@ -74,6 +76,12 @@ const cliVersion = `${versionResult.stdout || ""}${versionResult.stderr || ""}`
 const cmd = [
   claude,
   "-p",
+  "--safe-mode",
+  "--disable-slash-commands",
+  "--no-session-persistence",
+  "--strict-mcp-config",
+  "--mcp-config", "{}",
+  "--settings", path.join(process.env.HOME || process.env.USERPROFILE || "", ".claude", "settings.json"),
   "--model", args.model,
   "--output-format", "stream-json",
   "--verbose",

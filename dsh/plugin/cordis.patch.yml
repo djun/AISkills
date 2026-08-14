@@ -1,0 +1,7 @@
+- insert:
+    - id: odai-governance
+      name: odai-dsh-plugin
+      config:
+        routing:
+          mode: auto
+          provider: spawn

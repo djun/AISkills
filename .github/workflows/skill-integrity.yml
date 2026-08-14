@@ -20,20 +20,64 @@ jobs:
       - name: Check maintenance scripts
         run: |
           node --check scripts/validate-odai-skill.mjs
+          node --check scripts/canary-isolation.mjs
           node --check scripts/odai-canary-harness.mjs
+          node --check scripts/antigravity-canary-runner.mjs
+          node --check scripts/claude-canary-runner.mjs
+          node --check scripts/codex-canary-judge.mjs
+          node --check scripts/dsh-canary-runner.mjs
+          node --check scripts/dsh-canary-runner.test.mjs
+          node --check scripts/grok-canary-judge.mjs
+          node --check scripts/grok-canary-runner.mjs
+          node --check scripts/kimi-canary-runner.mjs
+          node --check scripts/openai-compatible-canary-runner.mjs
           node --check scripts/test-odai-hooks.mjs
+          node --check scripts/test-odai-routing.mjs
           node --check skills/odai/scripts/odai-hook.mjs
           node --check skills/odai/scripts/build-hooks.mjs
+          node --check skills/odai/scripts/build-routing.mjs
+          node --check skills/odai/scripts/install-routing.mjs
+          node --check skills/odai/scripts/run-role.mjs
+          node --check skills/odai/scripts/run-routing.mjs
+          node --check skills/odai/scripts/verify-routing.mjs
+          node --check scripts/package-odai-artifact.mjs
+          node --check scripts/run-package-pack.mjs
+          node --check scripts/run-package-pack.test.mjs
           node --check cli/scripts/package-skill-bundle.mjs
+          node --check dsh/runtime/src/governance.mjs
+          node --check dsh/runtime/src/router.mjs
+          node --check dsh/runtime/src/index.mjs
+          node --check dsh/plugin/scripts/verify-dsh-load.mjs
+          node --check dsh/plugin/scripts/live-routing-smoke.mjs
+          node --check dsh/plugin/tests/package.test.mjs
+          node --check dsh/agent/src/installer.mjs
+          node --check dsh/agent/bin/odai-dsh-agent.mjs
+          node --check dsh/agent/scripts/verify-agent-load.mjs
       - name: Test optional hook adapters
         run: node scripts/test-odai-hooks.mjs
+      - name: Test optional capability-routing adapter
+        run: node scripts/test-odai-routing.mjs
+      - name: Test DSH runtime and Agent installer
+        run: |
+          node --test scripts/run-package-pack.test.mjs scripts/dsh-canary-runner.test.mjs
+          npm --prefix dsh/plugin test
+          npm --prefix dsh/agent install --ignore-scripts --no-package-lock --legacy-peer-deps
+          npm --prefix dsh/agent test
       - name: Build frozen full and A/B fixtures
         run: |
-          node scripts/odai-canary-harness.mjs --plan plans/odai-canary.md --out /tmp/odai-full-dry-run
-          node scripts/odai-canary-harness.mjs --plan plans/odai-ab-smoke.md --out /tmp/odai-ab-dry-run
+          node scripts/odai-canary-harness.mjs --plan plans/odai-canary.md --skill-mode on --out /tmp/odai-full-on-dry-run
+          node scripts/odai-canary-harness.mjs --plan plans/odai-canary.md --skill-mode off --out /tmp/odai-full-off-dry-run
+          node scripts/odai-canary-harness.mjs --plan plans/odai-ab-smoke.md --skill-mode on --out /tmp/odai-ab-on-dry-run
+          node scripts/odai-canary-harness.mjs --plan plans/odai-ab-smoke.md --skill-mode off --out /tmp/odai-ab-off-dry-run
       - name: Test CLI
         run: npm --prefix cli test
-      - name: Verify packaged skill bundle
+      - name: Verify packaged artifacts
         run: |
           npm --prefix cli run pack:dry-run
+          npm --prefix dsh/plugin run pack:dry-run
+          npm --prefix dsh/agent run pack:dry-run
           test ! -e cli/skills
+          test ! -e dsh/plugin/runtime
+          test ! -e dsh/plugin/skills
+          test ! -e dsh/agent/preset/odai/runtime
+          test ! -e dsh/agent/preset/odai/skills

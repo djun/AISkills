@@ -72,6 +72,46 @@ If slash commands are not available in your client, naming `odai` in plain langu
 
 You do not need to know the internal structure or choose a methodology. `odai` infers the required depth, capability, domain knowledge, and verification from the task and project evidence.
 
+### DeepSeek Harness packages
+
+DSH users can install either integration independently:
+
+```sh
+# Apply Odai to every agent preset in one profile
+dsh plugin --profile web add odai-dsh-plugin
+
+# Install a selectable, session-scoped Odai Agent preset
+npx odai-dsh-agent install
+```
+
+The Plugin command requires `pnpm` on `PATH`; the Agent installer currently requires `dsh@0.1.0-rc.6`. Each package already includes the canonical Odai skill and shared DSH runtime. Plugin needs neither a separate skill nor Agent; Agent needs neither a separate skill nor Plugin. Choose Plugin for profile-wide behavior or Agent for a selectable preset. Installing both is normally redundant and is only for a deliberate combination of those scopes. The existing provider-neutral `odai-cli` remains a separate product.
+
+Neither DSH package chooses planner, executor, or reviewer models. Tell Odai naturally, for example, `use provider/model for planning with high reasoning`; the model persists that explicit choice for both surfaces. If a needed responsibility is still unconfigured, Odai names it and asks for the model instead of claiming that route ran.
+
+See [`dsh/README.md`](dsh/README.md) for package boundaries, natural-language configuration, and verification.
+
+### Host Capability Routing
+
+The user identifies who should own each responsibility once, or lets odai recommend a mapping from the host's real capability catalog. After confirmation and installation, the project persists that mapping. Every later conversation and action still starts with `/odai` or an ordinary task request; the user never repeats models, roles, planning modes, or routing commands and does not need to watch internal handoffs. When models change, update the mapping once in place.
+
+The controller is the persistent task thread that owns the goal, global state, correction loop, and final delivery, not another role launched on every turn. Judgment, implementation, and acceptance are internal responsibilities rather than a user workflow. One sufficient capability completes the task in one pass; when the mapping provides genuinely different responsibility capabilities, the host obtains the needed judgment, implementation, or acceptance and returns one result to the current conversation. Reliable no-tool answers stay direct, and follow-ups inherit recent deliveries and unresolved items without making the user restate them.
+
+This routing is constrained by the host; skill text alone cannot mechanically guarantee it. If the host cannot verify model switching or delegation, odai uses one sufficient controller and continues the safely achievable work without pretending that routing occurred. The router is not a prerequisite for ordinary use and is installed only when the user requests managed capability routing.
+
+Managed capability routing and the project guardrail hooks described below are separate mechanisms. Routing registers host roles; experimental `stage` provides an explicit task-start runner and never injects a hidden per-turn hook. Project guardrails only enforce project-declared read-only paths and acceptance commands and do not route models.
+
+Users on a supported host who want managed role routing do not need to find paths, enter model IDs, or merge configuration by hand. After installing the skill, say:
+
+```text
+/odai install and verify capability routing for this project.
+```
+
+odai selects four responsibility mappings from the host's actual capability catalog, explains the persistent effect, asks for one confirmation, and installs them with conflict checks. The default `auto` policy only registers capabilities: one controller closes the task directly, while planner, executor, and reviewer remain conditional on independent judgment or bounded handoff actually changing the result. It adds no hidden per-turn preflight. Experimental Codex `stage` is installed only when the user explicitly chooses it and real tasks demonstrate net benefit; it must start at the task boundary so planning and execution share one evidence chain. Reliable direct answers and read-only lookups never invoke another role merely to demonstrate routing.
+
+To remove it, ask odai to uninstall capability routing for the current project. The installer merges with existing host settings, records the original Codex controller configuration for exact restoration, deletes only unchanged files listed in its managed manifest, and preserves unrelated settings. Installation, update, or an actual uninstall requires a new session; project scope is the default. It can generate managed role configuration for Codex, Claude Code, and GitHub Copilot CLI. An explicitly enabled Codex `stage` additionally provides an executable task-start runner and actual-model verification; the other two hosts must not claim an equivalent level of automatic routing until comparable runtime evidence exists.
+
+When `stage` is explicitly enabled, `.codex/odai-run-routing.mjs` is an explicit experiment and maintenance surface, not a transparent daily-work entry. Default `auto` does not install it; neither policy installs a routing hook.
+
 ## How It Decides
 
 `odai` continuously evaluates four dimensions:
@@ -132,7 +172,7 @@ The internal structure is organized by responsibility, not by mandatory stages:
 | `craft.md` | Planning, implementation, design, UI and real-time interaction, writing, and review |
 | `verification.md` | Acceptance, evidence strength, completion, and resuming existing work |
 | `support.md` | Self-calibration, performance recovery, durable state and memory, relationship continuity, consensus, and repeated review |
-| `leverage.md` | External capability discovery, net-benefit decisions, installation, creation, composition, and agent delegation |
+| `leverage.md` | Capability escalation and delegation, external capability discovery, net-benefit decisions, installation, creation, composition, and agent collaboration |
 
 Domain depth is inferred from the task instead of selected as a package. Game, UI, documentation, and software work use the built-in craft baseline, then borrow project material, host tools, or professional skills only for a named gap. Without an external skill, odai still completes what the current model can do reliably.
 
@@ -170,7 +210,7 @@ Other supported installs:
 
 ```bash
 # Install every skill in this repository
-npx skills add https://github.com/orziz/odai
+npx skills add https://github.com/orziz/odai --all
 
 # Install the slimmer branch
 npx skills add https://github.com/orziz/odai#mini
@@ -221,6 +261,8 @@ Then open **Codex Settings → Pets**, refresh the list, and select `dai` or `od
 
 The skill supplies judgment; hooks only turn already-explicit project boundaries into mechanical guardrails. They are not installed or enabled by default and do not change odai's main flow. Once a project defines `.odai/hooks.json`, they can protect explicit read-only paths and run explicitly declared acceptance commands that match the current change. With no policy file, they are silent no-ops.
 
+These are the only per-turn hooks managed by odai. The capability-routing installer does not install hooks and cannot substitute for project guardrails.
+
 The repository keeps one dependency-free runtime and generates native host adapters on demand instead of maintaining six platform mirrors:
 
 ```bash
@@ -242,7 +284,7 @@ Grok Build currently exposes `PreToolUse` as the blocking boundary, so its adapt
 
 ## Evaluation
 
-The current frozen baseline (2026-08-07) contains 19 realistic full-plan tasks and a 13-task paired A/B subset. Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks.
+The current results cover 19 realistic full-plan tasks and a 13-task paired A/B subset. Only two cases are explicit low-risk controls. The rest present natural symptoms, opinions, or broad requests; the decisive facts live in project code, logs, briefs, diffs, task state, and runbooks. Fingerprints preserve exact reproducibility; unrelated routing assets or maintenance edits do not invalidate an entire result table when the prompt, fixture, model configuration, scoring semantics, and case-relevant skill behavior remain equivalent. Gemini 3.7 and DeepSeek V4 Pro (DSH) ran under the cross-platform `odai-canary-isolation/v1` contract; the other published rows predate that contract and are retained as historical capability evidence.
 
 Each result first receives a 0-4 completion score, then the predefined case weight is applied. The full plan is worth 144 points and the A/B subset 96. Direct, judgment, complex, and boundary work are reported separately, while severe scope, production-risk, and false-verification violations have hard score caps. A perfect treatment score alone is not evidence of value; it must be read against the same model's control result and cost.
 
@@ -250,13 +292,16 @@ Each result first receives a 0-4 completion score, then the predefined case weig
 |---|---:|---:|---:|---:|---:|
 | GPT-5.6-sol / high | **144/144** | **96/96** | 80/96 | **+16** | 396,899 / 317,761 (+24.9%) |
 | Claude Opus 5 | **144/144** | **96/96** | 77/96 | **+19** | 2,273,558 / 1,937,782 (+17.3%) |
+| Grok 4.6 / default high | **144/144** | **96/96** | 67/96 | **+29** | 2,236,506 / 1,285,461 (+74.0%) |
 | Grok 4.5 | **144/144** | **96/96** | 69/96 | **+27** | 1,579,533 / 1,054,670 (+49.8%) |
+| Gemini 3.7 Flash High | 134/144 | 88/96 | 72/96 | **+16** | 1,813,203 / 1,580,475 (+14.7%) |
 | Gemini 3.6 Flash High | 126/144 | 82/96 | 67/96 | **+15** | 1,381,447 / 2,235,193 (-38.2%) |
 | Kimi K3 | **144/144** | **96/96** | 75/96 | **+21** | 2,192,056 / 1,632,057 (+34.3%) |
+| DeepSeek V4 Pro / max (DSH) | **144/144** | **96/96** | 63/96 | **+33** | 2,131,373 / 1,652,030 (+29.0%) |
 | DeepSeek V4 Flash | **144/144** | **96/96** | 61/96 | **+35** | 5,341,138 / 3,975,731 (+34.3%) |
 
-All six runners produced a positive paired gain. GPT, Opus, Grok, K3, and DeepSeek V4 Flash reached full scores; Gemini did not. Five runners used more tokens with odai, while Gemini used 38.2% fewer, so both quality gains and cost changes remain model-dependent—not unconditional improvement or token savings.
+All nine runners produced a positive paired gain. Every runner except the two Gemini versions reached full on scores in both the full suite and A/B subset. Eight runners used more tokens with odai, while Gemini 3.6 used 38.2% fewer, so both quality gains and cost changes remain model-dependent—not unconditional improvement or token savings.
 
-See [`docs/evaluation.md`](docs/evaluation.md) for the current contract and [`docs/evaluation-results.md`](docs/evaluation-results.md) for case scores, support reads, and token details.
+See [`docs/evaluation.md`](docs/evaluation.md) for the current contract, [`docs/evaluation-results.md`](docs/evaluation-results.md) for model full-suite/A-B scores and token details, and [`docs/routing-results.md`](docs/routing-results.md) for optional host-routing quality, role usage, latency, and cost experiments.
 
 Stars and PRs are welcome.

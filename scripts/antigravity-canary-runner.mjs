@@ -6,6 +6,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { emitCanaryIsolation } from "./canary-isolation.mjs";
 
 function parseArgs(argv) {
   const args = {
@@ -32,6 +33,7 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+emitCanaryIsolation("antigravity");
 const prompt = readFileSync(args.promptFile, "utf8");
 const result = spawnSync(
   args.bin,

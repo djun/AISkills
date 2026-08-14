@@ -14,6 +14,14 @@ const files = listFiles(skillRoot);
 const allowedFiles = new Set([
   "SKILL.md",
   "agents/openai.yaml",
+  "assets/codex-agents/config.toml",
+  "assets/codex-agents/role.toml",
+  "assets/claude-agents/agent.md",
+  "assets/copilot-agents/agent.md",
+  "assets/routing-roles/controller.md",
+  "assets/routing-roles/planner.md",
+  "assets/routing-roles/executor.md",
+  "assets/routing-roles/reviewer.md",
   "assets/hooks-policy.example.json",
   "assets/task-state.md",
   "references/dao.md",
@@ -22,6 +30,11 @@ const allowedFiles = new Set([
   "references/support.md",
   "references/verification.md",
   "scripts/build-hooks.mjs",
+  "scripts/build-routing.mjs",
+  "scripts/install-routing.mjs",
+  "scripts/run-role.mjs",
+  "scripts/run-routing.mjs",
+  "scripts/verify-routing.mjs",
   "scripts/odai-hook.mjs",
 ]);
 
@@ -41,13 +54,15 @@ validateStructure();
 validateBehavior();
 validateOpenaiMetadata();
 validateHookSources();
+validateRoutingSources();
+validateEvaluationIsolation();
 validateReferences();
 warnRepeatedRules();
 validateRibaoSkill();
 
 const entryTokenEstimate = estimateTokens(skillText);
 const markdownTokenEstimate = files
-  .filter((file) => file.endsWith(".md"))
+  .filter((file) => file.endsWith(".md") && !/^assets\/(?:claude|copilot)-agents\//.test(file) && !/^assets\/routing-roles\//.test(file))
   .reduce((total, file) => total + estimateTokens(readFileSync(path.join(skillRoot, file), "utf8")), 0);
 if (entryTokenEstimate > 2200) {
   warn(`SKILL.md: entry estimate ${entryTokenEstimate} exceeds review threshold 2200`);
@@ -103,10 +118,10 @@ function validateConstitution(text) {
   const section = text.match(/^## 精神内核\r?\n([\s\S]*?)(?=^## )/m)?.[1] || "";
   for (const fragment of [
     "**事由人定，路由实证；法随势变，成由验定；止于边界，成事而不妄为。**",
-    "用户拥有目标、价值取舍和不可接受结果",
-    "模型核实事实、质疑会改变结果的前提",
-    "成事是完成用户真正要的结果",
-    "不曲事实、不越授权、不造工作",
+    "用户定义目标、价值取舍和不可接受结果",
+    "模型核实事实、纠正关键前提",
+    "成事是实现用户真正所求",
+    "不曲事实、不越权、不造事",
   ]) {
     if (!section.includes(fragment)) fail(`SKILL.md: spiritual core missing: ${fragment}`);
   }
@@ -146,7 +161,7 @@ function validateStructure() {
     },
     {
       path: "references/leverage.md",
-      headings: ["判断是否借力", "使用、安装与创建", "组合与下放"],
+      headings: ["唯一总控与四责任", "宿主能力与降级", "安装宿主路由", "使用、安装与创建其他能力", "组合与下放"],
     },
     {
       path: "references/verification.md",
@@ -175,10 +190,22 @@ function validateBehavior() {
       path: "SKILL.md",
       label: "adaptive support",
       patterns: [
-        /不按模型名称预设强弱/,
+        /宿主已证能力/,
+        /已暴露不再问，未暴露不猜/,
+        /使用最低充分能力/,
+        /总控是持续持有[^。\n]*任务线程/,
+        /能力足够就同一线程直接成事/,
+        /只有独立判断能改变路线时才请 planner/,
+        /决定冻结、实施有界且交接有净收益时才交 executor/,
+        /独立判断能改变放行结果时才请 reviewer/,
+        /不为角色齐全或模型更便宜启动分工/,
+        /取不到所需能力[^。\n]*安全降级/,
+        /只阻断依赖该能力的不可逆放行/,
+        /不假装路由成功/,
+        /subagent 回交或自报不算验收/,
+        /原始产物、diff、工具或测试结果并统一收口/,
         /自主完成[\s\S]{0,180}不额外写计划、清单或状态/,
-        /只答不写[^。\n]*单一权威来源/,
-        /命中后停止检索/,
+        /只答不写[^。\n]*单一权威来源[^。\n]*命中即停/,
         /用户纠正、工具或测试失败、证据冲突/,
         /支撑只能补当前缺口[^。\n]*不能降低目标、删减验收/,
       ],
@@ -195,6 +222,7 @@ function validateBehavior() {
         /修改共享对象或既有契约[^。\n]*保持默认行为/,
         /“严格、完整、增强”提高证据、反证、保持项和验收强度/,
         /未读、未做、未跑、未验证或未调用都如实说明/,
+        /明确要求须有结果或标明未决，不因内部取舍静默丢失/,
       ],
     },
     {
@@ -229,6 +257,8 @@ function validateBehavior() {
         /大改动按可独立验证的完整切片推进/,
         /普通任务不强制套用 TDD、SDD、BDD 或其他仪式/,
         /不靠放宽断言或吞错造绿/,
+        /旧状态已被证实会重现问题[^\n]*不把“恢复原样”冒充安全回退/,
+        /检查每个过渡状态与新旧版本并存组合/,
         /区分可复用基线、实现偏差和真正缺口/,
         /游戏、仿真和实时系统同时说明循环、输入、状态变化、反馈、资源、失败与恢复/,
         /只有多个使用方共享同一需求时才扩展公共能力/,
@@ -255,24 +285,28 @@ function validateBehavior() {
       path: "references/leverage.md",
       label: "external leverage",
       patterns: [
-        /技能回交至少让主流程拿到可用结果、实际依据、未决项和已发生的外部动作/,
-        /当前验收无法被现有知识、工具和证据可靠完成或验证的实质缺口[^。\n]*可验证的结果改善与稳定重复成本下降/,
-        /说不出具体差额和结果变化就不找外部能力/,
-        /新增能力对正确性、兼容性、可验证性、真实交付或重复成本的改善/,
-        /无法说明这个差额就不推荐、不安装、不创建/,
-        /通用缺口会实质影响结果[^。\n]*真实目录与权威来源/,
-        /无法核实时只描述所需能力[^。\n]*不编造具体名称/,
+        /odai 是唯一用户入口和最终交付 owner/,
+        /规划、执行与验收是可分离责任，不是必走阶段/,
+        /planner[^。\n]*只补独立判断缺口/,
+        /executor[^。\n]*决定已冻结、实施有界且可独立验证/,
+        /reviewer[^。\n]*独立判断能改变尚未放行的具体属性/,
+        /高后果只提高证据、授权和验收强度，不自动制造角色调用/,
+        /能力目录只认宿主已提供的系统说明、工具定义、已加载配置和实际调用结果/,
+        /未暴露的能力不猜/,
+        /路由是否成立看实际调用，不看配置或自报/,
+        /不能取得所需能力时，继续当前能力可安全推进的部分/,
+        /默认安装 `auto`/,
+        /真实任务证明净收益时，才安装 `stage`/,
+        /未安装路由器时，odai 仍完整可用/,
+        /外部能力只有在正确性、兼容性、可验证性、真实交付或重复成本上的改善/,
+        /无法核实时只描述所需能力，不编造具体名称/,
         /安装或启用前征得用户同意/,
-        /当前环境缺失[^。\n]*替代方案能否保持相同结果、格式、兼容与验证/,
-        /不能证明等价就不静默改走较差路线/,
-        /项目级 skill 需要同时成立/,
-        /正确做法依赖本项目的权威来源[^。\n]*离开项目不能原样复用/,
-        /有明确的再次使用证据/,
-        /缺一项就不创建/,
-        /description 写清可发现的触发面/,
-        /禁止为了完整感串读技能、让技能互相递归调用/,
-        /不能隔离写入或验证结果时改为串行/,
-        /重复采样、增加席位和延长讨论不能把能力不足本身变成正确结果/,
+        /两次以上实例证明它会改变结果/,
+        /已有 owner 原位更新，不建平行 skill/,
+        /单一能力已能完整解决就不组合/,
+        /写入下放前外显同版读前门/,
+        /多个写入者使用同一 baseline、精确允许路径和独立验收/,
+        /review 只读/,
       ],
     },
     {
@@ -281,6 +315,10 @@ function validateBehavior() {
       patterns: [
         /映射成可观察证据/,
         /各自只证明实际覆盖的内容，不能互相冒充/,
+        /权威筛选、查询、命令、样本或来源[^。\n]*按该入口核验/,
+        /两个或更多写入批次[^。\n]*组件完成不具有传递性/,
+        /唯一组合状态[^。\n]*共享契约[^。\n]*完整验收/,
+        /冲突解决或兼容性编辑[^。\n]*新的获授权写入/,
         /明确区分已实施、已验证与未验证/,
         /证据足够就停止/,
       ],
@@ -293,6 +331,17 @@ function validateBehavior() {
     const text = readFileSync(fullPath, "utf8");
     for (const pattern of check.patterns) {
       if (!pattern.test(text)) fail(`${check.path}: missing ${check.label}: ${pattern}`);
+    }
+  }
+
+  const entry = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+  const leverageOnlyPatterns = [
+    /规划、判断、诊断或验收切片升至最低充分档/,
+    /才迁移整个任务/,
+  ];
+  for (const pattern of leverageOnlyPatterns) {
+    if (pattern.test(entry)) {
+      fail(`SKILL.md: detailed capability-routing mechanism must live only in references/leverage.md: ${pattern}`);
     }
   }
 }
@@ -309,6 +358,12 @@ function validateOpenaiMetadata() {
   }
   if (defaultPrompt && !defaultPrompt.includes("$odai")) {
     fail("agents/openai.yaml: default_prompt must mention $odai");
+  }
+  if (defaultPrompt && !defaultPrompt.includes("交付真实可用结果")) {
+    fail("agents/openai.yaml: default_prompt must stay focused on the user-visible result");
+  }
+  if (defaultPrompt && /模型|推理档|subagent|升档|最高可靠能力/.test(defaultPrompt)) {
+    fail("agents/openai.yaml: default_prompt must not expose internal capability routing");
   }
 }
 
@@ -338,6 +393,181 @@ function validateHookSources() {
   }
 }
 
+function validateRoutingSources() {
+  const codexRoot = path.join(skillRoot, "assets", "codex-agents");
+  const configFile = path.join(codexRoot, "config.toml");
+  const codexRoleFile = path.join(codexRoot, "role.toml");
+  const claudeTemplateFile = path.join(skillRoot, "assets", "claude-agents", "agent.md");
+  const copilotTemplateFile = path.join(skillRoot, "assets", "copilot-agents", "agent.md");
+  const roleRoot = path.join(skillRoot, "assets", "routing-roles");
+  const builderFile = path.join(skillRoot, "scripts", "build-routing.mjs");
+  const installerFile = path.join(skillRoot, "scripts", "install-routing.mjs");
+  const roleRunnerFile = path.join(skillRoot, "scripts", "run-role.mjs");
+  const runnerFile = path.join(skillRoot, "scripts", "run-routing.mjs");
+  const verifierFile = path.join(skillRoot, "scripts", "verify-routing.mjs");
+  const harnessFile = path.join(repoRoot, "scripts", "odai-canary-harness.mjs");
+  const roleFiles = ["controller", "planner", "executor", "reviewer"]
+    .map((role) => path.join(roleRoot, `${role}.md`));
+  if (![configFile, codexRoleFile, claudeTemplateFile, copilotTemplateFile, ...roleFiles, builderFile, installerFile, roleRunnerFile, runnerFile, verifierFile].every(existsSync)) return;
+
+  const config = readFileSync(configFile, "utf8");
+  for (const fragment of [
+    "__ODAI_AGENT_SECTIONS__",
+    "__ODAI_CONTROLLER_MODEL_LINE__",
+    "__ODAI_CONTROLLER_BODY__",
+  ]) {
+    if (!config.includes(fragment)) fail(`assets/codex-agents/config.toml: missing controller contract: ${fragment}`);
+  }
+  const codexRole = readFileSync(codexRoleFile, "utf8");
+  for (const fragment of ["__ODAI_ROLE_MODEL__", "__ODAI_ROLE_EFFORT_LINE__", "__ODAI_ROLE_BODY__"]) {
+    if (!codexRole.includes(fragment)) fail(`assets/codex-agents/role.toml: missing host wrapper field: ${fragment}`);
+  }
+  const roleSources = [
+    ["controller", readFileSync(roleFiles[0], "utf8"), ["唯一总控", "直接谋定、行动、验证和交付", "不为展示路由", "独立判断能改变路线", "实施有界且分离执行有可验净收益", "独立判断能改变放行结果", "实施失败但路线仍成立", "路线或验收设计失效", "已有决定性证据闭合所有要求时立即收口", "__ODAI_RUNTIME_VERIFICATION__"]],
+    ["planner", readFileSync(roleFiles[1], "utf8"), ["独立规划责任", "不预做实施", "当前上下文能可靠闭环", "mode: direct", "mode: planned", "target", "evidence", "scope", "decision", "execute: executor", "review: none", "accept", "stop", "steps", "增量重规划"]],
+    ["executor", readFileSync(roleFiles[2], "utf8"), ["唯一 executor", "只接收冻结方案与证据指针", "不重新盘点仓库", "不重新盘点仓库、论证目标或另选路线", "验证需求不自动授权改测试", "必要验证只运行一次", "新证据推翻决定、范围或验收", "<odai_closeout>", "不得自行批准最终交付"]],
+    ["reviewer", readFileSync(roleFiles[3], "utf8"), ["独立验收责任", "不调用工具", "不扫描工作目录", "不重跑已成功的确定性检查", "完整 `accept`", "`pass`、`fail` 或 `unresolved`", "route: execution", "route: planning", "route: user", "route: blocked", "不得制造额外流程"]],
+  ];
+  for (const [label, text, fragments] of roleSources) {
+    for (const fragment of fragments) {
+      if (!text.includes(fragment)) fail(`assets/routing-roles/${label}.md: missing routing contract: ${fragment}`);
+    }
+  }
+  const hostTemplates = [
+    ["claude", readFileSync(claudeTemplateFile, "utf8"), ["name: odai-__ODAI_ROLE__", "__ODAI_ROLE_MODEL__", "__ODAI_PERMISSION_MODE__", "__ODAI_TOOLS_LINE__", "__ODAI_ROLE_BODY__"]],
+    ["copilot", readFileSync(copilotTemplateFile, "utf8"), ["name: odai-__ODAI_ROLE__", "__ODAI_ROLE_MODEL__", "__ODAI_DISABLE_MODEL_INVOCATION__", "__ODAI_TOOLS__", "__ODAI_ROLE_BODY__"]],
+  ];
+  for (const [host, text, fragments] of hostTemplates) {
+    for (const fragment of fragments) {
+      if (!text.includes(fragment)) fail(`assets/${host}-agents/agent.md: missing host wrapper field: ${fragment}`);
+    }
+  }
+  const allRoutingSources = [config, codexRole, ...hostTemplates.map((item) => item[1]), ...roleSources.map((item) => item[1])];
+  if (/gpt-5\.6-(?:sol|terra|luna)/.test(allRoutingSources.join("\n"))) {
+    fail("assets/*-agents: canonical role sources must not hard-code a model family");
+  }
+
+  const builder = readFileSync(builderFile, "utf8");
+  for (const fragment of [
+    "--host", "--out", "--controller-model", "--planner-model", "--executor-model", "--reviewer-model",
+    "--verifier-command", "single-controller-conditional-routing", "single-controller-stage-routing",
+    "routing-roles", "roleBody", "codexAgentSections", "odai-planner", "odai-executor", "odai-reviewer", "ADAPTER.json", '"codex"', '"claude"', '"copilot"',
+  ]) {
+    if (!builder.includes(fragment)) fail(`scripts/build-routing.mjs: missing adapter behavior: ${fragment}`);
+  }
+  if (/route-hook\.mjs|codexRouteHooks|hooks\.json/.test(builder)) {
+    fail("scripts/build-routing.mjs: managed routing must not inject a hidden per-turn hook");
+  }
+
+  const installer = readFileSync(installerFile, "utf8");
+  for (const fragment of ["--scope", "--target", "--uninstall", "--yes", "--controller-model", "--planner-model", "--executor-model", "--reviewer-model", "odai-routing.json", "odai-run-routing.mjs", "odai-run-role.mjs", "odai-verify-routing.mjs", "assertManagedState", "uninstall", "requiresNewSession", "settings.local.json", "目标已有非 odai 管理的配置", "拒绝删除"]) {
+    if (!installer.includes(fragment)) fail(`scripts/install-routing.mjs: missing safe installation behavior: ${fragment}`);
+  }
+
+  const roleRunner = readFileSync(roleRunnerFile, "utf8");
+  for (const fragment of ["--role", "controller", "planner", "executor", "reviewer", "model_verified", "tool_evidence", "odai-routing.json", "reasoning_efforts", "requested"] ) {
+    if (!roleRunner.includes(fragment)) fail(`scripts/run-role.mjs: missing role routing behavior: ${fragment}`);
+  }
+
+  const runner = readFileSync(runnerFile, "utf8");
+  if (!runner.includes("会改变复验结果的准确对象、条件、输入或位置须保留")) {
+    fail("scripts/run-routing.mjs: missing evidence-specificity handoff contract");
+  }
+  if (!runner.includes("不再加载外部能力、安装工具或广泛搜索来重复证明缺失")) {
+    fail("scripts/run-routing.mjs: missing authority-backed environment stop contract");
+  }
+  if (!runner.includes("需要验证不自动授权修改测试、基准、文档或其他证据源")) {
+    fail("scripts/run-routing.mjs: missing verification-write-boundary contract");
+  }
+  if (!runner.includes("准备 direct 写入时，按目标对象在既有项目约定与验证入口中做一次有界发现")) {
+    fail("scripts/run-routing.mjs: missing direct-write contract discovery");
+  }
+  if (!runner.includes("同意前让用户看到会改变决定的真实影响、继续动作、验证和替代差异")) {
+    fail("scripts/run-routing.mjs: missing alternative-equivalence handoff contract");
+  }
+  for (const fragment of [
+    "`${decisionRole}-route.txt`", "evidence-packet", "routing-run.json", "host-owned-no-model-call",
+    "validatePlan", "parseAcceptance", "validateReview", "validateCloseout", "renderDelivery", "odai_closeout",
+    "runSelectedExecution", '"--role", role',
+    "planState.reviewIds.length > 0", '"--role", "reviewer"', "parseReviewDecision",
+    "runIncrementalReplan", "runExecutionCorrection", "buildEvidencePacket", "captureRepositoryState",
+    "executionContext", "bounded-fresh-execution-context", "persistent-task-thread", "normalizeReviewField", "expandReviewIds", "plannerEvidencePointers", "cited_paths", "captureCitedSources", "cited_sources", "pickExecutionVerificationEvidence", "isVerificationCommand", "captureUntrackedFiles", "untracked_files", "parseCloseoutJson", "directExecutionOutput", "repositoryStateChanged", "原始用户请求由总控、planner 与 reviewer 保管", "其中用户请求、规划与执行回交各只有一份", "仍调用工具", "完整 accept 是否覆盖原始请求", "duration_ms",
+    "首个非空行必须且只能是 mode", "顶层字段不得重复",
+    "requireObservedRole", "requireSameThread", "runControllerRecovery", "tool_evidence", '"stage"',
+  ]) {
+    if (!runner.includes(fragment)) fail(`scripts/run-routing.mjs: missing deterministic preflight behavior: ${fragment}`);
+  }
+  if (runner.includes('"--enable", "multi_agent"')) {
+    fail("scripts/run-routing.mjs: deterministic role scheduling must not depend on controller-discovered multi_agent tools");
+  }
+
+  if (existsSync(harnessFile)) {
+    const harness = readFileSync(harnessFile, "utf8");
+    for (const fragment of ["deterministicRoutingRunner", "odai-run-routing.mjs", "readDeterministicRoutingTelemetry", "routing-run.json"]) {
+      if (!harness.includes(fragment)) fail(`scripts/odai-canary-harness.mjs: deterministic route drifted from the managed runner contract: ${fragment}`);
+    }
+    for (const fragment of ["skill-package resources", "fixture repository root", ".odai/local.md"]) {
+      if (!harness.includes(fragment)) fail(`scripts/odai-canary-harness.mjs: fixture path-resolution contract drifted: ${fragment}`);
+    }
+  }
+
+  const verifier = readFileSync(verifierFile, "utf8");
+  for (const fragment of ["--project", "--role", "--after", "--agent-path", "turn_context", "odai-routing.json", "verified: true"]) {
+    if (!verifier.includes(fragment)) fail(`scripts/verify-routing.mjs: missing runtime verification behavior: ${fragment}`);
+  }
+}
+
+function validateEvaluationIsolation() {
+  const isolationFile = path.join(repoRoot, "scripts", "canary-isolation.mjs");
+  const harnessFile = path.join(repoRoot, "scripts", "odai-canary-harness.mjs");
+  const adapters = [
+    ["claude-canary-runner.mjs", "claude", ["--safe-mode", "--disable-slash-commands", "--no-session-persistence", "--strict-mcp-config", "--settings"]],
+    ["grok-canary-runner.mjs", "grok", ["--no-memory", "--no-subagents", "--disable-web-search"]],
+    ["kimi-canary-runner.mjs", "kimi", ["--skills-dir"]],
+    ["antigravity-canary-runner.mjs", "antigravity", ["--new-project", "--disable-slash-commands"]],
+    ["openai-compatible-canary-runner.mjs", "openai-compatible", ["path escapes the fixture repository", "maxTurns"]],
+    ["codex-canary-judge.mjs", "codex", ["--ephemeral", "--ignore-user-config", "--ignore-rules"]],
+    ["grok-canary-judge.mjs", "grok", ["--no-memory", "--no-subagents", "--tools"]],
+  ];
+  const requiredFiles = [isolationFile, harnessFile, ...adapters.map(([file]) => path.join(repoRoot, "scripts", file))];
+  for (const file of requiredFiles) {
+    if (!existsSync(file)) fail(`${path.relative(repoRoot, file)}: required evaluation-isolation resource is missing`);
+  }
+  if (!requiredFiles.every(existsSync)) return;
+
+  const isolation = readFileSync(isolationFile, "utf8");
+  for (const fragment of ["odai-canary-isolation/v1", "ODAI_CANARY_SKILL_MODE", "ODAI_CANARY_HOME", "HOME must be the harness-owned isolated home"]) {
+    if (!isolation.includes(fragment)) fail(`scripts/canary-isolation.mjs: missing isolation contract: ${fragment}`);
+  }
+
+  const harness = readFileSync(harnessFile, "utf8");
+  for (const fragment of [
+    "odai-canary-isolation/v1",
+    "prepareCanaryIsolation",
+    "assertFixtureIsolation",
+    "runner-isolation-failed",
+    "judge-isolation-failed",
+    "isolation_contract: CANARY_ISOLATION_CONTRACT",
+    "--out for a formal run must be outside the repository tree",
+    "--ignore-user-config",
+    "--ignore-rules",
+  ]) {
+    if (!harness.includes(fragment)) fail(`scripts/odai-canary-harness.mjs: missing evaluation isolation behavior: ${fragment}`);
+  }
+  if (!harness.includes("Handle the user request using the host's default capabilities")) {
+    fail("scripts/odai-canary-harness.mjs: off-arm prompt must remain treatment-neutral");
+  }
+
+  for (const [file, adapter, boundaries] of adapters) {
+    const text = readFileSync(path.join(repoRoot, "scripts", file), "utf8");
+    if (!text.includes("emitCanaryIsolation")) fail(`scripts/${file}: missing isolation receipt`);
+    if (!text.includes(`\"${adapter}\"`)) fail(`scripts/${file}: isolation receipt does not name adapter ${adapter}`);
+    for (const boundary of boundaries) {
+      if (!text.includes(boundary)) fail(`scripts/${file}: missing platform isolation boundary: ${boundary}`);
+    }
+  }
+}
+
 function validateReferences() {
   for (const relativePath of files.filter((file) => file.endsWith(".md"))) {
     const text = readFileSync(path.join(skillRoot, relativePath), "utf8");
@@ -347,6 +577,7 @@ function validateReferences() {
       if (!isInside(skillRoot, resolved)) fail(`${relativePath}: reference escapes skill root: ${target}`);
       else if (!existsSync(resolved)) fail(`${relativePath}: missing reference target: ${target}`);
     }
+    if (/^assets\/(?:claude|copilot)-agents\//.test(relativePath) || /^assets\/routing-roles\//.test(relativePath)) continue;
     text.split(/\r?\n/).forEach((line, index) => {
       if (line.length > 240) warn(`${relativePath}:${index + 1}: long rule line (${line.length} chars)`);
     });
@@ -408,7 +639,9 @@ function validateRibaoSkill() {
 
 function warnRepeatedRules() {
   const seen = new Map();
-  for (const relativePath of files.filter((file) => file.endsWith(".md"))) {
+  for (const relativePath of files.filter((file) => file.endsWith(".md")
+    && !/^assets\/(?:claude|copilot)-agents\//.test(file)
+    && !/^assets\/routing-roles\//.test(file))) {
     const lines = readFileSync(path.join(skillRoot, relativePath), "utf8").split(/\r?\n/);
     lines.forEach((line, index) => {
       const normalized = line.replace(/^[#*\-\d.\s]+/, "").replace(/[`*_]/g, "").trim();

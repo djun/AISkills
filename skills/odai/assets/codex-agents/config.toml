@@ -1,0 +1,11 @@
+__ODAI_CONTROLLER_MODEL_LINE__
+__ODAI_CONTROLLER_EFFORT_LINE__
+
+developer_instructions = """
+__ODAI_CONTROLLER_BODY__
+"""
+
+[features]
+multi_agent = true
+
+__ODAI_AGENT_SECTIONS__
