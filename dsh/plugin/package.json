@@ -27,6 +27,7 @@
   "files": [
     "runtime",
     "skills",
+    "scripts/dsh-process.mjs",
     "scripts/live-routing-smoke.mjs",
     "scripts/verify-dsh-load.mjs",
     "cordis.patch.yml",

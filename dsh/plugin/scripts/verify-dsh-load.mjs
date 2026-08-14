@@ -3,7 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawn } from "node:child_process";
+
+import { spawnDsh } from "./dsh-process.mjs";
 
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(pluginRoot, "../..");
@@ -93,7 +94,7 @@ try {
     writeFile(patchPath, patch, "utf8"),
     writeFile(wrapperPath, wrapper, "utf8"),
   ]);
-  const child = spawn(dsh, [
+  const child = spawnDsh(dsh, [
     "--profile",
     "headless",
     "--patch",

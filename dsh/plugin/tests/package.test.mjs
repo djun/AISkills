@@ -3,6 +3,8 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { spawnDsh } from "../scripts/dsh-process.mjs";
+
 const pluginRoot = resolve(import.meta.dirname, "..");
 
 test("bundle patch resolves the packaged runtime through the package export", async () => {
@@ -16,4 +18,35 @@ test("bundle patch resolves the packaged runtime through the package export", as
   assert.match(patch, /mode: auto/u);
   assert.doesNotMatch(patch, /roles:|planner:|executor:|reviewer:|model:|reasoningEffort:|maxTokens:/u);
   assert.doesNotMatch(patch, /name: \.\/runtime/u);
+  assert.ok(metadata.files.includes("scripts/dsh-process.mjs"));
+});
+
+test("DSH process spawn supports Windows npm command shims", () => {
+  const calls = [];
+  const execute = (command, args, options) => {
+    calls.push({ command, args, options });
+    return {};
+  };
+
+  spawnDsh("dsh", ["--profile", "web"], { cwd: pluginRoot }, {
+    platform: "win32",
+    execute,
+  });
+  spawnDsh("dsh", ["--profile", "web"], { cwd: pluginRoot }, {
+    platform: "linux",
+    execute,
+  });
+
+  assert.deepEqual(calls, [
+    {
+      command: "dsh",
+      args: ["--profile", "web"],
+      options: { cwd: pluginRoot, shell: true },
+    },
+    {
+      command: "dsh",
+      args: ["--profile", "web"],
+      options: { cwd: pluginRoot },
+    },
+  ]);
 });

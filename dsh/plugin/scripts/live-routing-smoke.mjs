@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
   copyFile,
@@ -12,6 +11,8 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { spawnDsh } from "./dsh-process.mjs";
 
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(pluginRoot, "../..");
@@ -309,7 +310,7 @@ function verifySmoke(sessions, options) {
 
 function runProcess(command, commandArgs, options) {
   return new Promise((accept, reject) => {
-    const child = spawn(command, commandArgs, {
+    const child = spawnDsh(command, commandArgs, {
       cwd: options.cwd,
       env: options.env,
       stdio: ["ignore", "pipe", "pipe"],

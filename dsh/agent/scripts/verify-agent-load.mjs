@@ -4,9 +4,10 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import { spawnDsh } from "../src/dsh-version.mjs";
 import { installAgentPreset, SUPPORTED_DSH_VERSION } from "../src/installer.mjs";
 
 const agentRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -157,7 +158,7 @@ await writeFile(patchPath, [
 
 const port = await freePort();
 const baseUrl = `http://127.0.0.1:${port}`;
-const child = spawn(dsh, [
+const child = spawnDsh(dsh, [
   "--profile", "web",
   "--patch", patchPath,
   "--host", "127.0.0.1",

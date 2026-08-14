@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
-
+import { readDshVersion } from "../src/dsh-version.mjs";
 import {
   inspectAgentInstallation,
   installAgentPreset,
@@ -47,7 +46,7 @@ function assertDshVersion() {
   const dsh = process.env.DSH_BIN ?? "dsh";
   let actual;
   try {
-    actual = execFileSync(dsh, ["-V"], { encoding: "utf8" }).trim();
+    actual = readDshVersion({ dsh });
   } catch (error) {
     throw new Error(`cannot run ${dsh} -V; install DSH ${SUPPORTED_DSH_VERSION} before installing the preset`);
   }
