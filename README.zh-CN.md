@@ -84,7 +84,7 @@ dsh plugin --profile web add odai-dsh-plugin
 npx odai-dsh-agent install
 ```
 
-Plugin 安装命令要求 `pnpm` 已在 `PATH` 中；Agent 安装器当前严格要求 `dsh@0.1.0-rc.6`。两个包都已经包含 canonical Odai skill 与共享 DSH runtime。Plugin 无需另装 skill 或 Agent；Agent 也无需另装 skill 或 Plugin。需要 profile-wide 行为就选 Plugin，需要可选择的专用 preset 就选 Agent。两者同时安装通常是重复的，只适合刻意组合这两种作用域。现有 provider-neutral `odai-cli` 继续作为独立产品。
+Plugin 安装命令要求 `pnpm` 已在 `PATH` 中；Agent 安装器当前严格要求 `dsh@0.1.0-rc.6`。两个包都已经包含 canonical Odai skill 与共享 DSH runtime。Agent 完整保留所固定 DSH Standard preset 的全部能力，再以 scoped 扩展叠加 Odai。Plugin 无需另装 skill 或 Agent；Agent 也无需另装 skill 或 Plugin。需要 profile-wide 行为就选 Plugin，需要可选择的专用 preset 就选 Agent。两者同时安装通常是重复的，只适合刻意组合这两种作用域。现有 provider-neutral `odai-cli` 继续作为独立产品。
 
 两个 DSH 包都不会自行选择 planner、executor 或 reviewer 模型。用户只需自然地告诉 Odai，例如“规划用 provider/model，推理档 high”，模型就会为 Plugin 和 Agent 共用的机制持久化这项明确选择。真实任务需要某项尚未配置的职责时，Odai 会说明缺少哪一项并询问模型，而不会声称该路线已经运行。
 

@@ -2,6 +2,11 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-14 — DSH Agent 0.0.2
+
+- `odai-dsh-agent` 的 DSH picker 与 npm package description 改为中文，并明确承诺完整继承对应版本 DSH Standard 的全部能力。
+- 发布验证继续对完整 Agent composition 做逐字派生校验：只允许 model-neutral Odai persona 替换和末尾 Odai runtime 扩展；Standard 的能力行、设置、顺序发生缺失或漂移都会失败。
+
 ## 2026-08-14 — DSH Plugin 与 Agent 首发
 
 ### 分发与配置

@@ -1,7 +1,7 @@
 {
   "name": "odai-dsh-agent",
-  "version": "0.0.1",
-  "description": "Self-contained Odai agent preset for DeepSeek Harness.",
+  "version": "0.0.2",
+  "description": "完整继承 DSH Standard 全部能力的 Odai Agent preset。",
   "license": "MIT",
   "repository": {
     "type": "git",

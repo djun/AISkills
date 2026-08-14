@@ -92,6 +92,14 @@ test("uninstall refuses to leave an invalid default preset", async () => {
   }
 });
 
+test("published metadata describes complete DSH Standard capabilities in Chinese", async () => {
+  const packageMetadata = JSON.parse(await readFile(resolve(import.meta.dirname, "../package.json"), "utf8"));
+  const presetMetadata = await readFile(resolve(import.meta.dirname, "../preset/odai/preset.yml"), "utf8");
+
+  assert.match(packageMetadata.description, /完整继承 DSH Standard 全部能力/u);
+  assert.match(presetMetadata, /^description: 完整继承 DSH Standard 全部能力，并叠加 Odai 治理、证据与自动路由。$/mu);
+});
+
 test("DSH home resolution honors explicit path before the environment", () => {
   assert.equal(resolveDshHome("./explicit", { DSH_HOME: "./environment" }), resolve("./explicit"));
   assert.equal(resolveDshHome(undefined, { DSH_HOME: "./environment" }), resolve("./environment"));

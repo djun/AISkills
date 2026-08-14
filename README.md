@@ -84,7 +84,7 @@ dsh plugin --profile web add odai-dsh-plugin
 npx odai-dsh-agent install
 ```
 
-The Plugin command requires `pnpm` on `PATH`; the Agent installer currently requires `dsh@0.1.0-rc.6`. Each package already includes the canonical Odai skill and shared DSH runtime. Plugin needs neither a separate skill nor Agent; Agent needs neither a separate skill nor Plugin. Choose Plugin for profile-wide behavior or Agent for a selectable preset. Installing both is normally redundant and is only for a deliberate combination of those scopes. The existing provider-neutral `odai-cli` remains a separate product.
+The Plugin command requires `pnpm` on `PATH`; the Agent installer currently requires `dsh@0.1.0-rc.6`. Each package already includes the canonical Odai skill and shared DSH runtime. The Agent preserves every capability from the pinned DSH Standard preset and adds Odai as a scoped extension. Plugin needs neither a separate skill nor Agent; Agent needs neither a separate skill nor Plugin. Choose Plugin for profile-wide behavior or Agent for a selectable preset. Installing both is normally redundant and is only for a deliberate combination of those scopes. The existing provider-neutral `odai-cli` remains a separate product.
 
 Neither DSH package chooses planner, executor, or reviewer models. Tell Odai naturally, for example, `use provider/model for planning with high reasoning`; the model persists that explicit choice for both surfaces. If a needed responsibility is still unconfigured, Odai names it and asks for the model instead of claiming that route ran.
 
