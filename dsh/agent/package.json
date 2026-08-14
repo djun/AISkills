@@ -1,6 +1,6 @@
 {
   "name": "odai-dsh-agent",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "完整继承 DSH Standard 全部能力的 Odai Agent preset。",
   "license": "MIT",
   "repository": {
