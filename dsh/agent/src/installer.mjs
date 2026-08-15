@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { parse as parseYaml } from "yaml";
 
@@ -27,6 +27,8 @@ const requiredFiles = Object.freeze([
   "agent.cordis.yml",
   "preset.yml",
   "runtime/index.mjs",
+  "runtime/session-compat.mjs",
+  "runtime/session-evidence.mjs",
   "skills/odai/SKILL.md",
 ]);
 
@@ -65,6 +67,12 @@ export async function installAgentPreset(options = {}) {
   }
 
   await assertSource(sourceRoot);
+  const sessionCompatibility = await repairSessionCompatibility(
+    dshHome,
+    [sourceRoot],
+    options.confirmDshStopped === true,
+    options.processScanner,
+  );
   await mkdir(targetRoot, { recursive: true, mode: 0o700 });
   const staging = resolve(targetRoot, `.${presetId}.tmp-${process.pid}-${randomUUID()}`);
   const backup = resolve(targetRoot, `.${presetId}.backup-${process.pid}-${randomUUID()}`);
@@ -111,6 +119,7 @@ export async function installAgentPreset(options = {}) {
       version: packageMetadata.version,
       trust: "user",
       security: "DSH user presets have the same privileges as shell access; install only reviewed preset code.",
+      sessionCompatibility,
     });
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
@@ -133,8 +142,22 @@ export async function uninstallAgentPreset(options = {}) {
     throw new Error(`refusing to remove modified preset at ${inspected.target}: ${inspected.issues.join("; ")}`);
   }
   await assertPresetIsNotDefault(inspected.dshHome, inspected.presetId);
+  const sessionCompatibility = await repairSessionCompatibility(
+    inspected.dshHome,
+    [defaultSourceRoot, inspected.target],
+    options.confirmDshStopped === true,
+    options.processScanner,
+  );
+  if (sessionCompatibility.failures.length > 0) {
+    throw new Error(`refusing to uninstall before legacy Odai session evidence is made ignorable: ${sessionCompatibility.failures.map((failure) => `${failure.path}: ${failure.error}`).join("; ")}`);
+  }
   await rm(inspected.target, { recursive: true, force: true });
-  return Object.freeze({ operation: "uninstalled", target: inspected.target, presetId: inspected.presetId });
+  return Object.freeze({
+    operation: "uninstalled",
+    target: inspected.target,
+    presetId: inspected.presetId,
+    sessionCompatibility,
+  });
 }
 
 async function assertPresetIsNotDefault(dshHome, presetId) {
@@ -204,6 +227,36 @@ function validateManifest(manifest, presetId) {
     issues.push("managed manifest file map is invalid");
   }
   return issues;
+}
+
+async function repairSessionCompatibility(dshHome, sourceRoots, confirmDshStopped, processScanner) {
+  for (const sourceRoot of sourceRoots) {
+    const modulePath = resolve(sourceRoot, "runtime/session-compat.mjs");
+    if (await pathState(modulePath) !== "file") continue;
+    const compatibility = await import(pathToFileURL(modulePath).href);
+    if (typeof compatibility.inspectLegacySessionLogs !== "function"
+      || typeof compatibility.repairLegacySessionLogs !== "function") {
+      throw new Error(`agent package session compatibility module is invalid: ${modulePath}`);
+    }
+    const inspected = compatibility.inspectLegacySessionLogs({ dshHome });
+    if (inspected.failures.length > 0) {
+      throw new Error(`cannot inspect legacy Odai session evidence safely: ${inspected.failures.map((failure) => `${failure.path}: ${failure.error}`).join("; ")}`);
+    }
+    if (inspected.matchedEvents === 0) return inspected;
+    if (!confirmDshStopped) {
+      throw new Error(`found ${inspected.matchedEvents} legacy Odai session event(s); stop every DSH process and rerun with --yes before changing the Agent preset`);
+    }
+    const repaired = compatibility.repairLegacySessionLogs({
+      dshHome,
+      confirmDshStopped: true,
+      processScanner,
+    });
+    if (repaired.failures.length > 0) {
+      throw new Error(`cannot repair legacy Odai session evidence safely: ${repaired.failures.map((failure) => `${failure.path}: ${failure.error}`).join("; ")}`);
+    }
+    return repaired;
+  }
+  throw new Error("agent package is incomplete: missing runtime/session-compat.mjs");
 }
 
 async function assertSource(sourceRoot) {

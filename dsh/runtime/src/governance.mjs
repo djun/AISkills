@@ -57,9 +57,9 @@ export function createChildToolGuard(options = {}) {
   };
 }
 
-export function activeRouteProtection(agent) {
+export function activeRouteProtection(agent, recordedEvents = agent?.session?.events) {
   if (isSubagent(agent)) return undefined;
-  const events = agent?.session?.events;
+  const events = recordedEvents;
   if (!Array.isArray(events)) return undefined;
 
   let currentTurn;

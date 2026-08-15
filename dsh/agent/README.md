@@ -35,7 +35,7 @@ Open a new DSH session and select `Odai` from the Agent preset picker. Existing 
 
 In `dsh@0.1.0-rc.6`, the one-shot `--profile headless` driver creates a global agent directly and neither mounts nor accepts a session Agent preset. Automated Agent runs must create a Web session with `agentPreset: odai`; use the profile-wide Plugin for one-shot headless tasks.
 
-The installer copies through a mode-tightened staging directory and atomically publishes the preset. Updates verify every previously managed file first, refuse to overwrite local edits, and always change the composition generation key so new sessions in a running DSH process do not reuse stale runtime code.
+The installer copies through a mode-tightened staging directory and atomically publishes the preset. Updates verify every previously managed file first, refuse to overwrite local edits, and always change the composition generation key so new sessions in a running DSH process do not reuse stale runtime code. If install or update finds recognized historical Odai audit records, it refuses to change the preset until every DSH process is stopped and the command is rerun with `--yes`. The confirmed migration adds DSH's official `ignorable: true` envelope marker, covers both plaintext and concatenated-frame Zstandard session artifacts, verifies each replacement, and retains a content-addressed backup without deleting messages or evidence. Confirmation alone is insufficient: migration also refuses when local process inspection fails or finds any active DSH process. Keep DSH stopped until the installer exits because historical runtimes do not participate in a migration lock. An unknown unmarked `odai/*` type blocks the operation instead of being assumed safe to ignore.
 
 DSH classifies this as a `trust: user` preset. User presets have the same privileges as shell access, so install only reviewed package versions; the installer repeats this trust notice in both plain and JSON output.
 
@@ -49,7 +49,7 @@ The Agent ships no planner, executor, or reviewer model mapping. It stays quiet 
 验收改用 provider-z/model-review，推理档 max。
 ```
 
-The controller calls `odai_routing_config` to persist that explicit choice. The user does not edit Agent files, YAML, or JSON and does not add trigger terms to later tasks. Mappings live in `$DSH_HOME/odai/routing.json`, outside the managed preset, so installer updates do not report them as drift. Changes apply from the next user turn. If reasoning effort is omitted, the target provider/model uses its own default rather than inheriting the source controller's setting. Plugin and Agent read the same store when both are deliberately present.
+The controller calls `odai_routing_config` to persist that explicit choice. The user does not edit Agent files, YAML, or JSON and does not add trigger terms to later tasks. Mappings live in `$DSH_HOME/odai/routing.json`, outside the managed preset, so installer updates do not report them as drift. Audit evidence likewise lives under `$DSH_HOME/odai/session-evidence/` instead of using private DSH session-event types, so changing or removing the preset cannot make a session unreadable. Changes apply from the next user turn. If reasoning effort is omitted, the target provider/model uses its own default rather than inheriting the source controller's setting. Plugin and Agent read the same stores when both are deliberately present.
 
 Planner, executor, and reviewer are independent optional responsibilities. If any needed one has no mapping, high-impact work fails closed and remains read-only; lower-impact work continues only where it does not depend on the missing independent responsibility. Odai never chooses a model on the user's behalf.
 
@@ -61,7 +61,7 @@ npx odai-dsh-agent status --json
 npx odai-dsh-agent uninstall
 ```
 
-`status` reports `absent`, `installed`, or `drifted`. Update and uninstall fail closed when managed files were changed or unmanaged files were added. Uninstall also refuses while `agent-presets.default` still names `odai`; select another default first so the next session cannot fail on a missing preset.
+`status` reports `absent`, `installed`, or `drifted`. Update and uninstall fail closed when managed files were changed or unmanaged files were added. Uninstall first checks for legacy Odai session events and, when any exist, requires the same stopped-DSH `--yes` confirmation before making them ignorable; a failed inspection or migration refuses removal. It also refuses while `agent-presets.default` still names `odai`; select another default first so the next session cannot fail on a missing preset. Stop DSH before install, update, or uninstall so session artifacts are not being written concurrently.
 
 ## Plugin versus Agent
 
@@ -71,7 +71,7 @@ Use only the surface that matches the desired scope:
 - `odai-dsh-agent`: selectable Odai governance for only sessions using this preset.
 - both: supported only for a deliberate combination of profile-wide and Agent-scoped behavior; normally redundant, so it is not the default recommendation.
 
-When both are deliberate, durable tool and route evidence is deduplicated and denials remain monotonic. Neither package installs or changes the provider-neutral `odai-cli`.
+When both are deliberate, the shared compatibility-safe evidence store deduplicates tool and route records and denials remain monotonic. Neither package installs or changes the provider-neutral `odai-cli`.
 
 ## Development
 

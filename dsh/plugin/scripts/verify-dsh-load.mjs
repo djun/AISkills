@@ -83,7 +83,7 @@ const patch = [
   "  disabled: true",
   "- insert:",
   "    - id: odai-governance-probe",
-  `      name: ${yamlString(wrapperPath)}`,
+  `      name: ${yamlString(pathToFileURL(wrapperPath).href)}`,
   "      config:",
   `        skillPath: ${yamlString(skillPath)}`,
   "",

@@ -14,3 +14,9 @@
 - 即使用户或 IDE 指向打包期间临时出现的 `cli/skills/`，也要把对应修改落到仓库根 `skills/<name>/`。
 - source 修改完成后，运行 `node scripts/validate-odai-skill.mjs` 验证 canonical skills。
 - 发布相关修改还需运行 `npm --prefix cli run pack:dry-run`，确认产物与当前声明的打包范围一致，且命令结束后没有遗留 `cli/skills/`。
+
+## DSH 集成修改边界
+
+- `odai-dsh-plugin` 与 `odai-dsh-agent` 的问题必须在本仓库内解决；修复实现、兼容层、配置、补丁、测试和文档只能落到本项目受版本控制的文件中。
+- DeepSeek Harness 的源码 checkout、全局或本地安装包、`node_modules/@deepseek-ai/dsh` 及其核心文件一律只读，只能用于定位行为、核对契约和运行兼容性验证；不得直接修改、打补丁或用本机改造后的 DSH 冒充本项目修复。
+- 必须处理 `$DSH_HOME` 中既有用户数据时，只能通过本项目内受版本控制、可审计并带备份与验证的迁移入口执行；迁移须遵守用户授权和停机要求，不得手工篡改 DSH 会话、profile 或核心状态来绕过问题。

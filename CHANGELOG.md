@@ -2,6 +2,13 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-15 — DSH 会话兼容修复
+
+- `odai-dsh-agent@0.0.4` 与 `odai-dsh-plugin@0.0.3` 不再把私有 `odai/*` 审计事件写入 DSH 核心 session log，改为保存到 `$DSH_HOME/odai/session-evidence/`，避免重启后旧 DSH 因未知事件拒绝加载历史。
+- 新增停机迁移：给历史版本写入的八类已知 Odai 审计事件补上 DSH 官方 `ignorable: true` 标记；迁移覆盖 JSONL 与多 frame Zstandard，原子替换并保留校验备份，未知事件拒绝猜测处理，进程检查失败或发现 DSH 仍在运行时拒绝写入。
+- Agent 安装、更新和卸载会先检查历史兼容性；Plugin 提供 `odai-dsh-plugin repair-sessions --yes`。真实 DSH 验证覆盖会话先以 `standard` 创建、再切换到 `odai` 后的 preset 恢复，确保迁移不把模式回退为标准。
+- 两个包要求 Node.js 22.15.0 或更高版本，以匹配历史 Zstandard 会话迁移所依赖的原生 API。
+
 ## 2026-08-14 — DSH Agent 0.0.2
 
 - `odai-dsh-agent` 的 DSH picker 与 npm package description 改为中文，并明确承诺完整继承对应版本 DSH Standard 的全部能力。

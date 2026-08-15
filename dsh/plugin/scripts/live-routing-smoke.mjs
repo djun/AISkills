@@ -39,6 +39,7 @@ const sourceCredentials = resolve(sourceHome, ".credentials.yaml");
 const scratch = await mkdtemp(resolve(tmpdir(), "odai-dsh-live-"));
 const dshHome = resolve(scratch, "home");
 const sessionRoot = resolve(dshHome, "sessions");
+const evidenceRoot = resolve(dshHome, "odai", "session-evidence");
 const patchPath = resolve(scratch, "routing.patch.yml");
 const dsh = process.env.DSH_BIN ?? "dsh";
 
@@ -80,7 +81,7 @@ try {
     },
     timeoutMs: args.timeoutMs,
   });
-  const sessions = (await readSessions(sessionRoot)).map(summarizeSession);
+  const sessions = (await readSessions(sessionRoot, evidenceRoot)).map(summarizeSession);
   const verification = verifySmoke(sessions, args);
   const report = {
     ok: run.code === 0 && verification.ok,
@@ -344,17 +345,39 @@ function runProcess(command, commandArgs, options) {
   });
 }
 
-async function readSessions(root) {
+async function readSessions(root, evidenceRoot) {
   if (!existsSync(root)) return [];
+  const evidence = await readEvidence(evidenceRoot);
   const files = await listFiles(root);
   const sessions = [];
   for (const file of files.filter((candidate) => candidate.endsWith("session.jsonl"))) {
     const lines = (await readFile(file, "utf8")).trim().split("\n").filter(Boolean);
     if (lines.length === 0) continue;
     const records = lines.map((line) => JSON.parse(line));
-    sessions.push({ header: records[0], events: records.slice(1) });
+    sessions.push({
+      header: records[0],
+      events: [...records.slice(1), ...(evidence.get(records[0].id) ?? [])],
+    });
   }
   return sessions;
+}
+
+async function readEvidence(root) {
+  const bySession = new Map();
+  if (!existsSync(root)) return bySession;
+  for (const file of await listFiles(root)) {
+    if (!file.endsWith(".jsonl")) continue;
+    const text = await readFile(file, "utf8");
+    const complete = text.endsWith("\n") ? text : text.slice(0, text.lastIndexOf("\n") + 1);
+    for (const line of complete.split("\n").filter(Boolean)) {
+      const record = JSON.parse(line);
+      if (record?.schemaVersion !== 1 || typeof record.sessionId !== "string") continue;
+      const events = bySession.get(record.sessionId) ?? [];
+      events.push({ type: record.type, time: record.time, data: record.data });
+      bySession.set(record.sessionId, events);
+    }
+  }
+  return bySession;
 }
 
 async function listFiles(root) {

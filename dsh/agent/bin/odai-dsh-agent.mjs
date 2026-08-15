@@ -18,6 +18,7 @@ Commands:
 Options:
   --dsh-home <path>  Override DSH_HOME
   --json             Print JSON
+  --yes              Confirm DSH is stopped; active-process verification still applies
   -h, --help         Show this help
 `;
 
@@ -27,13 +28,19 @@ try {
     process.stdout.write(HELP);
   } else if (args.command === "install") {
     assertDshVersion();
-    print(await installAgentPreset({ dshHome: args.dshHome }), args.json);
+    print(await installAgentPreset({
+      dshHome: args.dshHome,
+      confirmDshStopped: args.yes,
+    }), args.json);
   } else if (args.command === "status") {
     const result = await inspectAgentInstallation({ dshHome: args.dshHome });
     print(result, args.json);
     if (result.status === "drifted") process.exitCode = 2;
   } else if (args.command === "uninstall") {
-    print(await uninstallAgentPreset({ dshHome: args.dshHome }), args.json);
+    print(await uninstallAgentPreset({
+      dshHome: args.dshHome,
+      confirmDshStopped: args.yes,
+    }), args.json);
   } else {
     throw new Error("a command is required\n\n" + HELP);
   }
@@ -56,11 +63,12 @@ function assertDshVersion() {
 }
 
 function parseArgs(argv) {
-  const parsed = { command: undefined, dshHome: undefined, json: false, help: false };
+  const parsed = { command: undefined, dshHome: undefined, json: false, yes: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "-h" || arg === "--help") parsed.help = true;
     else if (arg === "--json") parsed.json = true;
+    else if (arg === "--yes") parsed.yes = true;
     else if (arg === "--dsh-home") parsed.dshHome = argv[++index];
     else if (!parsed.command && ["install", "status", "uninstall"].includes(arg)) parsed.command = arg;
     else throw new Error(`unknown argument: ${arg}`);
@@ -82,5 +90,17 @@ function print(result, json) {
     return;
   }
   process.stdout.write(`${result.operation}: ${result.target}\n`);
+  if (result.sessionCompatibility?.repairedEvents > 0) {
+    process.stdout.write(`session compatibility: made ${result.sessionCompatibility.repairedEvents} legacy Odai event(s) ignorable in ${result.sessionCompatibility.repairedArtifacts} session artifact(s)\n`);
+  }
+  if (result.sessionCompatibility?.backupPaths?.length > 0) {
+    process.stdout.write(`session compatibility: retained ${result.sessionCompatibility.backupPaths.length} verified backup artifact(s)\n`);
+  }
+  for (const path of result.sessionCompatibility?.tornArtifacts ?? []) {
+    process.stdout.write(`session compatibility warning: preserved DSH-recoverable torn tail: ${path}\n`);
+  }
+  for (const failure of result.sessionCompatibility?.failures ?? []) {
+    process.stdout.write(`session compatibility warning: ${failure.path}: ${failure.error}\n`);
+  }
   if (result.security) process.stdout.write(`security: ${result.security}\n`);
 }

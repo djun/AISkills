@@ -180,7 +180,8 @@ function resultFor(configPath, action, roles, responsibility, recoveredInvalidSt
   };
 }
 
-export function createRoutingConfigTool(configPath) {
+export function createRoutingConfigTool(configPath, options = {}) {
+  const onConfigured = typeof options.onConfigured === "function" ? options.onConfigured : () => {};
   return {
     name: "odai_routing_config",
     description: [
@@ -301,7 +302,7 @@ export function createRoutingConfigTool(configPath) {
         if (args.action === "remove") delete roles[args.responsibility];
         else roles[args.responsibility] = proposedRoute;
         writeRoutingStore(configPath, roles);
-        execution.agent.session?.append?.("odai/routing-configured", {
+        onConfigured(execution.agent, {
           action: args.action,
           responsibility: args.responsibility,
           route: roles[args.responsibility],

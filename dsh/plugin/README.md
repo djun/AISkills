@@ -7,7 +7,7 @@ The bundle contributes:
 - canonical `skills/odai/SKILL.md` governance as a system-prompt section;
 - deterministic routing that keeps ordinary work on the current controller, upgrades configured contextual decision gaps in place, and delegates only genuine independent gaps;
 - monotonic write boundaries for child agents and unresolved high-impact controller turns;
-- durable route decisions, upgrades, child outcomes, protections, policy denials, and compact tool outcomes;
+- durable route decisions, upgrades, child outcomes, protections, policy denials, and compact tool outcomes stored outside DSH's core session-event vocabulary;
 - actual controller/child provider-model evidence, fail-closed high-impact failures, and direct fallback only where it is safe.
 
 ## Install
@@ -19,6 +19,16 @@ dsh plugin --profile web add odai-dsh-plugin
 ```
 
 The package declares `dsh.bundle`, so DSH adds it to that profile's bundle stack. It already contains the canonical Odai skill and runtime; do not install the skill or Agent package separately for Plugin use. Start a new DSH process after installation. Agent-only users should install `odai-dsh-agent` instead; that package is self-contained and does not activate this bundle.
+
+Odai audit evidence is stored under `$DSH_HOME/odai/session-evidence/`, not as private event types in DSH's core session log. This keeps every session written by the current Plugin readable when the Plugin is removed or upgraded.
+
+Older releases wrote `odai/*` audit records into DSH's core log without its official `ignorable: true` envelope marker. Stop every DSH process before updating or removing an older Plugin, then run the explicit compatibility repair:
+
+```sh
+npx odai-dsh-plugin repair-sessions --yes
+```
+
+The repair adds only that marker to the eight audit event types written by historical Odai releases; it does not remove messages or audit payloads. An unknown unmarked `odai/*` type is refused rather than guessed to be ignorable. `DSH_HOME` is honored; use `--dsh-home /path/to/dsh-home` for another home and `--json` for a machine-readable report. It handles both `session.jsonl` and DSH's concatenated-frame `session.jsonl.zstd` format, verifies every rewritten artifact, replaces it atomically, and retains a content-addressed backup beside each changed log. `--yes` is not the only guard: the command also inspects local process command lines and refuses when that check fails or any DSH process is active. If an artifact changes during preparation or contains malformed committed data, that artifact is not rewritten and the command reports a failure. Do not restart DSH until the whole migration exits because historical runtimes do not participate in a migration lock.
 
 ## Routing modes
 
@@ -43,7 +53,7 @@ Risk or task size alone never triggers another model. Role language inside quote
 
 ## Coexistence
 
-The Plugin and Agent packages are independently installable and self-contained. Plugin is profile-wide; Agent is one dedicated preset. Installing both is normally redundant and is not the default recommendation. Use both only when the deliberate design is profile-wide Plugin behavior plus an Agent-scoped preset in the same profile. In that case, durable event identities deduplicate each tool observation and turn/step route, DSH shadows the canonical prompt section by scope, and tool denials remain monotonic.
+The Plugin and Agent packages are independently installable and self-contained. Plugin is profile-wide; Agent is one dedicated preset. Installing both is normally redundant and is not the default recommendation. Use both only when the deliberate design is profile-wide Plugin behavior plus an Agent-scoped preset in the same profile. In that case, shared session-evidence identities deduplicate each tool observation and turn/step route, DSH shadows the canonical prompt section by scope, and tool denials remain monotonic. Removing either package does not remove the compatibility-safe evidence store or make the DSH session log depend on that package.
 
 ## Development
 
@@ -55,7 +65,7 @@ npm --prefix dsh/plugin run verify:dsh
 npm --prefix dsh/plugin run pack:dry-run
 ```
 
-The load probe uses a temporary `DSH_HOME`, does not call a model, validates tool registration in DSH, checks persisted responsibility configuration, and verifies both the child boundary and protected-controller write denial through DSH's real tool runtime. An explicitly authorized live routing smoke can use isolated copies of the current DSH settings and credential references:
+The verification first reproduces rc.6's exact `SessionFormatUnsupportedError` for legacy Agent and Plugin logs, repairs them, and proves DSH's real JSONL/Zstandard backend plus `PersistenceCoordinator` accepts both while verified original backups remain available. The load probe then uses a temporary `DSH_HOME`, does not call a model, validates tool registration in DSH, checks persisted responsibility configuration, and verifies both the child boundary and protected-controller write denial through DSH's real tool runtime. An explicitly authorized live routing smoke can use isolated copies of the current DSH settings and credential references:
 
 ```sh
 npm --prefix dsh/plugin run smoke:live -- --yes

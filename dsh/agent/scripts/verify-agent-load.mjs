@@ -30,16 +30,29 @@ const yaml = (value) => JSON.stringify(value);
 
 function findDshPackageRoot(command) {
   const locator = process.platform === "win32" ? "where" : "which";
-  const located = execFileSync(locator, [command], { encoding: "utf8" }).trim().split(/\r?\n/u)[0];
-  let current = dirname(realpathSync(located));
-  while (dirname(current) !== current) {
-    try {
-      const metadata = JSON.parse(readFileSync(resolve(current, "package.json"), "utf8"));
-      if (metadata.name === "@deepseek-ai/dsh") return current;
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+  const located = execFileSync(locator, [command], { encoding: "utf8" })
+    .trim()
+    .split(/\r?\n/u)
+    .filter(Boolean);
+  const candidates = new Set();
+  for (const path of located) {
+    const commandDir = dirname(realpathSync(path));
+    candidates.add(commandDir);
+    candidates.add(resolve(commandDir, "node_modules/@deepseek-ai/dsh"));
+  }
+  for (const candidate of candidates) {
+    let current = candidate;
+    for (;;) {
+      try {
+        const metadata = JSON.parse(readFileSync(resolve(current, "package.json"), "utf8"));
+        if (metadata.name === "@deepseek-ai/dsh") return current;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
     }
-    current = dirname(current);
   }
   throw new Error(`cannot locate the @deepseek-ai/dsh package behind ${command}`);
 }
@@ -50,7 +63,8 @@ async function verifyPinnedComposition() {
     throw new Error(`agent preset expects DSH ${SUPPORTED_DSH_VERSION}, found ${dshMetadata.version}`);
   }
 
-  const standard = await readFile(resolve(dshRoot, "config/agent-presets/standard/agent.cordis.yml"), "utf8");
+  const standard = (await readFile(resolve(dshRoot, "config/agent-presets/standard/agent.cordis.yml"), "utf8"))
+    .replace(/\r\n/gu, "\n");
   const odaiSuffix = [
     "# Odai contributes scoped prompt, guard, routing, user-owned responsibility",
     "# mappings, and evidence listeners. Base controller selection stays host-owned.",
@@ -71,7 +85,9 @@ async function verifyPinnedComposition() {
       "You are Odai, a coding agent. Your working directory is {{cwd}}.",
     )
     .trimEnd()}\n\n${odaiSuffix}`;
-  const actual = (await readFile(resolve(agentRoot, "preset/odai/agent.cordis.yml"), "utf8")).trimEnd();
+  const actual = (await readFile(resolve(agentRoot, "preset/odai/agent.cordis.yml"), "utf8"))
+    .replace(/\r\n/gu, "\n")
+    .trimEnd();
   if (actual !== expected) {
     throw new Error("Odai Agent composition drifted from the pinned DSH standard preset");
   }
@@ -127,6 +143,23 @@ async function waitForMarker(child, output) {
   throw new Error(`timed out waiting for scope marker\n${output()}`);
 }
 
+async function terminateChild(child) {
+  if (process.platform === "win32" && child.pid) {
+    try {
+      execFileSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      if (child.exitCode === null) child.kill("SIGTERM");
+    }
+  } else if (child.exitCode === null) {
+    child.kill("SIGTERM");
+  }
+  await new Promise((accept) => {
+    if (child.exitCode !== null) return accept();
+    const timeout = setTimeout(() => { child.kill("SIGKILL"); accept(); }, 3_000);
+    child.once("exit", () => { clearTimeout(timeout); accept(); });
+  });
+}
+
 await mkdir(workspace, { recursive: true });
 await cp(resolve(agentRoot, "preset/odai"), sourceRoot, { recursive: true });
 const developmentRuntime = resolve(repoRoot, "dsh/runtime/src");
@@ -147,7 +180,7 @@ await writeFile(probePluginPath, probePlugin, "utf8");
 await writeFile(patchPath, [
   "- insert:",
   "    - id: odai-agent-scope-probe",
-  `      name: ${yaml(probePluginPath)}`,
+  `      name: ${yaml(pathToFileURL(probePluginPath).href)}`,
   "      config:",
   `        markerPath: ${yaml(markerPath)}`,
   `        standardWritePath: ${yaml(resolve(workspace, "standard-child-write.txt"))}`,
@@ -206,13 +239,8 @@ try {
   }
   process.stdout.write(`${JSON.stringify({ scratch, roster: ids, results }, null, 2)}\n`);
 } finally {
-  child.kill("SIGTERM");
-  await new Promise((accept) => {
-    if (child.exitCode !== null) return accept();
-    const timeout = setTimeout(() => { child.kill("SIGKILL"); accept(); }, 3_000);
-    child.once("exit", () => { clearTimeout(timeout); accept(); });
-  });
+  await terminateChild(child);
   if (process.env.KEEP_ODAI_SCOPE_PROBE !== "1") {
-    await rm(scratch, { recursive: true, force: true });
+    await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }

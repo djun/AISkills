@@ -24,7 +24,7 @@ dsh plugin --profile web add odai-dsh-plugin
 npx odai-dsh-agent install
 ```
 
-For Plugin, start a new DSH process after installation and use that profile normally. The Agent preserves every capability from the pinned DSH Standard preset and adds Odai as a scoped extension; open a new DSH session and select `Odai` from the Agent preset picker. Then submit ordinary task requests; neither surface requires a routing command or special trigger wording.
+For Plugin, start a new DSH process after installation and use that profile normally. The Agent preserves every capability from the pinned DSH Standard preset and adds Odai as a scoped extension; open a new DSH session and select `Odai` from the Agent preset picker. Then submit ordinary task requests; neither surface requires a routing command or special trigger wording. Current releases keep Odai audit evidence outside DSH's core event vocabulary. Before updating or removing an older Plugin, stop every DSH process and run `npx odai-dsh-plugin repair-sessions --yes` once so recognized historical Odai audit events receive DSH's official ignorable marker and a verified backup is retained; unknown Odai event types fail closed. The repair additionally refuses when local process inspection fails or finds DSH still running; keep DSH stopped until it exits.
 
 Configure optional responsibility models by speaking naturally, for example:
 
@@ -48,7 +48,7 @@ No user-facing package depends on another Odai package:
 
 - Plugin-only installation contains its canonical skill and runtime; no separate skill or Agent install is required.
 - Agent-only installation contains its canonical skill and runtime, needs no Plugin, and does not edit a profile.
-- Plugin is profile-wide; Agent is preset-scoped. Installing both is normally redundant and should be reserved for a deliberate combination of those scopes. Durable event deduplication supports that case.
+- Plugin is profile-wide; Agent is preset-scoped. Installing both is normally redundant and should be reserved for a deliberate combination of those scopes. Shared evidence under `$DSH_HOME/odai/session-evidence/` deduplicates that case without adding private event types to DSH's core session log.
 
 Users configure optional responsibilities by speaking normally, for example, `规划用 provider/model，推理档 high` or `验收模型改成 provider/model-review`. The controller calls `odai_routing_config`; it must not choose a model that the user did not specify. Mappings persist in `$DSH_HOME/odai/routing.json`, outside both managed package artifacts, and take effect on the next user turn. Users never edit that file directly. If the store is invalid, governance still loads; a needed route fails closed, and the next explicit natural-language `set` preserves the invalid copy and repairs the store.
 

@@ -26,6 +26,7 @@ import {
   resolveRoleRoute,
   resolveRoutingConfigPath,
 } from "./routing-config.mjs";
+import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
 
 export const name = "odai-dsh-runtime";
 export const inject = ["systemPrompt", "tools", "subagents"];
@@ -140,20 +141,6 @@ function pluginMessage(text, summary, extraBlocks = []) {
 function loggerFor(ctx) {
   if (typeof ctx.logger !== "function") return { info() {}, warn() {} };
   return ctx.logger(name);
-}
-
-function appendEvent(agent, type, data, logger) {
-  try {
-    agent?.session?.append(type, data);
-  } catch (error) {
-    logger.warn(`failed to append ${type}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-function hasSessionEvent(agent, type, predicate) {
-  const events = agent?.session?.events;
-  if (!Array.isArray(events)) return false;
-  return events.some((event) => event?.type === type && predicate(event.data));
 }
 
 function outputText(blocks) {
@@ -303,6 +290,18 @@ function routedRoleOf(agent) {
 export function apply(ctx, rawConfig) {
   const config = resolveConfig(rawConfig);
   const logger = loggerFor(ctx);
+  const evidence = createSessionEvidence({
+    root: resolveSessionEvidenceRoot(config.routing.configPath),
+    logger,
+  });
+  const appendEvent = (agent, type, data) => {
+    try {
+      evidence.append(agent, type, data);
+    } catch (error) {
+      logger.warn(`failed to record ${type}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const hasSessionEvent = (agent, type, predicate) => evidence.has(agent, type, predicate);
   const skillPath = resolveSkillPath(config.skillPath);
   const skillText = readFileSync(skillPath, "utf8").trim();
   if (!skillText) throw new Error(`odai canonical skill is empty: ${skillPath}`);
@@ -347,10 +346,14 @@ export function apply(ctx, rawConfig) {
     onDenied,
     protectionFor(agent) {
       if (config.routing.mode === "off") return undefined;
-      return routeProtections.get(agent) ?? activeRouteProtection(agent);
+      return routeProtections.get(agent) ?? activeRouteProtection(agent, evidence.events(agent));
     },
   });
-  ctx.tools.register(createRoutingConfigTool(config.routing.configPath));
+  ctx.tools.register(createRoutingConfigTool(config.routing.configPath, {
+    onConfigured(agent, data) {
+      appendEvent(agent, "odai/routing-configured", data);
+    },
+  }));
   ctx.tools.guard((execution) => childGuard(execution) ?? routeProtectionGuard(execution));
 
   ctx.on("tools/result", (execution, result) => {

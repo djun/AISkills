@@ -9,6 +9,10 @@ import {
   resolveConfig,
   runRoutedRole,
 } from "../src/index.mjs";
+import {
+  readStoredSessionEvidence,
+  resolveSessionEvidenceRoot,
+} from "../src/session-evidence.mjs";
 
 const skillPath = resolve(import.meta.dirname, "../../../skills/odai/SKILL.md");
 const previousDshHome = process.env.DSH_HOME;
@@ -150,6 +154,33 @@ test("default auto routing keeps ordinary tasks on the current controller", asyn
   assert.equal(events[0].data.role, "controller");
   assert.equal(events[0].data.mode, "auto");
   assert.equal(events[0].data.action, "direct");
+});
+
+test("real sessions persist routing evidence outside the DSH event log", async () => {
+  const configPath = resolve(testDshHome, "real-session-evidence", "routing.json");
+  const ctx = fakeContext();
+  apply(ctx, { skillPath, routing: { configPath } });
+  let sessionAppends = 0;
+  const agent = {
+    session: {
+      header: { id: "real-session-evidence" },
+      events: [],
+      append() { sessionAppends += 1; },
+    },
+  };
+  await ctx.captured.handlers.get("agent/pre-step")({
+    agent,
+    turn: 1,
+    step: 1,
+    signal: new AbortController().signal,
+  }, async () => ({
+    kind: "enter",
+    messages: [userMessage("把普通按钮文案改得更清楚")],
+  }));
+
+  assert.equal(sessionAppends, 0);
+  const events = readStoredSessionEvidence(resolveSessionEvidenceRoot(configPath), "real-session-evidence");
+  assert.deepEqual(events.map((event) => event.type), ["odai/route-decided"]);
 });
 
 test("role model selection overrides the child request but not the controller", async () => {

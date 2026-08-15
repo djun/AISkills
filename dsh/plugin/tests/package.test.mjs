@@ -18,7 +18,11 @@ test("bundle patch resolves the packaged runtime through the package export", as
   assert.match(patch, /mode: auto/u);
   assert.doesNotMatch(patch, /roles:|planner:|executor:|reviewer:|model:|reasoningEffort:|maxTokens:/u);
   assert.doesNotMatch(patch, /name: \.\/runtime/u);
+  assert.equal(metadata.bin["odai-dsh-plugin"], "./bin/odai-dsh-plugin.mjs");
+  assert.equal(metadata.engines.node, ">=22.15.0");
+  assert.ok(metadata.files.includes("bin"));
   assert.ok(metadata.files.includes("scripts/dsh-process.mjs"));
+  assert.ok(metadata.files.includes("scripts/verify-session-compat.mjs"));
 });
 
 test("DSH process spawn supports Windows npm command shims", () => {
