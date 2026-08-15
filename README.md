@@ -164,7 +164,7 @@ trusted memory, agent coordination, independent challenge, or consensus;
 existing memory stays authoritative instead of being mirrored.
 ```
 
-The framework owns the task from understanding through delivery. Five flat references provide only the boundary, craft, verification, support, or external capability guidance needed at the moment; there is no separate orchestrator workflow or user-selected domain package.
+The framework owns the task from understanding through delivery. Six flat references provide only the boundary, craft, executable planning and durable handoff, verification, support, or external capability guidance needed at the moment; there is no separate orchestrator workflow or user-selected domain package.
 
 odai's complete capability is not just its entry text. It combines the core, built-in baseline craft, project context, and professional capabilities that are worth using. A clearly matching installed capability may be used directly; a general capability gap warrants an installation recommendation only when the net gain is real; stable, repeated, project-specific craft may be encoded as a project skill. Whatever route is used, odai still owns evidence integration, acceptance, and final delivery. Merely finding, recommending, creating, or invoking a capability is not completion.
 
@@ -176,7 +176,8 @@ The internal structure is organized by responsibility, not by mandatory stages:
 | --- | --- |
 | Kernel | Core principle, adaptive progression, minimum boundaries, and loading map |
 | `dao.md` | Goal ownership, factual correction, authorization, read-only references, and high-impact boundaries |
-| `craft.md` | Planning, implementation, design, UI and real-time interaction, writing, and review |
+| `craft.md` | Lightweight planning, implementation, design, UI and real-time interaction, writing, and review |
+| `planning.md` | Executable engineering plans, requirement coverage, work-package dependencies, durable handoffs, and recovery order |
 | `verification.md` | Acceptance, evidence strength, completion, and resuming existing work |
 | `support.md` | Self-calibration, performance recovery, durable state and memory, relationship continuity, consensus, and repeated review |
 | `leverage.md` | Capability escalation and delegation, external capability discovery, net-benefit decisions, installation, creation, composition, and agent collaboration |
