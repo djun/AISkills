@@ -52,17 +52,15 @@ try {
     const composition = await readFile(compositionPath, "utf8");
     await writeFile(compositionPath, configureAgentRouting(composition, args), "utf8");
   }
-  if (args.outputConcise || args.controllerMaxTokens !== undefined) {
-    const outputRoot = resolve(dshHome, "odai");
-    await mkdir(outputRoot, { recursive: true });
-    await writeFile(resolve(outputRoot, "output.json"), `${JSON.stringify({
-      schemaVersion: 1,
-      policy: {
-        concise: args.outputConcise,
-        ...(args.controllerMaxTokens === undefined ? {} : { maxTokens: args.controllerMaxTokens }),
-      },
-    }, null, 2)}\n`, "utf8");
-  }
+  const outputRoot = resolve(dshHome, "odai");
+  await mkdir(outputRoot, { recursive: true });
+  await writeFile(resolve(outputRoot, "output.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    policy: {
+      concise: args.outputConcise,
+      ...(args.controllerMaxTokens === undefined ? {} : { maxTokens: args.controllerMaxTokens }),
+    },
+  }, null, 2)}\n`, "utf8");
 
   const patch = [
     "- id: session-persistence-jsonl",

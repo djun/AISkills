@@ -16,11 +16,11 @@ import { acquireOwnedStoreLock } from "../src/store-lock.mjs";
 
 test("output policy validates explicit user-owned values and renders bounded guidance", () => {
   assert.deepEqual(resolveOutputPolicy({ concise: true }), { concise: true });
+  assert.deepEqual(resolveOutputPolicy({ concise: false }), { concise: false });
   assert.deepEqual(resolveOutputPolicy({ concise: false, maxTokens: 2_500 }), {
     concise: false,
     maxTokens: 2_500,
   });
-  assert.throws(() => resolveOutputPolicy({ concise: false }), /would have no effect/u);
   assert.throws(() => resolveOutputPolicy({ concise: true, maxTokens: 0 }), /positive integer/u);
   assert.throws(() => resolveOutputPolicy({ concise: true, model: "forbidden" }), /unknown fields: model/u);
   assert.throws(() => resolveOutputPolicy(Object.create({ concise: true })), /own boolean property/u);
@@ -40,6 +40,8 @@ test("output policy store is atomic, repairable, locked, and resettable", async 
         events.push(data);
       },
     });
+    assert.match(tool.description, /economy mode.*defaults to 500/u);
+    assert.match(tool.description, /Remove restores soft concise/u);
     const execution = { agent: { session: { header: {} } } };
     const lineageChildTool = createOutputConfigTool(configPath, { isChild: () => true });
     assert.throws(
@@ -47,15 +49,44 @@ test("output policy store is atomic, repairable, locked, and resettable", async 
       /child agents may not change/u,
     );
 
+    mkdirSync(resolve(root, "odai"), { recursive: true });
+    writeFileSync(configPath, `${JSON.stringify({
+      schemaVersion: 1,
+      policy: { concise: false, maxTokens: 2_500 },
+    })}\n`, "utf8");
+    assert.deepEqual(readOutputPolicyStore(configPath).policy, { concise: false, maxTokens: 2_500 });
+    rmSync(configPath);
+
     assert.deepEqual(effectiveOutputPolicy(configPath), {
-      policy: { concise: false },
+      policy: { concise: true },
       source: "default",
     });
-    const ceilingOnly = await tool.execute({ action: "set", concise: false, maxTokens: 2_500 }, execution);
-    assert.deepEqual(ceilingOnly.policy, { concise: false, maxTokens: 2_500 });
-    assert.deepEqual(readOutputPolicyStore(configPath).policy, { concise: false, maxTokens: 2_500 });
-    assert.match(tool.output.render({}, ceilingOnly)[0].text, /concise=off, maxTokens=2500/u);
-    assert.match(tool.output.render({}, ceilingOnly)[0].text, /strict provider compliance is not guaranteed/u);
+    const normal = await tool.execute({ action: "set", mode: "normal" }, execution);
+    assert.deepEqual(normal.policy, { concise: false });
+    assert.deepEqual(readOutputPolicyStore(configPath).policy, { concise: false });
+    const concise = await tool.execute({ action: "set", mode: "concise" }, execution);
+    assert.deepEqual(concise.policy, { concise: true });
+    assert.deepEqual(readOutputPolicyStore(configPath).policy, { concise: true });
+    const economy = await tool.execute({ action: "set", mode: "economy" }, execution);
+    assert.deepEqual(economy.policy, { concise: true, maxTokens: 500 });
+    assert.deepEqual(readOutputPolicyStore(configPath).policy, { concise: true, maxTokens: 500 });
+    const adjustedEconomy = await tool.execute({
+      action: "set",
+      mode: "economy",
+      maxTokens: 1_200,
+    }, execution);
+    assert.deepEqual(adjustedEconomy.policy, { concise: true, maxTokens: 1_200 });
+    assert.deepEqual(readOutputPolicyStore(configPath).policy, { concise: true, maxTokens: 1_200 });
+    assert.match(tool.output.render({}, adjustedEconomy)[0].text, /concise=on, maxTokens=1200/u);
+    assert.match(tool.output.render({}, adjustedEconomy)[0].text, /strict provider compliance is not guaranteed/u);
+    assert.throws(
+      () => tool.execute({ action: "set", mode: "normal", maxTokens: 500 }, execution),
+      /accepted only with economy mode/u,
+    );
+    assert.throws(
+      () => tool.execute({ action: "set", concise: false, maxTokens: 2_500 }, execution),
+      /requires concise=true or mode=economy/u,
+    );
 
     mkdirSync(resolve(root, "odai"), { recursive: true });
     writeFileSync(configPath, "{broken\n", "utf8");
@@ -72,9 +103,9 @@ test("output policy store is atomic, repairable, locked, and resettable", async 
     rmSync(`${configPath}.lock`, { force: true });
 
     const removed = await tool.execute({ action: "remove" }, execution);
-    assert.deepEqual(removed.policy, { concise: false });
+    assert.deepEqual(removed.policy, { concise: true });
     assert.equal(removed.source, "default");
-    assert.equal(events.length, 3);
+    assert.equal(events.length, 6);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

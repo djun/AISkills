@@ -156,6 +156,10 @@ test("DSH canary runner isolates Plugin and Agent routing surfaces", async () =>
     assert.equal(plugin.hasAgent, false);
     assert.match(plugin.patch, /mode: observe/u);
     assert.doesNotMatch(plugin.settings, /agent-presets:/u);
+    assert.deepEqual(plugin.outputPolicy, {
+      schemaVersion: 1,
+      policy: { concise: false },
+    });
 
     const agent = await runSurface({
       root,

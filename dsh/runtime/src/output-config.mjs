@@ -13,7 +13,9 @@ import { acquireOwnedStoreLock } from "./store-lock.mjs";
 
 const STORE_SCHEMA_VERSION = 1;
 const POLICY_FIELDS = new Set(["concise", "maxTokens"]);
-export const DEFAULT_OUTPUT_POLICY = Object.freeze({ concise: false });
+const OUTPUT_MODES = new Set(["normal", "concise", "economy"]);
+const DEFAULT_ECONOMY_MAX_TOKENS = 500;
+export const DEFAULT_OUTPUT_POLICY = Object.freeze({ concise: true });
 
 export class OutputPolicyStoreValidationError extends Error {}
 
@@ -34,9 +36,6 @@ export function resolveOutputPolicy(value, field = "Odai output policy") {
   if (policy.maxTokens !== undefined
     && (!Number.isSafeInteger(policy.maxTokens) || policy.maxTokens <= 0)) {
     throw new TypeError(`${field}.maxTokens must be a positive integer`);
-  }
-  if (!policy.concise && policy.maxTokens === undefined) {
-    throw new TypeError(`${field} would have no effect; remove the override instead`);
   }
   return Object.freeze({
     concise: policy.concise,
@@ -150,6 +149,33 @@ export function renderOutputPolicyPrompt(policy) {
   ].join("\n");
 }
 
+function resolveSetPolicy(args) {
+  if (args.mode === undefined) {
+    if (args.concise === false && args.maxTokens !== undefined) {
+      throw new TypeError("maxTokens requires concise=true or mode=economy");
+    }
+    return resolveOutputPolicy({
+      concise: args.concise,
+      ...(args.maxTokens === undefined ? {} : { maxTokens: args.maxTokens }),
+    });
+  }
+  if (!OUTPUT_MODES.has(args.mode)) {
+    throw new TypeError("mode must be normal, concise, or economy");
+  }
+  if (args.concise !== undefined) {
+    throw new TypeError("concise must be omitted when mode is supplied");
+  }
+  if (args.mode !== "economy" && args.maxTokens !== undefined) {
+    throw new TypeError("maxTokens is accepted only with economy mode");
+  }
+  return resolveOutputPolicy({
+    concise: args.mode !== "normal",
+    ...(args.mode === "economy"
+      ? { maxTokens: args.maxTokens ?? DEFAULT_ECONOMY_MAX_TOKENS }
+      : {}),
+  });
+}
+
 export function createOutputConfigTool(configPath, options = {}) {
   const onConfigured = typeof options.onConfigured === "function" ? options.onConfigured : () => {};
   const isChild = typeof options.isChild === "function"
@@ -162,9 +188,10 @@ export function createOutputConfigTool(configPath, options = {}) {
   return {
     name: "odai_output_config",
     description: [
-      "Inspect, set, or remove the shared, default-off Odai controller output policy.",
-      "Use only when the user explicitly requests concise responses or supplies maxTokens; never choose values.",
-      "Changes start next user turn. maxTokens is a provider request ceiling, not locally enforced; providers may include reasoning, exceed or ignore it, or truncate responses. Child-agent and compaction budgets stay unchanged.",
+      "Inspect, set, or remove the shared Odai controller output policy; the package default is soft concise.",
+      "Normal mode is concise=false with no maxTokens; soft concise is concise=true with no maxTokens; economy mode is concise=true with a user-adjustable maxTokens request ceiling and defaults to 500 only when the user names economy without another value.",
+      "Use only when the user explicitly requests an output mode or supplies a custom maxTokens; never invent a non-default custom value. Remove restores soft concise.",
+      "Changes start next user turn. maxTokens is a provider request ceiling, not locally enforced; providers may include reasoning, exceed or ignore it, or truncate responses. Child-agent, compaction, checkpoint, and other internal budgets stay unchanged.",
     ].join(" "),
     parameters: {
       type: "object",
@@ -175,13 +202,18 @@ export function createOutputConfigTool(configPath, options = {}) {
           type: "string",
           enum: ["show", "set", "remove"],
         },
+        mode: {
+          type: "string",
+          enum: ["normal", "concise", "economy"],
+          description: "Preferred for set; economy defaults maxTokens to 500 unless the user supplies another positive value.",
+        },
         concise: {
           type: "boolean",
-          description: "Required for set; must be user-selected.",
+          description: "Backward-compatible alternative for set; omit when mode is supplied.",
         },
         maxTokens: {
           type: "integer",
-          description: "Optional positive user-supplied provider request ceiling for controller output.",
+          description: "Optional positive replacement for economy mode's default 500-token provider request ceiling.",
         },
       },
     },
@@ -227,24 +259,20 @@ export function createOutputConfigTool(configPath, options = {}) {
       if (!execution.agent) throw new Error("odai_output_config requires an owning agent session");
       if (isChild(execution.agent)) throw new Error("child agents may not change Odai output configuration");
       if (!args || typeof args !== "object" || Array.isArray(args)) throw new TypeError("arguments must be an object");
-      const unknown = Object.keys(args).filter((field) => !["action", "concise", "maxTokens"].includes(field));
+      const unknown = Object.keys(args).filter((field) => !["action", "mode", "concise", "maxTokens"].includes(field));
       if (unknown.length > 0) throw new TypeError(`unknown arguments: ${unknown.join(", ")}`);
       if (!["show", "set", "remove"].includes(args.action)) throw new TypeError("action must be show, set, or remove");
       if (args.action === "show") {
-        if (args.concise !== undefined || args.maxTokens !== undefined) {
-          throw new TypeError("concise and maxTokens must be omitted for show");
+        if (args.mode !== undefined || args.concise !== undefined || args.maxTokens !== undefined) {
+          throw new TypeError("mode, concise, and maxTokens must be omitted for show");
         }
         return Promise.resolve(resultFor(configPath, "show", effectiveOutputPolicy(configPath)));
       }
-      if (args.action === "remove" && (args.concise !== undefined || args.maxTokens !== undefined)) {
-        throw new TypeError("concise and maxTokens must be omitted for remove");
+      if (args.action === "remove"
+        && (args.mode !== undefined || args.concise !== undefined || args.maxTokens !== undefined)) {
+        throw new TypeError("mode, concise, and maxTokens must be omitted for remove");
       }
-      const proposed = args.action === "set"
-        ? resolveOutputPolicy({
-            concise: args.concise,
-            ...(args.maxTokens === undefined ? {} : { maxTokens: args.maxTokens }),
-          })
-        : undefined;
+      const proposed = args.action === "set" ? resolveSetPolicy(args) : undefined;
 
       const releaseLock = acquireOwnedStoreLock(configPath, "Odai output configuration");
       try {

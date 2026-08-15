@@ -38,7 +38,15 @@ Odai persists only the mapping the user explicitly names. A change applies from 
 
 An independently installed complete Odai skill bundle can update faster than either package without changing existing defaults. The user must explicitly ask to set the source to `auto` or `user`; `odai_skill_source_config` persists that choice in `$DSH_HOME/odai/source.json`. Project `.dsh/skills/odai` and `.agents/skills/odai` bundles participate only in `auto` and remain scoped to the current session cwd. The package READMEs define the complete precedence, manifest, compatibility, and fallback contract.
 
-Controller output policy is also user-owned and disabled by default. `odai_output_config` can persist explicit concise presentation and/or a positive controller `maxTokens` request ceiling in `$DSH_HOME/odai/output.json`; changes apply from the next user turn and never alter child-agent, compaction, checkpoint, or other internal context budgets. The runtime forwards the ceiling through DSH but cannot make a provider honor it: usage may include hidden reasoning, exceed the requested value, or end before useful final text. Strict compliance therefore requires observed provider usage, and Odai never chooses a value for the user.
+Both packages default to **soft concise** output: final user-facing responses keep required results, decisive evidence, risks, blockers, verification, and necessary next actions while omitting routine narration and repeated context. Users can change the shared mode naturally; `odai_output_config` persists an override in `$DSH_HOME/odai/output.json`, effective from the next user turn:
+
+| Mode | Persisted policy | Behavior |
+|---|---|---|
+| normal | `concise: false`, no `maxTokens` | use the host's normal presentation and controller budget |
+| soft concise (default) | `concise: true`, no `maxTokens` | shorten final presentation without a token ceiling |
+| economy (optional) | `concise: true`, positive `maxTokens` | add a provider output-ceiling request; defaults to `500` when the user names economy without another value, and accepts a user-supplied replacement |
+
+Removing an override restores soft concise. Existing pre-mode stores that combined `concise: false` with a ceiling remain readable for compatibility, but new named-mode changes cannot create that legacy combination. No mode alters child-agent, compaction, checkpoint, or other internal context budgets. The runtime forwards an economy ceiling through DSH but cannot make a provider honor it: usage may include hidden reasoning, exceed the requested value, or end before useful final text. Strict compliance therefore requires observed provider usage; Odai enables economy only on explicit request and never invents a non-default custom value.
 
 Same-provider/model compaction that inherits the controller's reasoning effort also requests long prompt-cache retention without lowering its independent summary budget. Explicit compaction retention is preserved. Deployments can set runtime `compaction.cacheRetention` or `ODAI_COMPACTION_CACHE_RETENTION` to `short`, `long`, `none`, or `provider-default`; the last value restores DSH's provider default. The first controller request after a landed summary still needs to build the changed summary prefix.
 

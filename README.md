@@ -74,6 +74,9 @@ You do not need to know the internal structure or choose a methodology. `odai` i
 
 ### DeepSeek Harness packages
 
+[![npm: odai-dsh-plugin](https://img.shields.io/npm/v/odai-dsh-plugin?label=odai-dsh-plugin&logo=npm)](https://www.npmjs.com/package/odai-dsh-plugin)
+[![npm: odai-dsh-agent](https://img.shields.io/npm/v/odai-dsh-agent?label=odai-dsh-agent&logo=npm)](https://www.npmjs.com/package/odai-dsh-agent)
+
 DSH users can install either integration independently:
 
 ```sh
@@ -85,6 +88,8 @@ npx odai-dsh-agent install
 ```
 
 The Plugin command requires `pnpm` on `PATH`; the Agent installer currently requires `dsh@0.1.0-rc.6`. Each package already includes the canonical Odai skill and shared DSH runtime, and existing installations keep that bundled skill as the default. The Agent preserves every capability from the pinned DSH Standard preset and adds Odai as a scoped extension. Plugin needs neither a separate skill nor Agent; Agent needs neither a separate skill nor Plugin. Choose Plugin for profile-wide behavior or Agent for a selectable preset. Installing both is normally redundant and is only for a deliberate combination of those scopes. The existing provider-neutral `odai-cli` remains a separate product.
+
+Both DSH packages default output to **soft concise**. Users can explicitly select normal output or the optional **economy mode**, which combines concise presentation with a user-adjustable provider output ceiling: it defaults to `500` when economy is requested without another value. The ceiling never changes child-agent, compaction, checkpoint, or internal context budgets and may be exceeded or ignored by the provider. See [`dsh/README.md`](dsh/README.md#install-and-use) for the complete three-mode contract.
 
 A complete independently installed Odai skill can update faster than either DSH package without changing the default. The user must explicitly ask Odai to switch the skill source to `auto` or `user`; `auto` can select compatible project `.dsh`/`.agents` bundles and newer user installs, while `user` ignores project roots. An explicit deployment path remains highest priority. Plugin and Agent deliberately installed together share one per-agent/per-turn snapshot, so prompt governance and routing role contracts cannot select different bundles.
 

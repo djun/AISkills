@@ -10,7 +10,7 @@ The bundle contributes:
 - durable route decisions, upgrades, child outcomes, protections, policy denials, and compact tool outcomes stored outside DSH's core session-event vocabulary;
 - actual controller/child provider-model evidence, fail-closed high-impact failures, and direct fallback only where it is safe;
 - cache-compatible compaction calls: a same-provider/model summarizer with no explicit reasoning setting inherits the session's current user-selected reasoning effort and requests long prompt-cache retention, while cross-model and explicitly configured summarizers remain untouched;
-- an optional user-owned controller output policy that can request concise final responses and/or forward a positive provider `maxTokens` request ceiling without changing child-agent, compaction, checkpoint, or other internal context budgets.
+- a default soft-concise controller output policy, an explicit normal-mode escape, and an optional user-selected economy ceiling without changing child-agent, compaction, checkpoint, or other internal context budgets.
 
 ## Install
 
@@ -44,9 +44,17 @@ Every independently installed Odai skill must be a complete directory bundle wit
 
 ## Controller output policy
 
-No output policy is active by default. When a user explicitly asks to inspect, enable, replace, or remove one, the controller uses `odai_output_config`; Plugin and Agent share the persisted override in `$DSH_HOME/odai/output.json`. `concise: true` changes only the final user-facing presentation and keeps required results, evidence, risks, blockers, and verification while removing routine narration and repeated context. An optional positive `maxTokens` value asks the provider to limit each controller conversation-model request and only tightens an existing lower host request value.
+Plugin and Agent share three controller output modes. The package default is **soft concise**; users can ask naturally to inspect or change the mode, and `odai_output_config` persists an explicit override in `$DSH_HOME/odai/output.json`:
 
-`maxTokens` is not a locally enforceable hard billing boundary. A provider may count hidden reasoning inside it, exceed or ignore it, or stop before a usable final response; strict compliance must be established from per-request usage rather than the outgoing request header. The canary runner reports `provider_output_ceiling` evidence and can fail a provider certification run with `--require-output-ceiling-compliance`. Odai never chooses or enables a value on the user's behalf. A changed policy is snapshotted for one agent turn and applies from the next user turn. Child-agent role limits and DSH compaction remain independent; compaction keeps its own completeness instruction and budget, and a token-capped incomplete checkpoint fails closed instead of replacing session history. Removing the override restores the host's normal controller budget and presentation behavior.
+| Mode | Policy | Behavior |
+|---|---|---|
+| normal | `concise: false`, no `maxTokens` | restore the host's normal presentation and controller budget |
+| soft concise (default) | `concise: true`, no `maxTokens` | shorten only the final user-facing presentation while retaining required results, evidence, risks, blockers, and verification |
+| economy (optional) | `concise: true`, positive `maxTokens` | add a provider output-ceiling request; use `500` when the user names economy without another value, or the user's supplied positive value |
+
+For example, users can say `use normal output`, `use soft concise output`, `enable economy mode`, or `set economy mode to 1200 tokens`. Removing the persisted override restores soft concise. Existing pre-mode stores that combined `concise: false` with a ceiling remain readable for compatibility, but new named-mode changes cannot create that legacy combination. A changed mode is snapshotted for one agent turn and applies from the next user turn.
+
+An economy `maxTokens` value applies to controller conversation-model requests and only tightens an existing lower host request value. It is not a locally enforceable hard billing boundary: a provider may count hidden reasoning inside it, exceed or ignore it, or stop before a usable final response. Strict compliance must be established from per-request usage rather than the outgoing request header. The canary runner reports `provider_output_ceiling` evidence and can fail a provider certification run with `--require-output-ceiling-compliance`. Odai enables economy only when the user requests it and never invents a non-default custom value. Child-agent role limits and DSH compaction remain independent; compaction keeps its own completeness instruction and budget, and a token-capped incomplete checkpoint fails closed instead of replacing session history.
 
 ## Routing modes
 

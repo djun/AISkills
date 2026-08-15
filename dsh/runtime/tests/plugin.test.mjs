@@ -211,6 +211,21 @@ test("compaction inherits routed reasoning only for the exact current target", a
   assert.equal(independentlyBudgetedCompaction.reasoningEffort, "xhigh");
   assert.equal(independentlyBudgetedCompaction.cacheRetention, "long");
   assert.equal(independentlyBudgetedCompaction.maxTokens, 8_192);
+
+  const independentlyBudgetedCheckpoint = {
+    purpose: "checkpoint",
+    sessionId: "session-cache",
+    provider: "openai",
+    model: "user-selected-model",
+    maxTokens: 8_192,
+  };
+  assert.equal(
+    await ctx.captured.handlers.get("llm/stream")(independentlyBudgetedCheckpoint, async () => "next"),
+    "next",
+  );
+  assert.equal(independentlyBudgetedCheckpoint.reasoningEffort, undefined);
+  assert.equal(independentlyBudgetedCheckpoint.cacheRetention, undefined);
+  assert.equal(independentlyBudgetedCheckpoint.maxTokens, 8_192);
 });
 
 test("routing off ignores stale protection evidence", () => {
@@ -329,7 +344,7 @@ test("role model selection overrides the child request but not the controller", 
   });
 });
 
-test("controller output policy is explicit, turn-stable, request-bounded, and isolated from children", async () => {
+test("controller output policy is default-concise, turn-stable, request-bounded, and isolated from children", async () => {
   const configPath = resolve(testDshHome, "output-policy", "output.json");
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "off" }, output: { configPath } });
@@ -352,36 +367,53 @@ test("controller output policy is explicit, turn-stable, request-bounded, and is
   const downstream = async () => ({ sections: ctx.captured.sections });
 
   const initial = await assemble({}, context, downstream);
-  assert.equal(initial.sections.find((section) => section.name === "odai:controller-output-policy").text, "");
-  assert.deepEqual((await outputTool.execute({ action: "show" }, { agent })).policy, { concise: false });
-  const configured = await outputTool.execute({
-    action: "set",
-    concise: true,
-    maxTokens: 2_500,
-  }, { agent });
-  assert.deepEqual(configured.policy, { concise: true, maxTokens: 2_500 });
-  assert.equal(configured.requiresNextTurn, true);
+  assert.match(
+    initial.sections.find((section) => section.name === "odai:controller-output-policy").text,
+    /Keep the final user-facing response concise/u,
+  );
+  assert.deepEqual((await outputTool.execute({ action: "show" }, { agent })).policy, { concise: true });
+  const normal = await outputTool.execute({ action: "set", mode: "normal" }, { agent });
+  assert.deepEqual(normal.policy, { concise: false });
+  assert.equal(normal.requiresNextTurn, true);
   assert.deepEqual(
     await request({ agent, turn: 1, step: 2 }, async () => ({ provider: "base", model: "controller" })),
     { provider: "base", model: "controller" },
   );
 
   agent.phase.turn = 2;
+  const normalSelected = await assemble({}, context, downstream);
+  assert.equal(
+    normalSelected.sections.find((section) => section.name === "odai:controller-output-policy").text,
+    "",
+  );
+  const configured = await outputTool.execute({
+    action: "set",
+    mode: "economy",
+    maxTokens: 2_500,
+  }, { agent });
+  assert.deepEqual(configured.policy, { concise: true, maxTokens: 2_500 });
+  assert.equal(configured.requiresNextTurn, true);
+  assert.deepEqual(
+    await request({ agent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller" })),
+    { provider: "base", model: "controller" },
+  );
+
+  agent.phase.turn = 3;
   const selected = await assemble({}, context, downstream);
   const policyText = selected.sections.find((section) => section.name === "odai:controller-output-policy").text;
   assert.match(policyText, /Keep the final user-facing response concise/u);
   assert.match(policyText, /provider output ceiling request of 2500 tokens/u);
   assert.match(policyText, /never reduces child-agent, compaction, checkpoint/u);
   assert.deepEqual(
-    await request({ agent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    await request({ agent, turn: 3, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
     { provider: "base", model: "controller", maxTokens: 2_500 },
   );
   assert.deepEqual(
-    await request({ agent, turn: 2, step: 2 }, async () => ({ provider: "base", model: "controller", maxTokens: 1_000 })),
+    await request({ agent, turn: 3, step: 2 }, async () => ({ provider: "base", model: "controller", maxTokens: 1_000 })),
     { provider: "base", model: "controller", maxTokens: 1_000 },
   );
   assert.deepEqual(events.find((event) => event.type === "odai/output-budget-applied").data, {
-    turn: 2,
+    turn: 3,
     step: 1,
     configuredMaxTokens: 2_500,
     priorMaxTokens: 8_000,
@@ -404,12 +436,15 @@ test("controller output policy is explicit, turn-stable, request-bounded, and is
   );
 
   const removed = await outputTool.execute({ action: "remove" }, { agent });
-  assert.deepEqual(removed.policy, { concise: false });
-  agent.phase.turn = 3;
+  assert.deepEqual(removed.policy, { concise: true });
+  agent.phase.turn = 4;
   const reset = await assemble({}, context, downstream);
-  assert.equal(reset.sections.find((section) => section.name === "odai:controller-output-policy").text, "");
+  assert.match(
+    reset.sections.find((section) => section.name === "odai:controller-output-policy").text,
+    /Keep the final user-facing response concise/u,
+  );
   assert.deepEqual(
-    await request({ agent, turn: 3, step: 1 }, async () => ({ provider: "base", model: "controller" })),
+    await request({ agent, turn: 4, step: 1 }, async () => ({ provider: "base", model: "controller" })),
     { provider: "base", model: "controller" },
   );
 });

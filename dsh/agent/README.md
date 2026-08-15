@@ -55,9 +55,17 @@ Planner, executor, and reviewer are independent optional responsibilities. If an
 
 ## Controller output policy
 
-The Agent does not change controller response length by default. A user can naturally ask to inspect, set, or remove a controller output policy; `odai_output_config` persists the explicit choice in `$DSH_HOME/odai/output.json`, which is shared with the Plugin. `concise: true` changes only the final user-facing presentation without relaxing required results, evidence, risks, blockers, or verification. An optional positive `maxTokens` value asks the provider to limit each controller conversation-model request and only tightens an existing lower host request value.
+The Agent defaults to **soft concise** output and shares three controller output modes with the Plugin. A user can naturally ask to inspect or change the mode; `odai_output_config` persists an explicit override in `$DSH_HOME/odai/output.json`:
 
-The request ceiling is not a locally enforceable hard billing boundary. A provider may count hidden reasoning inside it, exceed or ignore it, or end before useful final text, especially at a high reasoning effort; strict compliance must be checked from per-request usage. Odai never invents a limit or enables concision on the user's behalf. The policy is stable within one turn and changes from the next user turn. It does not alter child-agent role budgets, compaction, checkpoints, or other internal context; an incomplete token-capped compaction fails closed instead of replacing history. Removing the policy restores the host's normal controller behavior.
+| Mode | Policy | Behavior |
+|---|---|---|
+| normal | `concise: false`, no `maxTokens` | use the host's normal presentation and controller budget |
+| soft concise (default) | `concise: true`, no `maxTokens` | shorten only the final user-facing presentation without relaxing required results, evidence, risks, blockers, or verification |
+| economy (optional) | `concise: true`, positive `maxTokens` | add a provider output-ceiling request; default to `500` when the user names economy without another value, or use the user's supplied positive value |
+
+Natural requests include `use normal output`, `use soft concise output`, `enable economy mode`, and `set economy mode to 1200 tokens`. Removing the persisted override restores soft concise. Existing pre-mode stores that combined `concise: false` with a ceiling remain readable for compatibility, but new named-mode changes cannot create that legacy combination. The selected mode is stable within one turn and changes from the next user turn.
+
+An economy ceiling only tightens an existing lower host request value and is not a locally enforceable hard billing boundary. A provider may count hidden reasoning inside it, exceed or ignore it, or end before useful final text, especially at a high reasoning effort; strict compliance must be checked from per-request usage. Odai enables economy only when requested and never invents a non-default custom value. The mode does not alter child-agent role budgets, compaction, checkpoints, or other internal context; an incomplete token-capped compaction fails closed instead of replacing history.
 
 A same-provider/model compaction that inherits controller reasoning also requests long prompt-cache retention while keeping its independent summary budget. Explicit compaction retention is preserved. `ODAI_COMPACTION_CACHE_RETENTION=provider-default` restores the host default; `short`, `long`, and `none` are also accepted deployment overrides. The first controller request after a landed summary still rebuilds the changed summary prefix.
 
