@@ -79,6 +79,8 @@ test("config is strict at governance boundaries", () => {
   assert.throws(() => resolveConfig({ governance: { skillConfigPath: "" } }), /skillConfigPath must be a non-empty string/u);
   assert.throws(() => resolveConfig({ output: { configPath: "" } }), /config\.output\.configPath must be a non-empty string/u);
   assert.throws(() => resolveConfig({ output: { concise: true } }), /config\.output has unknown fields: concise/u);
+  assert.throws(() => resolveConfig({ compaction: { cacheRetention: "forever" } }), /provider-default, short, long, or none/u);
+  assert.throws(() => resolveConfig({ compaction: { maxTokens: 500 } }), /config\.compaction has unknown fields: maxTokens/u);
 
   const defaults = resolveConfig();
   assert.equal(defaults.routing.mode, "auto");
@@ -89,6 +91,8 @@ test("config is strict at governance boundaries", () => {
   assert.equal(defaults.governance.skillSource, "bundled");
   assert.equal(defaults.governance.skillConfigPath, resolve(testDshHome, "odai/source.json"));
   assert.equal(defaults.output.configPath, resolve(testDshHome, "odai/output.json"));
+  assert.equal(defaults.compaction.cacheRetention, "long");
+  assert.equal(resolveConfig({ compaction: { cacheRetention: "provider-default" } }).compaction.cacheRetention, "provider-default");
 
   const config = resolveConfig({
     routing: {
@@ -106,6 +110,20 @@ test("config is strict at governance boundaries", () => {
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
   });
+});
+
+test("compaction cache retention honors config over the deployment environment", () => {
+  const previous = process.env.ODAI_COMPACTION_CACHE_RETENTION;
+  try {
+    process.env.ODAI_COMPACTION_CACHE_RETENTION = "short";
+    assert.equal(resolveConfig().compaction.cacheRetention, "short");
+    assert.equal(resolveConfig({ compaction: { cacheRetention: "none" } }).compaction.cacheRetention, "none");
+    process.env.ODAI_COMPACTION_CACHE_RETENTION = "invalid";
+    assert.throws(() => resolveConfig(), /provider-default, short, long, or none/u);
+  } finally {
+    if (previous === undefined) delete process.env.ODAI_COMPACTION_CACHE_RETENTION;
+    else process.env.ODAI_COMPACTION_CACHE_RETENTION = previous;
+  }
 });
 
 test("compaction inherits routed reasoning only for the exact current target", async () => {
@@ -133,6 +151,27 @@ test("compaction inherits routed reasoning only for the exact current target", a
   };
   assert.equal(inheritCompactionReasoning(eligible, sessions), true);
   assert.equal(eligible.reasoningEffort, "xhigh");
+  assert.equal(eligible.cacheRetention, "long");
+
+  const providerDefault = {
+    purpose: "compaction",
+    sessionId: "session-cache",
+    provider: "openai",
+    model: "user-selected-model",
+  };
+  assert.equal(inheritCompactionReasoning(providerDefault, sessions, "provider-default"), true);
+  assert.equal(providerDefault.reasoningEffort, "xhigh");
+  assert.equal(providerDefault.cacheRetention, undefined);
+
+  const explicitRetention = {
+    purpose: "compaction",
+    sessionId: "session-cache",
+    provider: "openai",
+    model: "user-selected-model",
+    cacheRetention: "short",
+  };
+  assert.equal(inheritCompactionReasoning(explicitRetention, sessions), true);
+  assert.equal(explicitRetention.cacheRetention, "short");
 
   const explicit = { ...eligible, reasoningEffort: "medium" };
   assert.equal(inheritCompactionReasoning(explicit, sessions), false);
@@ -157,7 +196,21 @@ test("compaction inherits routed reasoning only for the exact current target", a
   };
   assert.equal(await ctx.captured.handlers.get("llm/stream")(streamed, async () => "next"), "next");
   assert.equal(streamed.reasoningEffort, "xhigh");
+  assert.equal(streamed.cacheRetention, "long");
   assert.equal(streamed.maxTokens, undefined);
+
+  const independentlyBudgetedCompaction = {
+    ...streamed,
+    reasoningEffort: undefined,
+    maxTokens: 8_192,
+  };
+  assert.equal(
+    await ctx.captured.handlers.get("llm/stream")(independentlyBudgetedCompaction, async () => "next"),
+    "next",
+  );
+  assert.equal(independentlyBudgetedCompaction.reasoningEffort, "xhigh");
+  assert.equal(independentlyBudgetedCompaction.cacheRetention, "long");
+  assert.equal(independentlyBudgetedCompaction.maxTokens, 8_192);
 });
 
 test("routing off ignores stale protection evidence", () => {
@@ -276,7 +329,7 @@ test("role model selection overrides the child request but not the controller", 
   });
 });
 
-test("controller output policy is explicit, turn-stable, capped, and isolated from children", async () => {
+test("controller output policy is explicit, turn-stable, request-bounded, and isolated from children", async () => {
   const configPath = resolve(testDshHome, "output-policy", "output.json");
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "off" }, output: { configPath } });
@@ -317,7 +370,8 @@ test("controller output policy is explicit, turn-stable, capped, and isolated fr
   const selected = await assemble({}, context, downstream);
   const policyText = selected.sections.find((section) => section.name === "odai:controller-output-policy").text;
   assert.match(policyText, /Keep the final user-facing response concise/u);
-  assert.match(policyText, /hard output budget of 2500 tokens/u);
+  assert.match(policyText, /provider output ceiling request of 2500 tokens/u);
+  assert.match(policyText, /never reduces child-agent, compaction, checkpoint/u);
   assert.deepEqual(
     await request({ agent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
     { provider: "base", model: "controller", maxTokens: 2_500 },
@@ -332,6 +386,7 @@ test("controller output policy is explicit, turn-stable, capped, and isolated fr
     configuredMaxTokens: 2_500,
     priorMaxTokens: 8_000,
     effectiveMaxTokens: 2_500,
+    semantics: "provider-request-ceiling",
   });
 
   const child = {

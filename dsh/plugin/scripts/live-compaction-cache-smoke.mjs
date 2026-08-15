@@ -22,6 +22,10 @@ const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(pluginRoot, "../..");
 const workspaceRoot = resolve(process.env.INIT_CWD ?? process.cwd());
 const args = parseArgs(process.argv.slice(2));
+const runtimeCacheRetention = process.env.ODAI_COMPACTION_CACHE_RETENTION ?? "long";
+if (!["provider-default", "short", "long", "none"].includes(runtimeCacheRetention)) {
+  throw new Error("ODAI_COMPACTION_CACHE_RETENTION must be provider-default, short, long, or none");
+}
 if (!args.yes) {
   throw new Error("live compaction cache smoke calls an external model; rerun with --yes after confirming cost and credentials");
 }
@@ -68,6 +72,10 @@ try {
     provider: controller.provider,
     model: controller.model,
     reasoningEffort: controller.reasoningEffort,
+    compactionMaxTokens: args.compactionMaxTokens,
+    cacheRetention: args.cacheRetention,
+    compactionCacheRetention: args.compactionCacheRetention,
+    runtimeCacheRetention,
     marker: randomUUID(),
   }), "utf8");
 
@@ -91,7 +99,7 @@ try {
     throw new Error(`cache probe produced no report (exit ${run.code})\n${run.stderr}`);
   }
   const report = JSON.parse(await readFile(reportPath, "utf8"));
-  const verification = verifyReport(report, args.runtime);
+  const verification = verifyReport(report, args.runtime, args.compactionMaxTokens === 16);
   const output = {
     ok: run.code === 0 && verification.ok,
     mode: args.runtime ? "candidate-runtime" : "baseline",
@@ -100,6 +108,15 @@ try {
       model: controller.model,
       reasoningEffort: controller.reasoningEffort,
     },
+    budgets: {
+      warmMaxTokens: 16,
+      compactionMaxTokens: args.compactionMaxTokens,
+    },
+    requestedCacheRetentionOverrides: {
+      warm: args.cacheRetention ?? "none",
+      compaction: args.compactionCacheRetention ?? args.cacheRetention ?? "none",
+    },
+    runtimeCacheRetention,
     verification,
     calls: report.calls,
     dshExitCode: run.code,
@@ -116,6 +133,9 @@ function parseArgs(argv) {
     runtime: false,
     sourceHome: undefined,
     timeoutMs: 180_000,
+    compactionMaxTokens: 16,
+    cacheRetention: undefined,
+    compactionCacheRetention: undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -123,10 +143,21 @@ function parseArgs(argv) {
     else if (arg === "--runtime") parsed.runtime = true;
     else if (arg === "--source-home") parsed.sourceHome = argv[++index];
     else if (arg === "--timeout-ms") parsed.timeoutMs = Number(argv[++index]);
+    else if (arg === "--compaction-max-tokens") parsed.compactionMaxTokens = Number(argv[++index]);
+    else if (arg === "--cache-retention") parsed.cacheRetention = argv[++index];
+    else if (arg === "--compaction-cache-retention") parsed.compactionCacheRetention = argv[++index];
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!Number.isSafeInteger(parsed.timeoutMs) || parsed.timeoutMs < 1_000) {
     throw new Error("timeoutMs must be an integer of at least 1000");
+  }
+  if (!Number.isSafeInteger(parsed.compactionMaxTokens) || parsed.compactionMaxTokens < 16) {
+    throw new Error("compactionMaxTokens must be an integer of at least 16");
+  }
+  for (const field of ["cacheRetention", "compactionCacheRetention"]) {
+    if (parsed[field] !== undefined && !["short", "long", "none"].includes(parsed[field])) {
+      throw new Error(`${field} must be short, long, or none`);
+    }
   }
   return parsed;
 }
@@ -150,8 +181,14 @@ function renderPatch(input) {
     `        provider: ${quote(input.provider)}`,
     `        model: ${quote(input.model)}`,
     `        reasoningEffort: ${quote(input.reasoningEffort)}`,
+    `        compactionMaxTokens: ${input.compactionMaxTokens}`,
+    ...(input.cacheRetention === undefined ? [] : [`        cacheRetention: ${quote(input.cacheRetention)}`]),
+    ...(input.compactionCacheRetention === undefined ? [] : [`        compactionCacheRetention: ${quote(input.compactionCacheRetention)}`]),
     `        marker: ${quote(input.marker)}`,
-    ...(input.runtime ? [`        runtimeModule: ${quote(input.runtimePath)}`] : []),
+    ...(input.runtime ? [
+      `        runtimeModule: ${quote(input.runtimePath)}`,
+      `        runtimeCacheRetention: ${quote(input.runtimeCacheRetention)}`,
+    ] : []),
     "",
   ].join("\n");
 }
@@ -174,6 +211,7 @@ export function apply(ctx, config) {
       system: "You are a cache probe. Reply with OK only.",
       maxTokens: 16,
       sessionId: agent.session.id,
+      ...(config.cacheRetention === undefined ? {} : { cacheRetention: config.cacheRetention }),
     };
     const prefix = message("prefix", stablePrefix);
     const calls = [];
@@ -184,6 +222,10 @@ export function apply(ctx, config) {
     }));
     const compaction = {
       ...base,
+      maxTokens: config.compactionMaxTokens,
+      ...(config.compactionCacheRetention === undefined
+        ? {}
+        : { cacheRetention: config.compactionCacheRetention }),
       purpose: "compaction",
       messages: [prefix, message("compaction-tail", "Condense the prefix. Reply OK.")],
     };
@@ -204,7 +246,7 @@ export function apply(ctx, config) {
             },
           };
         },
-      });
+      }, config.runtimeCacheRetention);
     }
     calls.push(await invoke(ctx, "compaction", compaction));
     calls.push(await invoke(ctx, "matched", {
@@ -237,6 +279,8 @@ async function invoke(ctx, label, options) {
   return {
     label,
     effectiveReasoningEffort: options.reasoningEffort ?? null,
+    effectiveMaxTokens: options.maxTokens ?? null,
+    effectiveCacheRetention: options.cacheRetention ?? null,
     usage: usage ?? null,
     finish: finish ?? null,
   };
@@ -244,7 +288,7 @@ async function invoke(ctx, label, options) {
 `;
 }
 
-function verifyReport(report, runtime) {
+function verifyReport(report, runtime, requireCompactionCache) {
   const errors = [];
   const calls = Object.fromEntries((report.calls ?? []).map((call) => [call.label, call]));
   for (const label of ["warm", "compaction", "matched"]) {
@@ -252,16 +296,22 @@ function verifyReport(report, runtime) {
   }
   const compactionCache = calls.compaction?.usage?.cacheReadTokens ?? 0;
   const matchedCache = calls.matched?.usage?.cacheReadTokens ?? 0;
+  const compactionInput = calls.compaction?.usage?.inputTokens ?? 0;
+  const matchedInput = calls.matched?.usage?.inputTokens ?? 0;
+  const compactionCoverage = ratio(compactionCache, compactionCache + compactionInput);
+  const matchedCoverage = ratio(matchedCache, matchedCache + matchedInput);
+  if (matchedCache < 1_024) errors.push(`matched reasoning cache read was only ${matchedCache}`);
   if (runtime) {
     if (calls.compaction?.effectiveReasoningEffort !== calls.warm?.effectiveReasoningEffort) {
       errors.push("candidate runtime did not inherit the routed reasoning effort");
     }
-    if (compactionCache < 1_024) errors.push(`candidate compaction cache read was only ${compactionCache}`);
+    if (requireCompactionCache && compactionCache < 1_024) {
+      errors.push(`candidate compaction cache read was only ${compactionCache}`);
+    }
   } else {
     if (calls.compaction?.effectiveReasoningEffort !== null) {
       errors.push("baseline compaction unexpectedly had a reasoning effort");
     }
-    if (matchedCache < 1_024) errors.push(`matched reasoning cache read was only ${matchedCache}`);
     if (compactionCache >= matchedCache) {
       errors.push(`baseline mismatch did not reduce cache reuse (${compactionCache} >= ${matchedCache})`);
     }
@@ -271,7 +321,17 @@ function verifyReport(report, runtime) {
     errors,
     compactionCacheReadTokens: compactionCache,
     matchedCacheReadTokens: matchedCache,
+    compactionCacheCoverage: compactionCoverage,
+    matchedCacheCoverage: matchedCoverage,
+    cacheStatus: matchedCoverage < 0.5
+      ? "upstream-low-hit"
+      : (!requireCompactionCache && compactionCache < matchedCache ? "budget-partitioned" : "reused"),
+    budgetMismatchReducedCache: !requireCompactionCache && compactionCache < matchedCache,
   };
+}
+
+function ratio(numerator, denominator) {
+  return denominator > 0 ? Number((numerator / denominator).toFixed(4)) : 0;
 }
 
 function runProcess(command, commandArgs, options) {

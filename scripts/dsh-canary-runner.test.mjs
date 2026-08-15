@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { observeProviderOutputCeiling } from "./dsh-output-budget-observation.mjs";
+
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runner = resolve(repoRoot, "scripts/dsh-canary-runner.mjs");
@@ -16,6 +18,94 @@ const routingBlock = [
   "      mode: auto",
   "      provider: spawn",
 ].join("\n");
+
+test("provider output ceiling observation distinguishes request evidence from compliance", () => {
+  assert.deepEqual(observeProviderOutputCeiling([], undefined), {
+    status: "not-requested",
+    observedRequests: 0,
+    overruns: [],
+  });
+  assert.deepEqual(observeProviderOutputCeiling([
+    { turn: 1, step: 1, usage: { outputTokens: 430 } },
+    { turn: 1, step: 2, usage: { output_tokens: 689 } },
+  ], 500), {
+    status: "provider-exceeded-requested-ceiling",
+    requestedMaxTokens: 500,
+    observedRequests: 2,
+    maxObservedOutputTokens: 689,
+    overruns: [{ turn: 1, step: 2, outputTokens: 689 }],
+  });
+  assert.deepEqual(observeProviderOutputCeiling([
+    { turn: 1, step: 1, usage: { outputTokens: 500 } },
+  ], 500), {
+    status: "within-requested-ceiling",
+    requestedMaxTokens: 500,
+    observedRequests: 1,
+    maxObservedOutputTokens: 500,
+    overruns: [],
+  });
+  assert.throws(() => observeProviderOutputCeiling([], 0), /positive integer/u);
+});
+
+test("strict canary fails closed when observed provider output exceeds the request ceiling", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "odai-dsh-ceiling-test-"));
+  try {
+    const sourceHome = resolve(root, "source-home");
+    const isolationHome = resolve(root, "isolation-home");
+    const workdir = resolve(root, "work");
+    const promptFile = resolve(root, "prompt.md");
+    const lastMessage = resolve(root, "last-message.txt");
+    const fakeDsh = resolve(root, "fake-dsh.mjs");
+    await Promise.all([
+      mkdir(sourceHome, { recursive: true }),
+      mkdir(isolationHome, { recursive: true }),
+      mkdir(workdir, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(resolve(sourceHome, "settings.yaml"), "agent-default-model:\n  provider: openai\n  model: test-model\n  reasoningEffort: xhigh\n", "utf8"),
+      writeFile(resolve(sourceHome, ".credentials.yaml"), "{}\n", "utf8"),
+      writeFile(promptFile, "test task\n", "utf8"),
+      writeFile(fakeDsh, `#!/usr/bin/env node\nimport { mkdir, readFile, writeFile } from "node:fs/promises";\nimport { resolve } from "node:path";\nconst patchPath = process.argv[process.argv.indexOf("--patch") + 1];\nconst patch = await readFile(patchPath, "utf8");\nconst root = JSON.parse(/^    root: (.+)$/mu.exec(patch)[1]);\nconst session = resolve(root, "strict-ceiling", "session.jsonl");\nawait mkdir(resolve(root, "strict-ceiling"), { recursive: true });\nconst records = [\n  { id: "strict-ceiling", origin: "controller" },\n  { type: "request/header", data: { header: { config: { provider: "openai", model: "test-model", reasoningEffort: "xhigh", maxTokens: 500 }, system: "## Odai controller output policy" } } },\n  { type: "assistant/chunk", data: { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 10, outputTokens: 689 } } } },\n  { type: "assistant/message", data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "done" }] } } },\n];\nawait writeFile(session, records.map((record) => JSON.stringify(record)).join("\\n") + "\\n", "utf8");\n`, "utf8"),
+    ]);
+    await chmod(fakeDsh, 0o700);
+
+    await assert.rejects(
+      () => execFileAsync(process.execPath, [
+        runner,
+        "--prompt-file", promptFile,
+        "--cwd", workdir,
+        "--last-message", lastMessage,
+        "--source-home", sourceHome,
+        "--dsh-bin", fakeDsh,
+        "--provider", "openai",
+        "--model", "test-model",
+        "--reasoning-effort", "xhigh",
+        "--surface", "plain",
+        "--routing-mode", "off",
+        "--output-concise",
+        "--controller-max-tokens", "500",
+        "--require-output-ceiling-compliance",
+        "--timeout", "10",
+      ], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          HOME: isolationHome,
+          ODAI_CANARY_HOME: isolationHome,
+          ODAI_CANARY_ISOLATION: "odai-canary-isolation/v1",
+          ODAI_CANARY_SKILL_MODE: "on",
+        },
+      }),
+      (error) => {
+        assert.match(`${error.message}\n${error.stderr ?? ""}`, /provider output ceiling compliance failed/u);
+        assert.match(`${error.message}\n${error.stderr ?? ""}`, /"outputTokens":689/u);
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("DSH canary runner isolates Plugin and Agent routing surfaces", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "odai-dsh-runner-test-"));

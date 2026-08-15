@@ -9,8 +9,8 @@ The bundle contributes:
 - monotonic write boundaries for child agents and unresolved high-impact controller turns;
 - durable route decisions, upgrades, child outcomes, protections, policy denials, and compact tool outcomes stored outside DSH's core session-event vocabulary;
 - actual controller/child provider-model evidence, fail-closed high-impact failures, and direct fallback only where it is safe;
-- cache-compatible compaction calls: a same-provider/model summarizer with no explicit reasoning setting inherits the session's current user-selected reasoning effort, while cross-model and explicitly configured summarizers remain untouched;
-- an optional user-owned controller output policy that can request concise final responses and/or apply a positive hard `maxTokens` ceiling without changing child-agent or compaction budgets.
+- cache-compatible compaction calls: a same-provider/model summarizer with no explicit reasoning setting inherits the session's current user-selected reasoning effort and requests long prompt-cache retention, while cross-model and explicitly configured summarizers remain untouched;
+- an optional user-owned controller output policy that can request concise final responses and/or forward a positive provider `maxTokens` request ceiling without changing child-agent, compaction, checkpoint, or other internal context budgets.
 
 ## Install
 
@@ -44,9 +44,9 @@ Every independently installed Odai skill must be a complete directory bundle wit
 
 ## Controller output policy
 
-No output policy is active by default. When a user explicitly asks to inspect, enable, replace, or remove one, the controller uses `odai_output_config`; Plugin and Agent share the persisted override in `$DSH_HOME/odai/output.json`. `concise: true` adds a short controller-only presentation instruction that keeps required results, evidence, risks, blockers, and verification while removing routine narration and repeated context. An optional positive `maxTokens` value sets a hard ceiling on every controller conversation-model request and only tightens an existing lower host ceiling.
+No output policy is active by default. When a user explicitly asks to inspect, enable, replace, or remove one, the controller uses `odai_output_config`; Plugin and Agent share the persisted override in `$DSH_HOME/odai/output.json`. `concise: true` changes only the final user-facing presentation and keeps required results, evidence, risks, blockers, and verification while removing routine narration and repeated context. An optional positive `maxTokens` value asks the provider to limit each controller conversation-model request and only tightens an existing lower host request value.
 
-The hard ceiling may include hidden reasoning as well as visible text, depending on the provider API. A low value can therefore end a request before a usable final response, especially at a high reasoning effort. Odai never chooses or enables the limit on the user's behalf. A changed policy is snapshotted for one agent turn and applies from the next user turn; child-agent role limits and DSH compaction remain independent. Removing the override restores the host's normal controller budget and presentation behavior.
+`maxTokens` is not a locally enforceable hard billing boundary. A provider may count hidden reasoning inside it, exceed or ignore it, or stop before a usable final response; strict compliance must be established from per-request usage rather than the outgoing request header. The canary runner reports `provider_output_ceiling` evidence and can fail a provider certification run with `--require-output-ceiling-compliance`. Odai never chooses or enables a value on the user's behalf. A changed policy is snapshotted for one agent turn and applies from the next user turn. Child-agent role limits and DSH compaction remain independent; compaction keeps its own completeness instruction and budget, and a token-capped incomplete checkpoint fails closed instead of replacing session history. Removing the override restores the host's normal controller budget and presentation behavior.
 
 ## Routing modes
 
@@ -95,11 +95,17 @@ npm --prefix dsh/plugin run smoke:live -- --yes --mode auto \
 
 The default smoke inherits `agent-default-model`, omits the routing block, and uses a natural high-impact decision gap. It requires one controller, zero children, a missing-planner event, read-only fail-closed protection, no false upgrade/result event, and the original controller `request/header`. Explicit `auto` and `execute` require `--planner-provider` plus `--planner-model`; the script has no built-in model name. `auto` requires a same-turn upgrade, `execute` requires one verified child, and `observe`/`off` require zero children with their mode-appropriate events.
 
-An explicitly authorized cache probe compares the current relay's compaction request with and without the same routed reasoning setting. It inherits the controller route from DSH settings, uses an isolated temporary home, and removes copied credentials and sessions on exit:
+An explicitly authorized cache probe compares the current relay's compaction request with and without the same routed reasoning setting. It inherits the controller route from DSH settings, uses an isolated temporary home, and removes copied credentials and sessions on exit. A diagnostic run may vary only the compaction output budget to determine whether the relay partitions its prompt cache by that field:
 
 ```sh
 npm --prefix dsh/plugin run smoke:compaction-cache -- --yes
 npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime
+npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime --compaction-max-tokens 8192
+npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime --compaction-cache-retention long
 ```
+
+The probe reports both compaction and exactly matched cache reads. Because it runs before the fixture session has a durable first request header, candidate mode supplies the same synthetic routed header used by the unit contract and then exercises the real relay request; production compaction reads an existing durable header. A same-route inherited compaction requests `long` retention by default because the controlled relay probe restored cache coverage from about 26% to about 96% without lowering the independent summary budget. An explicit incoming compaction retention is preserved; deployment config `compaction.cacheRetention` or `ODAI_COMPACTION_CACHE_RETENTION` can select `short`, `long`, `none`, or `provider-default`, with `provider-default` restoring DSH's provider default. Cross-model and explicitly reasoned summarizers remain untouched.
+
+A provider cache is still best-effort: even identical calls can miss because of upstream writes, expiry, or routing. Changing compaction to a low controller ceiling is not a valid cache fix because it risks an incomplete checkpoint; the first controller request after a landed summary must also build the new summary prefix because it no longer matches the replaced history.
 
 The package is pinned to `@deepseek-ai/dsh@0.1.0-rc.6` because DSH remains a developer preview and its plugin API may change.

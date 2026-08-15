@@ -16,6 +16,7 @@ import { homedir, tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { delimiter, dirname, extname, resolve } from "node:path";
 import { emitCanaryIsolation } from "./canary-isolation.mjs";
+import { observeProviderOutputCeiling } from "./dsh-output-budget-observation.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 emitCanaryIsolation("dsh");
@@ -155,6 +156,10 @@ try {
   const actualEfforts = [...new Set(routes.map((item) => item.reasoningEffort).filter(Boolean))];
   const actualMaxTokens = [...new Set(routes.map((item) => item.maxTokens).filter(Number.isSafeInteger))];
   const controllerRoutes = controller?.requestRoutes ?? [];
+  const outputCeilingObservation = observeProviderOutputCeiling(
+    controller?.usageSamples ?? [],
+    args.controllerMaxTokens,
+  );
   const expectsOutputPolicy = args.outputConcise || args.controllerMaxTokens !== undefined;
   if (!args.preflight) {
     if (controllerRoutes.length > 0) {
@@ -168,10 +173,14 @@ try {
       if (args.controllerMaxTokens !== undefined && controllerRoutes.some(
         (route) => !Number.isSafeInteger(route.maxTokens) || route.maxTokens <= 0 || route.maxTokens > args.controllerMaxTokens,
       )) {
-        throw new Error(`controller maxTokens was not enforced on every request: ${JSON.stringify(controllerRoutes)}`);
+        throw new Error(`controller maxTokens request ceiling was not attached to every request header: ${JSON.stringify(controllerRoutes)}`);
       }
     } else if (expectsOutputPolicy) {
       throw new Error("controller output policy was requested but no controller request/header was observed");
+    }
+    if (args.requireOutputCeilingCompliance
+      && outputCeilingObservation.status !== "within-requested-ceiling") {
+      throw new Error(`provider output ceiling compliance failed: ${JSON.stringify(outputCeilingObservation)}`);
     }
   }
 
@@ -188,6 +197,7 @@ try {
   process.stdout.write(`[dsh-runner requested_output_concise ${args.outputConcise}]\n`);
   process.stdout.write(`[dsh-runner requested_controller_max_tokens ${args.controllerMaxTokens ?? "none"}]\n`);
   process.stdout.write(`[dsh-runner actual_controller_max_tokens ${actualMaxTokens.join(",") || "none"}]\n`);
+  process.stdout.write(`[dsh-runner provider_output_ceiling ${JSON.stringify(outputCeilingObservation)}]\n`);
   process.stdout.write(`[dsh-runner output_policy_prompt_observed ${controller?.outputPolicyPromptCount ?? 0}/${controllerRoutes.length}]\n`);
   process.stdout.write(`[dsh-runner usage ${JSON.stringify(usage)}]\n`);
   process.stdout.write(`[dsh-runner session_count ${sessions.length}]\n`);
@@ -220,6 +230,7 @@ function parseArgs(argv) {
     agentPreset: "odai",
     outputConcise: false,
     controllerMaxTokens: undefined,
+    requireOutputCeilingCompliance: false,
     controllerEmbedsSkill: false,
     preflight: false,
     timeoutMs: 900_000,
@@ -244,6 +255,7 @@ function parseArgs(argv) {
     else if (arg === "--agent-preset") parsed.agentPreset = argv[++index];
     else if (arg === "--output-concise") parsed.outputConcise = true;
     else if (arg === "--controller-max-tokens") parsed.controllerMaxTokens = Number(argv[++index]);
+    else if (arg === "--require-output-ceiling-compliance") parsed.requireOutputCeilingCompliance = true;
     else if (arg === "--controller-embeds-skill") parsed.controllerEmbedsSkill = true;
     else if (arg === "--preflight") parsed.preflight = true;
     else if (arg === "--timeout") parsed.timeoutMs = Number(argv[++index]) * 1000;
@@ -285,6 +297,9 @@ function parseArgs(argv) {
   if (parsed.controllerMaxTokens !== undefined
     && (!Number.isSafeInteger(parsed.controllerMaxTokens) || parsed.controllerMaxTokens <= 0)) {
     throw new Error("controller max tokens must be a positive integer");
+  }
+  if (parsed.requireOutputCeilingCompliance && parsed.controllerMaxTokens === undefined) {
+    throw new Error("--require-output-ceiling-compliance requires --controller-max-tokens");
   }
   if (!Number.isSafeInteger(parsed.timeoutMs) || parsed.timeoutMs < 1000) {
     throw new Error("timeout must be at least one second");
@@ -604,18 +619,30 @@ function summarizeSession(session) {
         .map((block) => block.text)
         .join("") ?? "";
       if (text) assistantText = text;
-      if (event.data?.usage) usageByStep.set(`${event.data.turn}:${event.data.step}`, event.data.usage);
+      if (event.data?.usage) {
+        usageByStep.set(`${event.data.turn}:${event.data.step}`, {
+          turn: event.data.turn,
+          step: event.data.step,
+          usage: event.data.usage,
+        });
+      }
     }
     if (event.type === "assistant/chunk" && event.data?.chunk?.type === "usage") {
-      usageByStep.set(`${event.data.turn}:${event.data.step}`, event.data.chunk.usage);
+      usageByStep.set(`${event.data.turn}:${event.data.step}`, {
+        turn: event.data.turn,
+        step: event.data.step,
+        usage: event.data.chunk.usage,
+      });
     }
   }
+  const usageSamples = [...usageByStep.values()];
   return {
     id: session.header.id,
     origin: session.header.origin ?? "controller",
     parentSession: session.header.parentSession,
     requestRoutes,
-    usage: sumUsage([...usageByStep.values()]),
+    usage: sumUsage(usageSamples.map((sample) => sample.usage)),
+    usageSamples,
     assistantText,
     outputPolicyPromptCount,
   };

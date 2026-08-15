@@ -59,6 +59,7 @@ export const inject = ["systemPrompt", "tools", "subagents", "sessions"];
 
 const PLUGIN_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ROUTING_MODES = new Set(["off", "observe", "auto", "execute"]);
+const COMPACTION_CACHE_RETENTIONS = new Set(["provider-default", "short", "long", "none"]);
 const ROUTED_ROLES = CONFIGURABLE_ROLES;
 const DEFAULT_ROUTING_MODE = "auto";
 
@@ -76,6 +77,7 @@ export function resolveConfig(rawConfig = {}) {
   const roles = assertPlainObject(routing.roles, "config.routing.roles");
   const governance = assertPlainObject(raw.governance, "config.governance");
   const output = assertPlainObject(raw.output, "config.output");
+  const compaction = assertPlainObject(raw.compaction, "config.compaction");
   const mode = routing.mode ?? DEFAULT_ROUTING_MODE;
   const provider = routing.provider ?? "spawn";
   const maxInputChars = routing.maxInputChars ?? 12_000;
@@ -84,8 +86,12 @@ export function resolveConfig(rawConfig = {}) {
   const skillSource = governance.skillSource ?? "bundled";
   const skillConfigPath = resolveSkillSourceConfigPath(governance.skillConfigPath);
   const outputConfigPath = resolveOutputConfigPath(output.configPath);
+  const compactionCacheRetention = compaction.cacheRetention
+    ?? process.env.ODAI_COMPACTION_CACHE_RETENTION
+    ?? "long";
   const unknownRoles = Object.keys(roles).filter((role) => !ROUTED_ROLES.includes(role));
   const unknownOutputFields = Object.keys(output).filter((field) => field !== "configPath");
+  const unknownCompactionFields = Object.keys(compaction).filter((field) => field !== "cacheRetention");
 
   if (!ROUTING_MODES.has(mode)) {
     throw new TypeError("config.routing.mode must be off, observe, auto, or execute");
@@ -101,6 +107,12 @@ export function resolveConfig(rawConfig = {}) {
   }
   if (unknownOutputFields.length > 0) {
     throw new TypeError(`config.output has unknown fields: ${unknownOutputFields.join(", ")}`);
+  }
+  if (unknownCompactionFields.length > 0) {
+    throw new TypeError(`config.compaction has unknown fields: ${unknownCompactionFields.join(", ")}`);
+  }
+  if (!COMPACTION_CACHE_RETENTIONS.has(compactionCacheRetention)) {
+    throw new TypeError("config.compaction.cacheRetention must be provider-default, short, long, or none");
   }
   if (!Array.isArray(additionalDeniedTools)
     || additionalDeniedTools.some((tool) => typeof tool !== "string" || tool.trim() === "")) {
@@ -131,10 +143,11 @@ export function resolveConfig(rawConfig = {}) {
       skillConfigPath,
     }),
     output: Object.freeze({ configPath: outputConfigPath }),
+    compaction: Object.freeze({ cacheRetention: compactionCacheRetention }),
   });
 }
 
-export function inheritCompactionReasoning(options, sessions) {
+export function inheritCompactionReasoning(options, sessions, cacheRetention = "long") {
   if (options?.purpose !== "compaction"
     || options.reasoningEffort !== undefined
     || options.sessionId === undefined
@@ -151,6 +164,9 @@ export function inheritCompactionReasoning(options, sessions) {
   }
 
   options.reasoningEffort = route.reasoningEffort;
+  if (options.cacheRetention === undefined && cacheRetention !== "provider-default") {
+    options.cacheRetention = cacheRetention;
+  }
   return true;
 }
 
@@ -367,7 +383,7 @@ export function apply(ctx, rawConfig) {
   };
   const hasSessionEvent = (agent, type, predicate) => evidence.has(agent, type, predicate);
   ctx.on("llm/stream", (options, next) => {
-    inheritCompactionReasoning(options, ctx.sessions);
+    inheritCompactionReasoning(options, ctx.sessions, config.compaction.cacheRetention);
     return next();
   });
   const skillPath = resolveSkillPath(config.skillPath);
@@ -598,6 +614,7 @@ export function apply(ctx, rawConfig) {
         configuredMaxTokens,
         ...(priorMaxTokens === undefined ? {} : { priorMaxTokens }),
         effectiveMaxTokens,
+        semantics: "provider-request-ceiling",
       });
     }
     return Object.freeze({ ...request, maxTokens: effectiveMaxTokens });

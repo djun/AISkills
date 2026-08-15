@@ -26,7 +26,8 @@ test("output policy validates explicit user-owned values and renders bounded gui
   assert.throws(() => resolveOutputPolicy(Object.create({ concise: true })), /own boolean property/u);
   assert.equal(renderOutputPolicyPrompt({ concise: false }), "");
   assert.match(renderOutputPolicyPrompt({ concise: true }), /never permits omitting required results/u);
-  assert.match(renderOutputPolicyPrompt({ concise: false, maxTokens: 2_500 }), /may include reasoning/u);
+  assert.match(renderOutputPolicyPrompt({ concise: true }), /never reduces child-agent, compaction, checkpoint/u);
+  assert.match(renderOutputPolicyPrompt({ concise: false, maxTokens: 2_500 }), /provider enforcement is not guaranteed/iu);
 });
 
 test("output policy store is atomic, repairable, locked, and resettable", async () => {
@@ -50,10 +51,11 @@ test("output policy store is atomic, repairable, locked, and resettable", async 
       policy: { concise: false },
       source: "default",
     });
-    const hardOnly = await tool.execute({ action: "set", concise: false, maxTokens: 2_500 }, execution);
-    assert.deepEqual(hardOnly.policy, { concise: false, maxTokens: 2_500 });
+    const ceilingOnly = await tool.execute({ action: "set", concise: false, maxTokens: 2_500 }, execution);
+    assert.deepEqual(ceilingOnly.policy, { concise: false, maxTokens: 2_500 });
     assert.deepEqual(readOutputPolicyStore(configPath).policy, { concise: false, maxTokens: 2_500 });
-    assert.match(tool.output.render({}, hardOnly)[0].text, /concise=off, maxTokens=2500/u);
+    assert.match(tool.output.render({}, ceilingOnly)[0].text, /concise=off, maxTokens=2500/u);
+    assert.match(tool.output.render({}, ceilingOnly)[0].text, /strict provider compliance is not guaranteed/u);
 
     mkdirSync(resolve(root, "odai"), { recursive: true });
     writeFileSync(configPath, "{broken\n", "utf8");

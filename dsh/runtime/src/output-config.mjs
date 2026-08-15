@@ -143,9 +143,10 @@ export function renderOutputPolicyPrompt(policy) {
       "Keep the final user-facing response concise. Include only the result, decisive evidence, unresolved items, and necessary next action; omit routine process narration and repeated context unless the user explicitly asks for detail.",
     ] : []),
     ...(policy.maxTokens === undefined ? [] : [
-      `Each controller model request has a hard output budget of ${policy.maxTokens} tokens, which may include reasoning. Prioritize completion and finish before the cap.`,
+      `Each controller model request carries a provider output ceiling request of ${policy.maxTokens} tokens, which may include reasoning. Provider enforcement is not guaranteed; prioritize completion and finish before the requested ceiling.`,
     ]),
-    "The policy changes presentation and budget only; it never permits omitting required results, evidence, risks, blockers, or verification.",
+    "This policy applies only to controller requests and the final user-facing response. It never reduces child-agent, compaction, checkpoint, or other internal context budgets.",
+    "The policy changes presentation and the requested controller budget only; it never permits omitting required results, evidence, risks, blockers, or verification.",
   ].join("\n");
 }
 
@@ -163,7 +164,7 @@ export function createOutputConfigTool(configPath, options = {}) {
     description: [
       "Inspect, set, or remove the shared, default-off Odai controller output policy.",
       "Use only when the user explicitly requests concise responses or supplies maxTokens; never choose values.",
-      "Changes start next user turn. maxTokens may include reasoning and truncate responses; child-agent and compaction budgets stay unchanged.",
+      "Changes start next user turn. maxTokens is a provider request ceiling, not locally enforced; providers may include reasoning, exceed or ignore it, or truncate responses. Child-agent and compaction budgets stay unchanged.",
     ].join(" "),
     parameters: {
       type: "object",
@@ -180,7 +181,7 @@ export function createOutputConfigTool(configPath, options = {}) {
         },
         maxTokens: {
           type: "integer",
-          description: "Optional positive user-supplied controller cap.",
+          description: "Optional positive user-supplied provider request ceiling for controller output.",
         },
       },
     },
@@ -215,6 +216,7 @@ export function createOutputConfigTool(configPath, options = {}) {
           type: "text",
           text: [
             `${value.action === "show" ? "Current" : "Updated"} Odai controller output policy (${value.source}): ${settings}.`,
+            ...(value.policy.maxTokens === undefined ? [] : [" maxTokens is sent as a provider request ceiling; strict provider compliance is not guaranteed and must be checked from usage."]),
             ...(value.recoveredInvalidStore ? [" An invalid prior store was preserved and replaced."] : []),
             ...(value.requiresNextTurn ? [" The change applies from the next user turn."] : []),
           ].join(""),
