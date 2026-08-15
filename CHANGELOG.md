@@ -2,6 +2,13 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-16 — DSH 输出模式与缓存成本
+
+- 发布 `odai-dsh-agent@0.0.7` 与 `odai-dsh-plugin@0.0.6`。两个包默认使用软精简输出，并提供正常、软精简、经济三种命名模式；经济模式默认发送可调的 `500` provider 输出 ceiling，用户可指定其他正整数。该 ceiling 不影响 child、compaction、checkpoint 或其他内部预算，provider 超限会从逐请求 usage 中显式报告。
+- C04 / C05 的经济模式裁判均为 `4/4`，相对软精简合计成本下降约 `36.8%`；当前 provider 会超过 `500`，因此它是有效但非严格的预算信号，不冒充本地硬账单上限。默认软精简不设置 ceiling，正常模式保留为显式退出项。
+- 同 provider/model compaction 在继承 controller reasoning 时默认请求 long cache retention，并保持独立 `8192` 摘要预算；普通连续请求的 clean A/B 中，`short` 与 `long` 第二请求均达到约 `95.9%` 缓存覆盖，不据此把 `long` 扩大为普通 controller 的通用默认。
+- 新增普通请求缓存对照探针、provider ceiling 严格认证门、Plugin/Agent npm 徽章和完整六 reference 内部地图；真实 DSH load、Agent Web、共存安装、单测与 dry-run package 均通过。
+
 ## 2026-08-16 — DSH compaction 缓存兼容
 
 - 发布 `odai-dsh-agent@0.0.6` 与 `odai-dsh-plugin@0.0.5`。同 provider/model 的 DSH compaction 在自身未显式配置 reasoning 时继承当前会话 `request/header` 中用户实际选择的 reasoning effort；跨模型 summarizer 与显式设置保持不变，不内置任何模型名称。
