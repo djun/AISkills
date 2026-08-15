@@ -102,9 +102,13 @@ npm --prefix dsh/plugin run smoke:compaction-cache -- --yes
 npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime
 npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime --compaction-max-tokens 8192
 npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime --compaction-cache-retention long
+
+# Compare two ordinary controller requests without an intervening compaction.
+npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime --ordinary-only --cache-retention short
+npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime --ordinary-only --cache-retention long
 ```
 
-The probe reports both compaction and exactly matched cache reads. Because it runs before the fixture session has a durable first request header, candidate mode supplies the same synthetic routed header used by the unit contract and then exercises the real relay request; production compaction reads an existing durable header. A same-route inherited compaction requests `long` retention by default because the controlled relay probe restored cache coverage from about 26% to about 96% without lowering the independent summary budget. An explicit incoming compaction retention is preserved; deployment config `compaction.cacheRetention` or `ODAI_COMPACTION_CACHE_RETENTION` can select `short`, `long`, `none`, or `provider-default`, with `provider-default` restoring DSH's provider default. Cross-model and explicitly reasoned summarizers remain untouched.
+The probe reports both compaction and exactly matched cache reads. `--ordinary-only` instead reports a clean warm/matched pair so an intervening compaction cannot refresh or contaminate a normal-dialogue cache comparison. Because it runs before the fixture session has a durable first request header, candidate mode supplies the same synthetic routed header used by the unit contract and then exercises the real relay request; production compaction reads an existing durable header. A same-route inherited compaction requests `long` retention by default because the controlled relay probe restored cache coverage from about 26% to about 96% without lowering the independent summary budget. An explicit incoming compaction retention is preserved; deployment config `compaction.cacheRetention` or `ODAI_COMPACTION_CACHE_RETENTION` can select `short`, `long`, `none`, or `provider-default`, with `provider-default` restoring DSH's provider default. Cross-model and explicitly reasoned summarizers remain untouched.
 
 A provider cache is still best-effort: even identical calls can miss because of upstream writes, expiry, or routing. Changing compaction to a low controller ceiling is not a valid cache fix because it risks an incomplete checkpoint; the first controller request after a landed summary must also build the new summary prefix because it no longer matches the replaced history.
 

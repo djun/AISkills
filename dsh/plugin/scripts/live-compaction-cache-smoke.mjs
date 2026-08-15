@@ -69,6 +69,7 @@ try {
     runtimePath: pathToFileURL(runtimePath).href,
     skillPath,
     runtime: args.runtime,
+    ordinaryOnly: args.ordinaryOnly,
     provider: controller.provider,
     model: controller.model,
     reasoningEffort: controller.reasoningEffort,
@@ -99,10 +100,16 @@ try {
     throw new Error(`cache probe produced no report (exit ${run.code})\n${run.stderr}`);
   }
   const report = JSON.parse(await readFile(reportPath, "utf8"));
-  const verification = verifyReport(report, args.runtime, args.compactionMaxTokens === 16);
+  const verification = verifyReport(
+    report,
+    args.runtime,
+    args.compactionMaxTokens === 16,
+    args.ordinaryOnly,
+  );
   const output = {
     ok: run.code === 0 && verification.ok,
     mode: args.runtime ? "candidate-runtime" : "baseline",
+    scenario: args.ordinaryOnly ? "ordinary-prefix-reuse" : "compaction-cache",
     controller: {
       provider: controller.provider,
       model: controller.model,
@@ -110,11 +117,13 @@ try {
     },
     budgets: {
       warmMaxTokens: 16,
-      compactionMaxTokens: args.compactionMaxTokens,
+      ...(args.ordinaryOnly ? {} : { compactionMaxTokens: args.compactionMaxTokens }),
     },
     requestedCacheRetentionOverrides: {
       warm: args.cacheRetention ?? "none",
-      compaction: args.compactionCacheRetention ?? args.cacheRetention ?? "none",
+      ...(args.ordinaryOnly ? {} : {
+        compaction: args.compactionCacheRetention ?? args.cacheRetention ?? "none",
+      }),
     },
     runtimeCacheRetention,
     verification,
@@ -131,6 +140,7 @@ function parseArgs(argv) {
   const parsed = {
     yes: false,
     runtime: false,
+    ordinaryOnly: false,
     sourceHome: undefined,
     timeoutMs: 180_000,
     compactionMaxTokens: 16,
@@ -141,6 +151,7 @@ function parseArgs(argv) {
     const arg = argv[index];
     if (arg === "--yes") parsed.yes = true;
     else if (arg === "--runtime") parsed.runtime = true;
+    else if (arg === "--ordinary-only") parsed.ordinaryOnly = true;
     else if (arg === "--source-home") parsed.sourceHome = argv[++index];
     else if (arg === "--timeout-ms") parsed.timeoutMs = Number(argv[++index]);
     else if (arg === "--compaction-max-tokens") parsed.compactionMaxTokens = Number(argv[++index]);
@@ -181,6 +192,7 @@ function renderPatch(input) {
     `        provider: ${quote(input.provider)}`,
     `        model: ${quote(input.model)}`,
     `        reasoningEffort: ${quote(input.reasoningEffort)}`,
+    `        ordinaryOnly: ${input.ordinaryOnly}`,
     `        compactionMaxTokens: ${input.compactionMaxTokens}`,
     ...(input.cacheRetention === undefined ? [] : [`        cacheRetention: ${quote(input.cacheRetention)}`]),
     ...(input.compactionCacheRetention === undefined ? [] : [`        compactionCacheRetention: ${quote(input.compactionCacheRetention)}`]),
@@ -220,38 +232,40 @@ export function apply(ctx, config) {
       reasoningEffort: config.reasoningEffort,
       messages: [prefix, message("warm-tail", "Warm this exact prefix. Reply OK.")],
     }));
-    const compaction = {
-      ...base,
-      maxTokens: config.compactionMaxTokens,
-      ...(config.compactionCacheRetention === undefined
-        ? {}
-        : { cacheRetention: config.compactionCacheRetention }),
-      purpose: "compaction",
-      messages: [prefix, message("compaction-tail", "Condense the prefix. Reply OK.")],
-    };
-    if (config.runtimeModule) {
-      const runtime = await import(config.runtimeModule);
-      runtime.inheritCompactionReasoning(compaction, {
-        get(sessionId) {
-          if (sessionId !== agent.session.id) return undefined;
-          return {
-            requestHeader() {
-              return {
-                config: {
-                  provider: config.provider,
-                  model: config.model,
-                  reasoningEffort: config.reasoningEffort,
-                },
-              };
-            },
-          };
-        },
-      }, config.runtimeCacheRetention);
+    if (!config.ordinaryOnly) {
+      const compaction = {
+        ...base,
+        maxTokens: config.compactionMaxTokens,
+        ...(config.compactionCacheRetention === undefined
+          ? {}
+          : { cacheRetention: config.compactionCacheRetention }),
+        purpose: "compaction",
+        messages: [prefix, message("compaction-tail", "Condense the prefix. Reply OK.")],
+      };
+      if (config.runtimeModule) {
+        const runtime = await import(config.runtimeModule);
+        runtime.inheritCompactionReasoning(compaction, {
+          get(sessionId) {
+            if (sessionId !== agent.session.id) return undefined;
+            return {
+              requestHeader() {
+                return {
+                  config: {
+                    provider: config.provider,
+                    model: config.model,
+                    reasoningEffort: config.reasoningEffort,
+                  },
+                };
+              },
+            };
+          },
+        }, config.runtimeCacheRetention);
+      }
+      calls.push(await invoke(ctx, "compaction", compaction));
     }
-    calls.push(await invoke(ctx, "compaction", compaction));
     calls.push(await invoke(ctx, "matched", {
       ...base,
-      purpose: "compaction",
+      ...(config.ordinaryOnly ? {} : { purpose: "compaction" }),
       reasoningEffort: config.reasoningEffort,
       messages: [prefix, message("matched-tail", "Confirm this prefix. Reply OK.")],
     }));
@@ -288,10 +302,10 @@ async function invoke(ctx, label, options) {
 `;
 }
 
-function verifyReport(report, runtime, requireCompactionCache) {
+function verifyReport(report, runtime, requireCompactionCache, ordinaryOnly) {
   const errors = [];
   const calls = Object.fromEntries((report.calls ?? []).map((call) => [call.label, call]));
-  for (const label of ["warm", "compaction", "matched"]) {
+  for (const label of ordinaryOnly ? ["warm", "matched"] : ["warm", "compaction", "matched"]) {
     if (!calls[label]?.usage) errors.push(`${label} call has no usage`);
   }
   const compactionCache = calls.compaction?.usage?.cacheReadTokens ?? 0;
@@ -301,14 +315,14 @@ function verifyReport(report, runtime, requireCompactionCache) {
   const compactionCoverage = ratio(compactionCache, compactionCache + compactionInput);
   const matchedCoverage = ratio(matchedCache, matchedCache + matchedInput);
   if (matchedCache < 1_024) errors.push(`matched reasoning cache read was only ${matchedCache}`);
-  if (runtime) {
+  if (!ordinaryOnly && runtime) {
     if (calls.compaction?.effectiveReasoningEffort !== calls.warm?.effectiveReasoningEffort) {
       errors.push("candidate runtime did not inherit the routed reasoning effort");
     }
     if (requireCompactionCache && compactionCache < 1_024) {
       errors.push(`candidate compaction cache read was only ${compactionCache}`);
     }
-  } else {
+  } else if (!ordinaryOnly) {
     if (calls.compaction?.effectiveReasoningEffort !== null) {
       errors.push("baseline compaction unexpectedly had a reasoning effort");
     }
@@ -325,8 +339,8 @@ function verifyReport(report, runtime, requireCompactionCache) {
     matchedCacheCoverage: matchedCoverage,
     cacheStatus: matchedCoverage < 0.5
       ? "upstream-low-hit"
-      : (!requireCompactionCache && compactionCache < matchedCache ? "budget-partitioned" : "reused"),
-    budgetMismatchReducedCache: !requireCompactionCache && compactionCache < matchedCache,
+      : (!ordinaryOnly && !requireCompactionCache && compactionCache < matchedCache ? "budget-partitioned" : "reused"),
+    budgetMismatchReducedCache: !ordinaryOnly && !requireCompactionCache && compactionCache < matchedCache,
   };
 }
 
