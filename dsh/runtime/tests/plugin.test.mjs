@@ -77,6 +77,8 @@ test("config is strict at governance boundaries", () => {
   assert.throws(() => resolveConfig({ routing: { configPath: "" } }), /configPath must be a non-empty string/u);
   assert.throws(() => resolveConfig({ governance: { skillSource: "latest" } }), /skillSource must be bundled, auto, or user/u);
   assert.throws(() => resolveConfig({ governance: { skillConfigPath: "" } }), /skillConfigPath must be a non-empty string/u);
+  assert.throws(() => resolveConfig({ output: { configPath: "" } }), /config\.output\.configPath must be a non-empty string/u);
+  assert.throws(() => resolveConfig({ output: { concise: true } }), /config\.output has unknown fields: concise/u);
 
   const defaults = resolveConfig();
   assert.equal(defaults.routing.mode, "auto");
@@ -86,6 +88,7 @@ test("config is strict at governance boundaries", () => {
   assert.equal(defaults.routing.configPath, resolve(testDshHome, "odai/routing.json"));
   assert.equal(defaults.governance.skillSource, "bundled");
   assert.equal(defaults.governance.skillConfigPath, resolve(testDshHome, "odai/source.json"));
+  assert.equal(defaults.output.configPath, resolve(testDshHome, "odai/output.json"));
 
   const config = resolveConfig({
     routing: {
@@ -138,8 +141,14 @@ test("compaction inherits routed reasoning only for the exact current target", a
   assert.equal(inheritCompactionReasoning({ ...eligible, purpose: undefined, reasoningEffort: undefined }, sessions), false);
   assert.equal(inheritCompactionReasoning(Object.freeze({ ...eligible, reasoningEffort: undefined }), sessions), false);
 
+  const outputConfigPath = resolve(testDshHome, "compaction-output-policy", "output.json");
+  mkdirSync(resolve(testDshHome, "compaction-output-policy"), { recursive: true });
+  writeFileSync(outputConfigPath, `${JSON.stringify({
+    schemaVersion: 1,
+    policy: { concise: true, maxTokens: 2_500 },
+  })}\n`, "utf8");
   const ctx = fakeContext({ sessions });
-  apply(ctx, { skillPath, routing: { mode: "off" } });
+  apply(ctx, { skillPath, routing: { mode: "off" }, output: { configPath: outputConfigPath } });
   const streamed = {
     purpose: "compaction",
     sessionId: "session-cache",
@@ -148,6 +157,7 @@ test("compaction inherits routed reasoning only for the exact current target", a
   };
   assert.equal(await ctx.captured.handlers.get("llm/stream")(streamed, async () => "next"), "next");
   assert.equal(streamed.reasoningEffort, "xhigh");
+  assert.equal(streamed.maxTokens, undefined);
 });
 
 test("routing off ignores stale protection evidence", () => {
@@ -266,17 +276,103 @@ test("role model selection overrides the child request but not the controller", 
   });
 });
 
+test("controller output policy is explicit, turn-stable, capped, and isolated from children", async () => {
+  const configPath = resolve(testDshHome, "output-policy", "output.json");
+  const ctx = fakeContext();
+  apply(ctx, { skillPath, routing: { mode: "off" }, output: { configPath } });
+
+  const events = [];
+  const agent = {
+    phase: { turn: 1 },
+    session: {
+      header: {},
+      events,
+      append(type, data) {
+        events.push({ type, data });
+      },
+    },
+  };
+  const assemble = ctx.captured.handlers.get("system-prompt/assemble");
+  const request = ctx.captured.handlers.get("agent/request");
+  const outputTool = ctx.captured.tools.find((candidate) => candidate.name === "odai_output_config");
+  const context = { agent, signal: new AbortController().signal };
+  const downstream = async () => ({ sections: ctx.captured.sections });
+
+  const initial = await assemble({}, context, downstream);
+  assert.equal(initial.sections.find((section) => section.name === "odai:controller-output-policy").text, "");
+  assert.deepEqual((await outputTool.execute({ action: "show" }, { agent })).policy, { concise: false });
+  const configured = await outputTool.execute({
+    action: "set",
+    concise: true,
+    maxTokens: 2_500,
+  }, { agent });
+  assert.deepEqual(configured.policy, { concise: true, maxTokens: 2_500 });
+  assert.equal(configured.requiresNextTurn, true);
+  assert.deepEqual(
+    await request({ agent, turn: 1, step: 2 }, async () => ({ provider: "base", model: "controller" })),
+    { provider: "base", model: "controller" },
+  );
+
+  agent.phase.turn = 2;
+  const selected = await assemble({}, context, downstream);
+  const policyText = selected.sections.find((section) => section.name === "odai:controller-output-policy").text;
+  assert.match(policyText, /Keep the final user-facing response concise/u);
+  assert.match(policyText, /hard output budget of 2500 tokens/u);
+  assert.deepEqual(
+    await request({ agent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 2_500 },
+  );
+  assert.deepEqual(
+    await request({ agent, turn: 2, step: 2 }, async () => ({ provider: "base", model: "controller", maxTokens: 1_000 })),
+    { provider: "base", model: "controller", maxTokens: 1_000 },
+  );
+  assert.deepEqual(events.find((event) => event.type === "odai/output-budget-applied").data, {
+    turn: 2,
+    step: 1,
+    configuredMaxTokens: 2_500,
+    priorMaxTokens: 8_000,
+    effectiveMaxTokens: 2_500,
+  });
+
+  const child = {
+    phase: { turn: 1 },
+    session: { header: { origin: "subagent", delegationDepth: 1 }, events: [] },
+  };
+  const childResult = await request(
+    { agent: child, turn: 1, step: 1 },
+    async () => ({ provider: "child", model: "worker", maxTokens: 4_000 }),
+  );
+  assert.deepEqual(childResult, { provider: "child", model: "worker", maxTokens: 4_000 });
+  assert.throws(
+    () => outputTool.execute({ action: "set", concise: true }, { agent: child }),
+    /child agents may not change/u,
+  );
+
+  const removed = await outputTool.execute({ action: "remove" }, { agent });
+  assert.deepEqual(removed.policy, { concise: false });
+  agent.phase.turn = 3;
+  const reset = await assemble({}, context, downstream);
+  assert.equal(reset.sections.find((section) => section.name === "odai:controller-output-policy").text, "");
+  assert.deepEqual(
+    await request({ agent, turn: 3, step: 1 }, async () => ({ provider: "base", model: "controller" })),
+    { provider: "base", model: "controller" },
+  );
+});
+
 test("plugin registers canonical prompt, monotonic guard, audit observer, and router", async () => {
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "observe" } });
 
-  assert.equal(ctx.captured.sections.length, 3);
+  assert.equal(ctx.captured.sections.length, 4);
   assert.match(ctx.captured.sections[0].text, /odai canonical governance/u);
+  assert.match(ctx.captured.sections[0].text, /already loaded by this runtime; do not call the skill tool/u);
   assert.match(ctx.captured.sections[1].text, /naturally asks to inspect, set, change, or remove/u);
   assert.match(ctx.captured.sections[1].text, /Never infer, recommend as chosen, or silently select/u);
   assert.match(ctx.captured.sections[2].text, /explicitly asks to inspect, set, or reset that source/u);
+  assert.equal(ctx.captured.sections[3].text, "");
   assert.equal(ctx.captured.tools[0].name, "odai_routing_config");
   assert.equal(ctx.captured.tools[1].name, "odai_skill_source_config");
+  assert.equal(ctx.captured.tools[2].name, "odai_output_config");
   assert.ok(ctx.captured.handlers.has("system-prompt/assemble"));
   assert.equal(ctx.captured.guards.length, 1);
   assert.ok(ctx.captured.handlers.has("tools/result"));
@@ -329,10 +425,21 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
 });
 
 test("global and preset runtime instances deduplicate durable evidence and routing", async () => {
+  const outputConfigPath = resolve(testDshHome, "coexistence-output-policy", "output.json");
+  mkdirSync(resolve(testDshHome, "coexistence-output-policy"), { recursive: true });
+  writeFileSync(outputConfigPath, `${JSON.stringify({
+    schemaVersion: 1,
+    policy: { concise: true, maxTokens: 2_500 },
+  })}\n`, "utf8");
   const globalCtx = fakeContext();
   const presetCtx = fakeContext();
-  apply(globalCtx, { skillPath, routing: { mode: "observe" } });
-  apply(presetCtx, { skillPath, routing: { mode: "observe" } });
+  const runtimeConfig = {
+    skillPath,
+    routing: { mode: "observe" },
+    output: { configPath: outputConfigPath },
+  };
+  apply(globalCtx, runtimeConfig);
+  apply(presetCtx, runtimeConfig);
 
   const events = [];
   const agent = {
@@ -368,6 +475,16 @@ test("global and preset runtime instances deduplicate durable evidence and routi
   globalCtx.captured.handlers.get("tools/result")(execution, { isError: false });
   presetCtx.captured.handlers.get("tools/result")(execution, { isError: false });
   assert.equal(events.filter((event) => event.type === "odai/tool-observed").length, 1);
+
+  const globalRequest = globalCtx.captured.handlers.get("agent/request");
+  const presetRequest = presetCtx.captured.handlers.get("agent/request");
+  const capped = await globalRequest(payload, () => presetRequest(payload, async () => ({
+    provider: "base",
+    model: "controller",
+    maxTokens: 8_000,
+  })));
+  assert.deepEqual(capped, { provider: "base", model: "controller", maxTokens: 2_500 });
+  assert.equal(events.filter((event) => event.type === "odai/output-budget-applied").length, 1);
 });
 
 test("global and preset execute routing starts exactly one subagent", async () => {

@@ -423,6 +423,9 @@ function parseArgs(argv) {
   if (args.noJudge && args.deferJudge) {
     throw new Error("--no-judge and --defer-judge cannot be combined");
   }
+  if ([args.reasoningEffort, args.runnerReasoningEffort, args.judgeReasoningEffort].includes("inherit")) {
+    throw new Error("reasoning effort inherit is unsupported because isolated Codex calls ignore user config; pass an explicit value");
+  }
   if (args.rejudgeFrom.length > 0 && (!args.run || args.noJudge || args.deferJudge || args.runnerCmd)) {
     throw new Error("--rejudge-from requires --run and cannot be combined with --no-judge, --defer-judge, or --runner-cmd");
   }
@@ -486,7 +489,8 @@ Options:
   --judge-model MODEL         Override only the judge model
   --reasoning-effort VALUE    Compatibility override for both reasoning efforts (default: low)
   --runner-reasoning-effort VALUE  Override only runner effort
-  --judge-reasoning-effort VALUE   Override only judge effort; use inherit to keep user config
+  --judge-reasoning-effort VALUE   Override only judge effort; isolated calls require an explicit value
+                    The literal inherit is rejected because --ignore-user-config leaves nothing to inherit.
                     Model and reasoning flags apply to the default codex exec commands;
                     custom command templates must select their own model.
   --judge-transcript-chars N  Transcript chars sent to judge (default: 30000)
@@ -3353,7 +3357,10 @@ function resolvedJudgeModel(args) {
 }
 
 function reasoningConfigArgs(value) {
-  if (!value || value === "inherit") return [];
+  if (!value) return [];
+  if (value === "inherit") {
+    throw new Error("reasoning effort inherit is unsupported for isolated Codex calls");
+  }
   return ["-c", `model_reasoning_effort=${JSON.stringify(value)}`];
 }
 

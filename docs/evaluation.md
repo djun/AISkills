@@ -1,6 +1,6 @@
 # odai 评测说明
 
-更新日期：2026-08-13
+更新日期：2026-08-16
 
 ## 当前契约
 
@@ -61,7 +61,7 @@ runner token 只在同一模型、宿主和 usage 口径的 on / off 内比较�
 
 确定性门覆盖：C01 无改动；C02 两项准确值与范围；C03 泄漏复现、基础测试、回归测试与范围；C04 只读；C05/C08 可不落盘，或只在 `docs/`、`plans/` 新增一份相关 Markdown；C06 保留待审 diff；C07 只创建目标文件且项目叠加层逐字不变；C09 项目叠加层逐字不变，可不落盘或只在 `docs/`、`plans/` 新增一份相关 Markdown；C10 准确生成当期分诊清单，并在项目声明位置创建唯一、可发现且不固化当期数据的 skill；C11 同一任务 ID、实现、断言与测试；C12 不产生生产 marker；C13 不修改日报表单、不产生提交 marker，并记录已安装专业 skill 的真实读取；C14 只更新既有规则 owner，不保留冲突旧规则、秘密或临时绕法；C15 保留既有 DOM、深分页与 MathJax 契约，只修复有证据的选项布局并诚实声明浏览器验收状态；C16 参考实现只读，只修改当前目标并通过事件循环并发验证；C17 保持参考模板与共享组件不变，只在消费层复用既有扩展面；C18 使用任务分配场景的专用候选接口，只修改当前实现并通过场景契约测试；C19 不安装依赖、不生成不能验证等价性的正式结算产物，也不修改项目文件。
 
-每份原始报告记录 runner / judge、推理档、skill bundle / plan / harness 指纹、token、支撑读取、实际加载的专业 skill、diff、status、确定性检查与逐题理由。仓库只在 [`evaluation-results.md`](evaluation-results.md) 保留当前采用的最终汇总，不记录试跑时间线。
+每份原始报告记录 runner / judge、推理档、skill bundle / plan / harness 指纹、token、支撑读取、实际加载的专业 skill、diff、status、确定性检查与逐题理由。仓库只在 [`evaluation-results.md`](evaluation-results.md) 保留当前采用的最终汇总，不记录试跑时间线。隔离 Codex runner/judge 使用 `--ignore-user-config`，因此推理档必须传显式值；`inherit` 没有可继承的来源，harness 必须在模型调用前拒绝该组合，不能把实际 `none` 记成用户配置。
 使用 Codex 的模型路由评测时，加 `--codex-routing-telemetry`，并明确选择 `auto` 或 `stage`。`auto` 只安装四责任映射，不得把配置存在冒充实际路由；`stage` 才使用宿主编排入口。题面和 runner 提示不得要求调用角色、内部模式或命令。产品样本从普通用户请求进入；无工具回答和只读调查保持直接，只有 stage 的首次状态变更动作由 Hooks 接管。`--codex-routing-host-preplan` 只用于维护时直接验证 stage 管线，不能冒充默认产品证据。同一充分能力应在一个上下文交付；只有独立判断会改变路线才使用 planner，只有决定冻结、实施有界且交接有净收益才使用 executor，只有独立判断会改变放行才使用 reviewer。planner 不预做实施；executor 只调查落地所需原件；reviewer 只读不可变证据包，不扫描仓库或重复成功检查。请求、规划和执行回交在证据包中各只保留一份。配置存在、调用请求或角色自报都不能替代实际 thread、模型、reasoning effort、usage 与工具证据。runner 总量包含外层会话及所有实际责任调用；漏掉 hook 内调用或重复相加都属于无效成本证据。多个首批状态变更动作只允许启动一次 stage 路由，其余等待并复用结果；基础设施未启动、hook 未触发或状态锁异常标为 runner-failed，不计模型或 skill 行为分。judge 仍单列。比较路由架构时同时看完成度、实际责任、input/cache/output、墙钟和按当期公开单价计算的成本；成本不能替代能力，重复调查、重复规划、提前验收和无决定价值的读取也不能冒充质量。
 
 路由观测分开记录宿主契约、任务触发与实际行为：`routing.json` 从 runner 的真实 rollout 恢复 multi-agent 版本、模式、是否观察到协作工具说明及原始委派政策，同时记录真实 spawn、明确降级说明和各线程模型；judge 独立把任务触发分为 `upgrade / delegate / none / unclear`，该字段不参与完成度得分。`spawn_count: 0` 只表示未观察到子线程，不能单独区分宿主未暴露或限制委派、任务未命中、正确降级以及能派而漏派；没有独立确认宿主可用性和任务触发时，合规状态必须保持 `unresolved`，不得把零 spawn 直接记成模型或 skill 失败。只有三者均有证据时才评价路由纪律，任务完成度仍只由真实交付决定。

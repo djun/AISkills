@@ -53,6 +53,12 @@ The controller calls `odai_routing_config` to persist that explicit choice. The 
 
 Planner, executor, and reviewer are independent optional responsibilities. If any needed one has no mapping, high-impact work fails closed and remains read-only; lower-impact work continues only where it does not depend on the missing independent responsibility. Odai never chooses a model on the user's behalf.
 
+## Controller output policy
+
+The Agent does not change controller response length by default. A user can naturally ask to inspect, set, or remove a controller output policy; `odai_output_config` persists the explicit choice in `$DSH_HOME/odai/output.json`, which is shared with the Plugin. `concise: true` adds a short presentation instruction without relaxing required results, evidence, risks, blockers, or verification. An optional positive `maxTokens` value hard-caps each controller conversation-model request and only tightens an existing lower host ceiling.
+
+Provider APIs may count hidden reasoning inside that ceiling, so a low value can truncate the response before useful final text, especially at a high reasoning effort. Odai never invents a limit or enables concision on the user's behalf. The policy is stable within one turn and changes from the next user turn. It does not alter child-agent role budgets or DSH compaction; removing it restores the host's normal controller behavior.
+
 ## Skill sources
 
 The Agent keeps the managed preset's complete skill copy as its `bundled` default, so existing installations do not change behavior. When the user explicitly asks to show, set, or reset the Odai skill source, the controller uses `odai_skill_source_config` and stores the choice in `$DSH_HOME/odai/source.json`, outside the managed preset:

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,7 +43,7 @@ test("DSH canary runner isolates Plugin and Agent routing surfaces", async () =>
       ].join("\n"), "utf8"),
       writeFile(resolve(sourceHome, ".credentials.yaml"), "{}\n", "utf8"),
       writeFile(resolve(pluginHome, "profiles/headless/node_modules/odai-dsh-plugin/runtime/index.mjs"), "export default {};\n", "utf8"),
-      writeFile(resolve(agentHome, ".agent-presets/odai/agent.cordis.yml"), `- id: odai-governance\n  name: ./runtime/index.mjs\n  config:\n${routingBlock}\n`, "utf8"),
+      writeFile(resolve(agentHome, ".agent-presets/odai/agent.cordis.yml"), `- id: odai-governance\n  name: ./runtime/index.mjs\n  config:\n${routingBlock}\n`.replaceAll("\n", "\r\n"), "utf8"),
       writeFile(promptFile, [
         "Use the odai skill at `/tmp/frozen/skills/odai/SKILL.md` to handle the user request below. Read that SKILL.md completely before taking task actions.",
         "",
@@ -76,6 +76,8 @@ test("DSH canary runner isolates Plugin and Agent routing surfaces", async () =>
       profileHome: agentHome,
       surface: "agent",
       routingMode: "execute",
+      outputConcise: true,
+      controllerMaxTokens: 2_500,
     });
     assert.equal(agent.hasGlobalPlugin, false);
     assert.equal(agent.hasAgent, true);
@@ -83,10 +85,27 @@ test("DSH canary runner isolates Plugin and Agent routing surfaces", async () =>
     assert.match(agent.settings, /agent-presets:\n  default: odai/u);
     assert.match(agent.agentComposition, /mode: execute/u);
     assert.match(agent.agentComposition, /model: "gpt-5\.6-sol"/u);
+    assert.deepEqual(agent.outputPolicy, {
+      schemaVersion: 1,
+      policy: { concise: true, maxTokens: 2_500 },
+    });
 
     const fakeDsh = resolve(root, "fake-dsh-web.mjs");
     await writeFile(fakeDsh, `#!/usr/bin/env node\nimport { createServer } from "node:http";\nconst port = Number(process.argv[process.argv.indexOf("--port") + 1]);\nlet preset;\nlet selection;\nconst server = createServer((request, response) => {\n  let body = "";\n  request.on("data", (chunk) => { body += chunk; });\n  request.on("end", () => {\n    const call = JSON.parse(body);\n    if (request.url !== "/api/" + call.method) { response.statusCode = 404; response.end("not found"); return; }\n    let value;\n    if (call.method === "agentPreset.list") value = { presets: [{ id: "odai" }] };\n    else if (call.method === "session.create") { preset = call.payload.agentPreset; value = { sessionId: "session-test", agentPreset: preset }; }\n    else if (call.method === "session.selectModel") { selection = call.payload; value = { selected: call.payload }; }\n    else if (call.method === "session.prompt") value = { accepted: true };\n    else if (call.method === "session.history") value = { events: [\n      { event: { type: "assistant/message", seq: 1, data: { message: { content: [{ type: "text", text: JSON.stringify({ preset, model: selection?.model, permissionMode: process.env.DSH_PERMISSION_MODE }) }] } } } },\n      { event: { type: "turn/end", seq: 2, data: { reason: { kind: "completed" } } } },\n    ], hasMore: false };\n    else { response.statusCode = 404; response.end(); return; }\n    response.setHeader("content-type", "application/json");\n    response.end(JSON.stringify({ result: { ok: true, value } }));\n  });\n});\nserver.listen(port, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => process.exit(0)));\n`, "utf8");
     await chmod(fakeDsh, 0o700);
+    let dshCommand = fakeDsh;
+    if (process.platform === "win32") {
+      const shimRoot = resolve(root, "fake dsh shim");
+      const packageRoot = resolve(shimRoot, "custom modules/@deepseek-ai/dsh");
+      const shimEntry = resolve(packageRoot, "lib/bin.js");
+      await mkdir(resolve(packageRoot, "lib"), { recursive: true });
+      await Promise.all([
+        copyFile(fakeDsh, shimEntry),
+        writeFile(resolve(packageRoot, "package.json"), "{\"type\":\"module\"}\n", "utf8"),
+        writeFile(resolve(shimRoot, "dsh.cmd"), "@ECHO off\r\nnode \"%dp0%\\custom modules\\@deepseek-ai\\dsh\\lib\\bin.js\" %*\r\n", "utf8"),
+      ]);
+      dshCommand = resolve(shimRoot, "dsh.cmd");
+    }
     const webAgent = await runSurface({
       root,
       sourceHome,
@@ -96,7 +115,7 @@ test("DSH canary runner isolates Plugin and Agent routing surfaces", async () =>
       profileHome: agentHome,
       surface: "agent",
       routingMode: "execute",
-      dshBin: fakeDsh,
+      dshBin: dshCommand,
       preflight: false,
     });
     assert.deepEqual(webAgent, {
@@ -129,6 +148,10 @@ async function runSurface(options) {
     "--controller-embeds-skill",
     "--timeout", "30",
   ];
+  if (options.outputConcise) commandArgs.push("--output-concise");
+  if (options.controllerMaxTokens !== undefined) {
+    commandArgs.push("--controller-max-tokens", String(options.controllerMaxTokens));
+  }
   if (options.dshBin) commandArgs.push("--dsh-bin", options.dshBin);
   if (options.preflight !== false) commandArgs.push("--preflight");
   await execFileAsync(process.execPath, commandArgs, {

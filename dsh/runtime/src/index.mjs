@@ -16,6 +16,7 @@ import {
   activeRouteProtection,
   createChildToolGuard,
   createRouteProtectionGuard,
+  isSubagent,
   summarizeToolResult,
 } from "./governance.mjs";
 import {
@@ -26,6 +27,14 @@ import {
   resolveRoleRoute,
   resolveRoutingConfigPath,
 } from "./routing-config.mjs";
+import {
+  DEFAULT_OUTPUT_POLICY,
+  createOutputConfigTool,
+  effectiveOutputPolicy,
+  renderOutputPolicyPrompt,
+  resolveOutputConfigPath,
+} from "./output-config.mjs";
+import { selectSharedOutputPolicyForTurn } from "./output-policy-state.mjs";
 import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
 import {
   SKILL_SOURCE_CONFIG_PROMPT,
@@ -66,6 +75,7 @@ export function resolveConfig(rawConfig = {}) {
   const routing = assertPlainObject(raw.routing, "config.routing");
   const roles = assertPlainObject(routing.roles, "config.routing.roles");
   const governance = assertPlainObject(raw.governance, "config.governance");
+  const output = assertPlainObject(raw.output, "config.output");
   const mode = routing.mode ?? DEFAULT_ROUTING_MODE;
   const provider = routing.provider ?? "spawn";
   const maxInputChars = routing.maxInputChars ?? 12_000;
@@ -73,7 +83,9 @@ export function resolveConfig(rawConfig = {}) {
   const additionalDeniedTools = governance.additionalDeniedTools ?? [];
   const skillSource = governance.skillSource ?? "bundled";
   const skillConfigPath = resolveSkillSourceConfigPath(governance.skillConfigPath);
+  const outputConfigPath = resolveOutputConfigPath(output.configPath);
   const unknownRoles = Object.keys(roles).filter((role) => !ROUTED_ROLES.includes(role));
+  const unknownOutputFields = Object.keys(output).filter((field) => field !== "configPath");
 
   if (!ROUTING_MODES.has(mode)) {
     throw new TypeError("config.routing.mode must be off, observe, auto, or execute");
@@ -86,6 +98,9 @@ export function resolveConfig(rawConfig = {}) {
   }
   if (unknownRoles.length > 0) {
     throw new TypeError(`config.routing.roles has unknown roles: ${unknownRoles.join(", ")}`);
+  }
+  if (unknownOutputFields.length > 0) {
+    throw new TypeError(`config.output has unknown fields: ${unknownOutputFields.join(", ")}`);
   }
   if (!Array.isArray(additionalDeniedTools)
     || additionalDeniedTools.some((tool) => typeof tool !== "string" || tool.trim() === "")) {
@@ -115,6 +130,7 @@ export function resolveConfig(rawConfig = {}) {
       skillSource,
       skillConfigPath,
     }),
+    output: Object.freeze({ configPath: outputConfigPath }),
   });
 }
 
@@ -315,7 +331,7 @@ function canonicalPrompt(selection) {
     `Canonical skill: ${bundle.manifest.skillVersion}; runtime contract: ${bundle.manifest.runtimeContract}; digest: ${bundle.digest}.`,
     ...(fallback ? [fallback] : []),
     "Apply this governance to every request. Keep the controller as the final delivery owner; use another role only for a real independent gap with observable net benefit.",
-    "Odai governance is already loaded by this runtime; do not call the skill tool to load odai again.",
+    "Odai governance is already loaded by this runtime; do not call the skill tool or read SKILL.md to load odai again.",
     "",
     bundle.skillText,
   ].join("\n");
@@ -387,6 +403,11 @@ export function apply(ctx, rawConfig) {
     order: -18,
     text: SKILL_SOURCE_CONFIG_PROMPT,
   });
+  ctx.systemPrompt.section({
+    name: "odai:controller-output-policy",
+    order: -17,
+    text: "",
+  });
 
   const optionalSkillRegistry = () => {
     try {
@@ -422,12 +443,28 @@ export function apply(ctx, rawConfig) {
       skills: optionalSkillRegistry(),
     });
   };
+  const selectOutputForAgent = () => {
+    try {
+      return effectiveOutputPolicy(config.output.configPath);
+    } catch (error) {
+      logger.warn(`Odai output configuration is invalid; using the default policy: ${error instanceof Error ? error.message : String(error)}`);
+      return Object.freeze({
+        policy: DEFAULT_OUTPUT_POLICY,
+        source: "default",
+        status: "fallback",
+        reasonCode: "output-config-invalid",
+      });
+    }
+  };
   ctx.on("system-prompt/assemble", async (assembly, context, next) => {
     const downstream = await next();
     const agent = context.agent;
     if (!agent) return downstream;
     const selection = await selectSharedSkillForTurn(agent, () => selectForAgent(agent, context));
     const turn = currentAgentTurn(agent);
+    const outputSelection = isSubagentSession(agent)
+      ? Object.freeze({ policy: DEFAULT_OUTPUT_POLICY, source: "default" })
+      : await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
     const selectionEvidence = {
       ...(turn === undefined ? {} : { turn }),
       requestedMode: selection.mode,
@@ -445,11 +482,21 @@ export function apply(ctx, rawConfig) {
     if (selection.status === "fallback") {
       logger.warn(`Odai skill source ${selection.mode} fell back to bundled governance (${selection.reasonCode})`);
     }
+    const outputPrompt = renderOutputPolicyPrompt(outputSelection.policy);
+    if (outputPrompt && !hasSessionEvent(agent, "odai/output-policy-selected", (data) => data?.turn === turn)) {
+      appendEvent(agent, "odai/output-policy-selected", {
+        ...(turn === undefined ? {} : { turn }),
+        source: outputSelection.source,
+        policy: outputSelection.policy,
+      });
+    }
     return {
       ...downstream,
-      sections: downstream.sections.map((section) => section.name === "odai:canonical-governance"
-        ? { ...section, text: canonicalPrompt(selection) }
-        : section),
+      sections: downstream.sections.map((section) => {
+        if (section.name === "odai:canonical-governance") return { ...section, text: canonicalPrompt(selection) };
+        if (section.name === "odai:controller-output-policy") return { ...section, text: outputPrompt };
+        return section;
+      }),
     };
   });
 
@@ -499,6 +546,12 @@ export function apply(ctx, rawConfig) {
       },
     },
   ));
+  ctx.tools.register(createOutputConfigTool(config.output.configPath, {
+    isChild: isSubagent,
+    onConfigured(agent, data) {
+      appendEvent(agent, "odai/output-configured", data);
+    },
+  }));
   ctx.tools.guard((execution) => childGuard(execution) ?? routeProtectionGuard(execution));
 
   ctx.on("tools/result", (execution, result) => {
@@ -508,7 +561,7 @@ export function apply(ctx, rawConfig) {
     appendEvent(execution.agent, "odai/tool-observed", summary, logger);
   });
 
-  ctx.on("agent/request", async ({ agent, turn }, next) => {
+  ctx.on("agent/request", async ({ agent, turn, step }, next) => {
     const proposed = await next();
     const childRole = routedRoleOf(agent);
     const childRoleState = childRole ? configuredRole(childRole) : undefined;
@@ -518,16 +571,36 @@ export function apply(ctx, rawConfig) {
       : upgrade && upgrade.turn === turn
         ? upgrade.route
         : undefined;
-    if (!roleRoute) return proposed;
+    let request = proposed;
+    if (roleRoute) {
+      const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = proposed;
+      request = Object.freeze({
+        ...withoutInheritedEffort,
+        provider: roleRoute.provider,
+        model: roleRoute.model,
+        ...(roleRoute.reasoningEffort === undefined ? {} : { reasoningEffort: roleRoute.reasoningEffort }),
+        ...(childRole && roleRoute.maxTokens !== undefined ? { maxTokens: roleRoute.maxTokens } : {}),
+      });
+    }
+    if (childRole || isSubagentSession(agent)) return request;
 
-    const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = proposed;
-    return Object.freeze({
-      ...withoutInheritedEffort,
-      provider: roleRoute.provider,
-      model: roleRoute.model,
-      ...(roleRoute.reasoningEffort === undefined ? {} : { reasoningEffort: roleRoute.reasoningEffort }),
-      ...(childRole && roleRoute.maxTokens !== undefined ? { maxTokens: roleRoute.maxTokens } : {}),
-    });
+    const outputSelection = await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
+    const configuredMaxTokens = outputSelection.policy.maxTokens;
+    if (configuredMaxTokens === undefined) return request;
+    const priorMaxTokens = request.maxTokens;
+    const effectiveMaxTokens = priorMaxTokens === undefined
+      ? configuredMaxTokens
+      : Math.min(priorMaxTokens, configuredMaxTokens);
+    if (!hasSessionEvent(agent, "odai/output-budget-applied", (data) => data?.turn === turn && data?.step === step)) {
+      appendEvent(agent, "odai/output-budget-applied", {
+        turn,
+        ...(step === undefined ? {} : { step }),
+        configuredMaxTokens,
+        ...(priorMaxTokens === undefined ? {} : { priorMaxTokens }),
+        effectiveMaxTokens,
+      });
+    }
+    return Object.freeze({ ...request, maxTokens: effectiveMaxTokens });
   }, { prepend: true });
 
   const protectController = (agent, turn, step, decision, source, failure) => {

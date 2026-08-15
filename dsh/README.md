@@ -38,6 +38,8 @@ Odai persists only the mapping the user explicitly names. A change applies from 
 
 An independently installed complete Odai skill bundle can update faster than either package without changing existing defaults. The user must explicitly ask to set the source to `auto` or `user`; `odai_skill_source_config` persists that choice in `$DSH_HOME/odai/source.json`. Project `.dsh/skills/odai` and `.agents/skills/odai` bundles participate only in `auto` and remain scoped to the current session cwd. The package READMEs define the complete precedence, manifest, compatibility, and fallback contract.
 
+Controller output policy is also user-owned and disabled by default. `odai_output_config` can persist explicit concise presentation and/or a positive hard controller `maxTokens` ceiling in `$DSH_HOME/odai/output.json`; changes apply from the next user turn and never alter child-agent or compaction budgets. Provider APIs may count hidden reasoning inside a hard ceiling, so the runtime warns about truncation and never chooses a value for the user.
+
 ## Ownership
 
 - `skills/odai/` is the only editable governance and role-contract source.

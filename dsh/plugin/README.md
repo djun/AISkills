@@ -9,7 +9,8 @@ The bundle contributes:
 - monotonic write boundaries for child agents and unresolved high-impact controller turns;
 - durable route decisions, upgrades, child outcomes, protections, policy denials, and compact tool outcomes stored outside DSH's core session-event vocabulary;
 - actual controller/child provider-model evidence, fail-closed high-impact failures, and direct fallback only where it is safe;
-- cache-compatible compaction calls: a same-provider/model summarizer with no explicit reasoning setting inherits the session's current user-selected reasoning effort, while cross-model and explicitly configured summarizers remain untouched.
+- cache-compatible compaction calls: a same-provider/model summarizer with no explicit reasoning setting inherits the session's current user-selected reasoning effort, while cross-model and explicitly configured summarizers remain untouched;
+- an optional user-owned controller output policy that can request concise final responses and/or apply a positive hard `maxTokens` ceiling without changing child-agent or compaction budgets.
 
 ## Install
 
@@ -40,6 +41,12 @@ Existing installations stay pinned to `bundled`, the complete skill copy shipped
 - `user`: ignore project roots and require a compatible custom or user-level bundle. If none is usable, Odai keeps bundled governance visible with an explicit fallback diagnostic so the user can recover through the same tool.
 
 Every independently installed Odai skill must be a complete directory bundle with `SKILL.md`, `manifest.json`, and every file named by the manifest. The runtime requires a supported `runtimeContract`, uses SemVer 2.0.0 for `skillVersion`, hashes every declared file, rejects same-version/different-content conflicts, and continues past invalid candidates. A selected bundle supplies both the canonical prompt and planner/executor/reviewer role contracts as one immutable per-turn snapshot. Project choices are scoped by the session cwd, Plugin and Agent share one selection when deliberately combined, and a setting or skill update is reconsidered on the next user turn. Explicit deployment `skillPath` or `ODAI_SKILL_PATH` remains highest priority and requires a DSH restart.
+
+## Controller output policy
+
+No output policy is active by default. When a user explicitly asks to inspect, enable, replace, or remove one, the controller uses `odai_output_config`; Plugin and Agent share the persisted override in `$DSH_HOME/odai/output.json`. `concise: true` adds a short controller-only presentation instruction that keeps required results, evidence, risks, blockers, and verification while removing routine narration and repeated context. An optional positive `maxTokens` value sets a hard ceiling on every controller conversation-model request and only tightens an existing lower host ceiling.
+
+The hard ceiling may include hidden reasoning as well as visible text, depending on the provider API. A low value can therefore end a request before a usable final response, especially at a high reasoning effort. Odai never chooses or enables the limit on the user's behalf. A changed policy is snapshotted for one agent turn and applies from the next user turn; child-agent role limits and DSH compaction remain independent. Removing the override restores the host's normal controller budget and presentation behavior.
 
 ## Routing modes
 

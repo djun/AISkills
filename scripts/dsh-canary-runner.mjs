@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   copyFile,
   cp,
@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { createServer } from "node:net";
-import { resolve } from "node:path";
+import { delimiter, dirname, extname, resolve } from "node:path";
 import { emitCanaryIsolation } from "./canary-isolation.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -34,6 +34,7 @@ const patchPath = resolve(scratch, "session.patch.yml");
 try {
   if (args.profileHome) await cp(resolve(args.profileHome), dshHome, { recursive: true });
   else await mkdir(dshHome, { recursive: true });
+  await rm(resolve(dshHome, "odai"), { recursive: true, force: true });
 
   const sourceSettingsText = await readFile(sourceSettings, "utf8");
   let settings = selectController(sourceSettingsText, {
@@ -49,6 +50,17 @@ try {
     const compositionPath = resolve(dshHome, ".agent-presets", args.agentPreset, "agent.cordis.yml");
     const composition = await readFile(compositionPath, "utf8");
     await writeFile(compositionPath, configureAgentRouting(composition, args), "utf8");
+  }
+  if (args.outputConcise || args.controllerMaxTokens !== undefined) {
+    const outputRoot = resolve(dshHome, "odai");
+    await mkdir(outputRoot, { recursive: true });
+    await writeFile(resolve(outputRoot, "output.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      policy: {
+        concise: args.outputConcise,
+        ...(args.controllerMaxTokens === undefined ? {} : { maxTokens: args.controllerMaxTokens }),
+      },
+    }, null, 2)}\n`, "utf8");
   }
 
   const patch = [
@@ -106,6 +118,9 @@ try {
         hasAgent: existsSync(agentCompositionPath),
         agentComposition: existsSync(agentCompositionPath) ? await readFile(agentCompositionPath, "utf8") : "",
         hasGlobalPlugin: existsSync(resolve(dshHome, "profiles/headless/node_modules/odai-dsh-plugin/runtime/index.mjs")),
+        outputPolicy: existsSync(resolve(dshHome, "odai", "output.json"))
+          ? JSON.parse(await readFile(resolve(dshHome, "odai", "output.json"), "utf8"))
+          : null,
       }),
       stderr: "",
     }
@@ -138,6 +153,27 @@ try {
   const actualModels = [...new Set(routes.map((item) => item.model).filter(Boolean))];
   const actualProviders = [...new Set(routes.map((item) => item.provider).filter(Boolean))];
   const actualEfforts = [...new Set(routes.map((item) => item.reasoningEffort).filter(Boolean))];
+  const actualMaxTokens = [...new Set(routes.map((item) => item.maxTokens).filter(Number.isSafeInteger))];
+  const controllerRoutes = controller?.requestRoutes ?? [];
+  const expectsOutputPolicy = args.outputConcise || args.controllerMaxTokens !== undefined;
+  if (!args.preflight) {
+    if (controllerRoutes.length > 0) {
+      const observedCount = controller?.outputPolicyPromptCount ?? 0;
+      if (expectsOutputPolicy && observedCount !== controllerRoutes.length) {
+        throw new Error(`controller output policy prompt was observed on ${observedCount}/${controllerRoutes.length} requests`);
+      }
+      if (!expectsOutputPolicy && observedCount !== 0) {
+        throw new Error("controller output policy prompt leaked into the baseline arm");
+      }
+      if (args.controllerMaxTokens !== undefined && controllerRoutes.some(
+        (route) => !Number.isSafeInteger(route.maxTokens) || route.maxTokens <= 0 || route.maxTokens > args.controllerMaxTokens,
+      )) {
+        throw new Error(`controller maxTokens was not enforced on every request: ${JSON.stringify(controllerRoutes)}`);
+      }
+    } else if (expectsOutputPolicy) {
+      throw new Error("controller output policy was requested but no controller request/header was observed");
+    }
+  }
 
   process.stdout.write(`\n[dsh-runner requested_provider ${args.provider}]\n`);
   process.stdout.write(`[dsh-runner requested_model ${args.model}]\n`);
@@ -149,6 +185,10 @@ try {
   process.stdout.write(`[dsh-runner actual_providers ${actualProviders.join(",") || "unknown"}]\n`);
   process.stdout.write(`[dsh-runner actual_models ${actualModels.join(",") || "unknown"}]\n`);
   process.stdout.write(`[dsh-runner actual_reasoning_efforts ${actualEfforts.join(",") || "unknown"}]\n`);
+  process.stdout.write(`[dsh-runner requested_output_concise ${args.outputConcise}]\n`);
+  process.stdout.write(`[dsh-runner requested_controller_max_tokens ${args.controllerMaxTokens ?? "none"}]\n`);
+  process.stdout.write(`[dsh-runner actual_controller_max_tokens ${actualMaxTokens.join(",") || "none"}]\n`);
+  process.stdout.write(`[dsh-runner output_policy_prompt_observed ${controller?.outputPolicyPromptCount ?? 0}/${controllerRoutes.length}]\n`);
   process.stdout.write(`[dsh-runner usage ${JSON.stringify(usage)}]\n`);
   process.stdout.write(`[dsh-runner session_count ${sessions.length}]\n`);
   if (Number.isFinite(totalTokens)) process.stdout.write(`tokens used\n${totalTokens}\n`);
@@ -178,6 +218,8 @@ function parseArgs(argv) {
     plannerReasoningEffort: "high",
     plannerMaxTokens: 2_048,
     agentPreset: "odai",
+    outputConcise: false,
+    controllerMaxTokens: undefined,
     controllerEmbedsSkill: false,
     preflight: false,
     timeoutMs: 900_000,
@@ -200,6 +242,8 @@ function parseArgs(argv) {
     else if (arg === "--planner-reasoning-effort") parsed.plannerReasoningEffort = argv[++index];
     else if (arg === "--planner-max-tokens") parsed.plannerMaxTokens = Number(argv[++index]);
     else if (arg === "--agent-preset") parsed.agentPreset = argv[++index];
+    else if (arg === "--output-concise") parsed.outputConcise = true;
+    else if (arg === "--controller-max-tokens") parsed.controllerMaxTokens = Number(argv[++index]);
     else if (arg === "--controller-embeds-skill") parsed.controllerEmbedsSkill = true;
     else if (arg === "--preflight") parsed.preflight = true;
     else if (arg === "--timeout") parsed.timeoutMs = Number(argv[++index]) * 1000;
@@ -238,6 +282,10 @@ function parseArgs(argv) {
   if (!Number.isSafeInteger(parsed.plannerMaxTokens) || parsed.plannerMaxTokens <= 0) {
     throw new Error("planner max tokens must be a positive integer");
   }
+  if (parsed.controllerMaxTokens !== undefined
+    && (!Number.isSafeInteger(parsed.controllerMaxTokens) || parsed.controllerMaxTokens <= 0)) {
+    throw new Error("controller max tokens must be a positive integer");
+  }
   if (!Number.isSafeInteger(parsed.timeoutMs) || parsed.timeoutMs < 1000) {
     throw new Error("timeout must be at least one second");
   }
@@ -270,6 +318,8 @@ function selectAgentPreset(settings, presetId) {
 }
 
 function configureAgentRouting(composition, options) {
+  const newline = composition.includes("\r\n") ? "\r\n" : "\n";
+  const normalized = composition.replaceAll("\r\n", "\n");
   const original = [
     "    routing:",
     "      mode: auto",
@@ -286,16 +336,65 @@ function configureAgentRouting(composition, options) {
     `          reasoningEffort: ${JSON.stringify(options.plannerReasoningEffort)}`,
     `          maxTokens: ${options.plannerMaxTokens}`,
   ].join("\n");
-  if (!composition.includes(original)) {
+  if (!normalized.includes(original)) {
     throw new Error("Agent preset routing block does not match the pinned default template");
   }
-  return composition.replace(original, replacement);
+  return normalized.replace(original, replacement).replaceAll("\n", newline);
+}
+
+function locateCommand(command, env) {
+  if (existsSync(command)) return resolve(command);
+  if (command.includes("/") || command.includes("\\")) return command;
+  const extensions = process.platform === "win32"
+    ? (extname(command) ? [""] : (env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").map((value) => value.toLowerCase()))
+    : [""];
+  for (const directory of String(env.PATH || "").split(delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const candidate = resolve(directory.replace(/^"|"$/gu, ""), `${command}${extension}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return command;
+}
+
+function resolveDshSpawn(command, env) {
+  const located = locateCommand(command, env);
+  const extension = extname(located).toLowerCase();
+  if ([".js", ".mjs", ".cjs"].includes(extension)) {
+    return { command: process.execPath, prefix: [located] };
+  }
+  if (process.platform === "win32" && [".cmd", ".bat"].includes(extension)) {
+    let shimTarget;
+    try {
+      const shim = readFileSync(located, "utf8");
+      const match = /%dp0%[\\/]([^"\r\n]*?@deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js)/iu.exec(shim);
+      if (match) shimTarget = resolve(dirname(located), match[1].replaceAll("\\", "/"));
+    } catch (error) {
+      throw new Error(`cannot read Windows DSH shim ${located}`, { cause: error });
+    }
+    const candidates = [
+      shimTarget,
+      resolve(dirname(located), "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"),
+      resolve(dirname(process.execPath), "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"),
+    ].filter(Boolean);
+    const entry = candidates.find((candidate) => existsSync(candidate));
+    if (!entry) {
+      throw new Error(`cannot resolve the DSH Node entry behind Windows shim ${located}`);
+    }
+    return { command: process.execPath, prefix: [entry] };
+  }
+  return { command: located, prefix: [] };
+}
+
+function spawnDsh(command, args, options) {
+  const resolved = resolveDshSpawn(command, options.env);
+  return spawn(resolved.command, [...resolved.prefix, ...args], options);
 }
 
 async function runWebAgent(command, patchPath, prompt, args, options) {
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
-  const child = spawn(command, [
+  const child = spawnDsh(command, [
     "--profile", "web",
     "--patch", patchPath,
     "--host", "127.0.0.1",
@@ -427,7 +526,7 @@ function delay(ms) {
 
 function runProcess(command, commandArgs, options) {
   return new Promise((accept, reject) => {
-    const child = spawn(command, commandArgs, {
+    const child = spawnDsh(command, commandArgs, {
       cwd: options.cwd,
       env: options.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -484,13 +583,19 @@ function summarizeSession(session) {
   const usageByStep = new Map();
   const requestRoutes = [];
   let assistantText = "";
+  let outputPolicyPromptCount = 0;
   for (const event of session.events) {
     if (event.type === "request/header") {
       const config = event.data?.header?.config;
+      const system = event.data?.header?.system;
+      if (typeof system === "string" && system.includes("## Odai controller output policy")) {
+        outputPolicyPromptCount += 1;
+      }
       requestRoutes.push({
         provider: config?.provider,
         model: config?.model,
         reasoningEffort: config?.reasoningEffort,
+        maxTokens: config?.maxTokens,
       });
     }
     if (event.type === "assistant/message") {
@@ -512,6 +617,7 @@ function summarizeSession(session) {
     requestRoutes,
     usage: sumUsage([...usageByStep.values()]),
     assistantText,
+    outputPolicyPromptCount,
   };
 }
 
