@@ -1,0 +1,274 @@
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { installAgentPreset } from "../dsh/agent/src/installer.mjs";
+import { spawnDsh } from "../dsh/agent/src/dsh-version.mjs";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const pluginRoot = resolve(repoRoot, "dsh/plugin");
+const agentRoot = resolve(repoRoot, "dsh/agent");
+const runtimeRoot = resolve(repoRoot, "dsh/runtime/src");
+const canonicalSkillRoot = resolve(repoRoot, "skills/odai");
+const sharedStateModule = resolve(runtimeRoot, "skill-selection-state.mjs");
+const dsh = process.env.DSH_BIN ?? (process.platform === "win32" ? "dsh.cmd" : "dsh");
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const scratch = await mkdtemp(resolve(tmpdir(), "odai-dsh-coexistence-"));
+const home = resolve(scratch, "home");
+const workspace = resolve(scratch, "workspace");
+const sourcePreset = resolve(scratch, "source-preset");
+const markerPath = resolve(scratch, "coexistence-results.json");
+const probePluginPath = resolve(scratch, "coexistence-probe.mjs");
+const patchPath = resolve(scratch, "coexistence.patch.yml");
+const globalSourcePath = resolve(scratch, "global-source.json");
+const profileName = "web";
+const env = {
+  ...process.env,
+  DSH_HOME: home,
+  DSH_TELEMETRY_MODE: "DISABLED",
+  DSH_TELEMETRY_DISABLED: "1",
+};
+const yaml = (value) => JSON.stringify(value);
+let child;
+let output = "";
+let finalReport;
+
+function run(command, args, options = {}) {
+  return execFileSync(command, args, {
+    cwd: options.cwd ?? repoRoot,
+    env: options.env ?? env,
+    encoding: options.encoding,
+    stdio: options.stdio ?? "inherit",
+    shell: process.platform === "win32",
+  });
+}
+
+async function freePort() {
+  return await new Promise((accept, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : undefined;
+      server.close((error) => error ? reject(error) : accept(port));
+    });
+  });
+}
+
+async function rpc(baseUrl, method, payload) {
+  const rpcId = randomUUID();
+  const response = await fetch(`${baseUrl}/api/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "client-request", rpcId, method, payload }),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${method} HTTP ${response.status}: ${text}`);
+  const body = JSON.parse(text);
+  if (body.result?.ok !== true) throw new Error(`${method} failed: ${text}`);
+  return body.result.value;
+}
+
+async function waitForServer(baseUrl) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error(`dsh web exited early (${child.exitCode})\n${output}`);
+    try {
+      await rpc(baseUrl, "agentPreset.list", {});
+      return;
+    } catch {
+      await new Promise((accept) => setTimeout(accept, 75));
+    }
+  }
+  throw new Error(`timed out waiting for dsh web\n${output}`);
+}
+
+async function waitForMarker() {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (existsSync(markerPath)) return JSON.parse(await readFile(markerPath, "utf8"));
+    if (child.exitCode !== null) throw new Error(`dsh web exited before coexistence probe completed (${child.exitCode})\n${output}`);
+    await new Promise((accept) => setTimeout(accept, 50));
+  }
+  throw new Error(`timed out waiting for coexistence marker\n${output}`);
+}
+
+async function terminateChild() {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === "win32" && child.pid) {
+    try {
+      execFileSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      child.kill("SIGTERM");
+    }
+  } else {
+    child.kill("SIGTERM");
+  }
+  await new Promise((accept) => {
+    if (child.exitCode !== null) return accept();
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      accept();
+    }, 3_000);
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      accept();
+    });
+  });
+}
+
+async function prepareProjectSkill() {
+  const target = resolve(workspace, ".dsh/skills/odai");
+  await mkdir(resolve(workspace, ".git"), { recursive: true });
+  await cp(canonicalSkillRoot, target, { recursive: true });
+  const manifestPath = resolve(target, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.skillVersion = "0.1.1";
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const skillPath = resolve(target, "SKILL.md");
+  const plannerPath = resolve(target, "assets/routing-roles/planner.md");
+  await writeFile(
+    skillPath,
+    `${(await readFile(skillPath, "utf8")).trimEnd()}\n\nCOEXISTENCE_SKILL_MARKER\n`,
+    "utf8",
+  );
+  await writeFile(
+    plannerPath,
+    `${(await readFile(plannerPath, "utf8")).trimEnd()}\n\nCOEXISTENCE_PLANNER_MARKER\n`,
+    "utf8",
+  );
+}
+
+async function prepareAgent() {
+  await cp(resolve(agentRoot, "preset/odai"), sourcePreset, { recursive: true });
+  await Promise.all([
+    cp(runtimeRoot, resolve(sourcePreset, "runtime"), { recursive: true }),
+    cp(canonicalSkillRoot, resolve(sourcePreset, "skills/odai"), { recursive: true }),
+  ]);
+  await installAgentPreset({ dshHome: home, sourceRoot: sourcePreset });
+}
+
+async function installPlugin() {
+  run(npm, ["pack", "--pack-destination", scratch], { cwd: pluginRoot });
+  const tarballs = (await readdir(scratch)).filter((entry) => /^odai-dsh-plugin-.*\.tgz$/u.test(entry));
+  if (tarballs.length !== 1) throw new Error(`expected one Plugin tarball, found: ${tarballs.join(", ")}`);
+  const tarball = resolve(scratch, tarballs[0]);
+  run(dsh, ["plugin", "--profile", profileName, "add", tarball], { cwd: workspace });
+
+  const profilePath = resolve(home, "profiles", profileName, "package.json");
+  const profile = JSON.parse(await readFile(profilePath, "utf8"));
+  if (!profile.dsh?.profile?.bundles?.includes("odai-dsh-plugin")) {
+    throw new Error(`Plugin was installed but not activated as a profile bundle: ${JSON.stringify(profile)}`);
+  }
+}
+
+async function prepareProbe() {
+  const probe = `import { writeFileSync } from "node:fs";\nimport { sharedSkillSelection } from ${JSON.stringify(pathToFileURL(sharedStateModule).href)};\n\nexport const name = "odai-coexistence-probe";\nexport const inject = ["systemPrompt"];\n\nexport function apply(ctx, config) {\n  const results = {};\n  let writing = Promise.resolve();\n  ctx.on("agent/created", ({ agent }) => {\n    writing = writing.then(async () => {\n      const preset = agent.session?.header?.agentPreset;\n      if (preset !== "standard" && preset !== "odai") return;\n      const signal = new AbortController().signal;\n      const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal });\n      const canonical = assembly.sections.filter((section) => section.name === "odai:canonical-governance");\n      const selection = sharedSkillSelection(agent);\n      const text = canonical[0]?.text ?? "";\n      const promptDigest = text.match(/digest: ([a-f0-9]{64})\\./u)?.[1];\n      results[preset] = {\n        canonicalSectionCount: canonical.length,\n        mode: selection?.mode,\n        source: selection?.bundle?.source,\n        skillVersion: selection?.bundle?.manifest?.skillVersion,\n        digest: selection?.bundle?.digest,\n        promptDigest,\n        promptHasProjectMarker: text.includes("COEXISTENCE_SKILL_MARKER"),\n        roleHasProjectMarker: selection?.bundle?.roleContracts?.planner?.includes("COEXISTENCE_PLANNER_MARKER") === true,\n      };\n      if (results.standard && results.odai) writeFileSync(config.markerPath, JSON.stringify(results, null, 2) + "\\n", "utf8");\n    }).catch((error) => {\n      writeFileSync(config.markerPath, JSON.stringify({ probeError: error.stack ?? String(error) }, null, 2) + "\\n", "utf8");\n    });\n  });\n}\n`;
+  await writeFile(probePluginPath, probe, "utf8");
+  await writeFile(patchPath, [
+    "- id: odai-governance",
+    "  config:",
+    "    routing:",
+    "      mode: off",
+    "      provider: spawn",
+    "    governance:",
+    "      skillSource: bundled",
+    `      skillConfigPath: ${yaml(globalSourcePath)}`,
+    "- insert:",
+    "    - id: odai-coexistence-probe",
+    `      name: ${yaml(pathToFileURL(probePluginPath).href)}`,
+    "      config:",
+    `        markerPath: ${yaml(markerPath)}`,
+    "",
+  ].join("\n"), "utf8");
+}
+
+function assertResults(results) {
+  if (results.probeError) throw new Error(results.probeError);
+  const standard = results.standard;
+  const odai = results.odai;
+  if (standard?.canonicalSectionCount !== 1
+    || standard.mode !== "bundled"
+    || standard.source !== "bundled"
+    || standard.promptHasProjectMarker !== false
+    || standard.roleHasProjectMarker !== false
+    || standard.promptDigest !== standard.digest) {
+    throw new Error(`global Plugin did not remain on bundled governance: ${JSON.stringify(results)}`);
+  }
+  if (odai?.canonicalSectionCount !== 1
+    || odai.mode !== "auto"
+    || odai.source !== "project-dsh"
+    || odai.skillVersion !== "0.1.1"
+    || odai.promptHasProjectMarker !== true
+    || odai.roleHasProjectMarker !== true
+    || odai.promptDigest !== odai.digest) {
+    throw new Error(`Agent-scoped project selection did not atomically override the global Plugin: ${JSON.stringify(results)}`);
+  }
+}
+
+try {
+  await mkdir(workspace, { recursive: true });
+  await prepareProjectSkill();
+  await prepareAgent();
+  await mkdir(resolve(home, "odai"), { recursive: true });
+  await writeFile(
+    resolve(home, "odai/source.json"),
+    `${JSON.stringify({ schemaVersion: 1, source: "auto" }, null, 2)}\n`,
+    "utf8",
+  );
+  await installPlugin();
+  await prepareProbe();
+
+  const port = await freePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  child = spawnDsh(dsh, [
+    "--profile", profileName,
+    "--patch", patchPath,
+    "--host", "127.0.0.1",
+    "--port", String(port),
+  ], {
+    cwd: workspace,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.on("data", (chunk) => { output += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { output += chunk.toString(); });
+
+  await waitForServer(baseUrl);
+  const roster = await rpc(baseUrl, "agentPreset.list", {});
+  const presetIds = roster.presets.map((preset) => preset.id);
+  if (!presetIds.includes("standard") || !presetIds.includes("odai")) {
+    throw new Error(`expected standard and odai presets, got ${JSON.stringify(presetIds)}`);
+  }
+  await rpc(baseUrl, "session.create", { cwd: workspace, agentPreset: "standard" });
+  await rpc(baseUrl, "session.create", { cwd: workspace, agentPreset: "odai" });
+  const results = await waitForMarker();
+  assertResults(results);
+  finalReport = {
+    profilePluginInstalled: true,
+    agentPresetInstalled: true,
+    presetIds,
+    results,
+  };
+  process.stdout.write(`${JSON.stringify(finalReport, null, 2)}\n`);
+} finally {
+  await terminateChild();
+  if (process.env.KEEP_ODAI_COEXISTENCE_PROBE !== "1") {
+    await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } else {
+    process.stderr.write(`kept coexistence probe at ${scratch}\n`);
+  }
+}

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   decideRoute,
   extractLatestUserText,
+  extractRoutingText,
   renderDelegationPrompt,
   renderMissingRouteConfigNotice,
   renderRouteFailureNotice,
@@ -169,6 +170,35 @@ test("latest genuine user text ignores plugin notices", () => {
     { role: "user", source: { kind: "plugin", plugin: "x" }, content: [{ type: "text", text: "notice" }] },
   ];
   assert.equal(extractLatestUserText(messages), "real task");
+});
+
+test("routing text inherits referenced high-impact context but keeps low-risk transforms direct", () => {
+  const highImpact = "线上退款偶尔重复入账，我看就是确认超时太短。把确认超时改成 30 秒、最多重试 3 次。";
+  const user = (text) => ({ role: "user", source: { kind: "user" }, content: [{ type: "text", text }] });
+  const sessionEvents = [
+    { type: "user/message", data: user(highImpact) },
+    { type: "assistant/message", data: { role: "assistant", content: [{ type: "text", text: "不能直接执行。" }] } },
+    { type: "user/message", data: user("用一句话重述刚才的结论") },
+    { type: "user/message", data: { role: "user", source: { kind: "plugin" }, content: [{ type: "text", text: "routing notice" }] } },
+  ];
+
+  assert.equal(extractRoutingText([user("把结论压缩成十个汉字以内")], sessionEvents), "把结论压缩成十个汉字以内");
+
+  const continued = extractRoutingText([user("继续深入判断刚才这个迁移是否可以安全发布")], sessionEvents);
+  assert.match(continued, /Referenced earlier high-impact user context/u);
+  assert.match(continued, /确认超时改成 30 秒/u);
+  assert.equal(decideRoute({ text: continued }).action, "upgrade");
+
+  const unrelated = extractRoutingText([user("把普通按钮文案改清楚")], sessionEvents);
+  assert.equal(unrelated, "把普通按钮文案改清楚");
+  assert.equal(decideRoute({ text: unrelated }).action, "direct");
+
+  const afterNewTask = extractRoutingText(
+    [user("继续处理")],
+    [...sessionEvents, { type: "user/message", data: user("把普通按钮文案改清楚") }],
+  );
+  assert.equal(afterNewTask, "继续处理");
+  assert.equal(decideRoute({ text: afterNewTask }).action, "direct");
 });
 
 test("delegation prompt requires a canonical role contract", () => {

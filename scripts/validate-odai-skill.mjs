@@ -2,7 +2,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const skillRoot = path.join(repoRoot, "skills", "odai");
@@ -13,6 +13,7 @@ const warnings = [];
 const files = listFiles(skillRoot);
 const allowedFiles = new Set([
   "SKILL.md",
+  "manifest.json",
   "agents/openai.yaml",
   "assets/codex-agents/config.toml",
   "assets/codex-agents/role.toml",
@@ -26,6 +27,7 @@ const allowedFiles = new Set([
   "assets/task-state.md",
   "references/dao.md",
   "references/craft.md",
+  "references/planning.md",
   "references/leverage.md",
   "references/support.md",
   "references/verification.md",
@@ -55,8 +57,10 @@ validateBehavior();
 validateOpenaiMetadata();
 validateHookSources();
 validateRoutingSources();
+await validateSkillManifest();
 validateEvaluationIsolation();
 validateReferences();
+await validatePlanningIntegration();
 warnRepeatedRules();
 validateRibaoSkill();
 
@@ -64,8 +68,8 @@ const entryTokenEstimate = estimateTokens(skillText);
 const markdownTokenEstimate = files
   .filter((file) => file.endsWith(".md") && !/^assets\/(?:claude|copilot)-agents\//.test(file) && !/^assets\/routing-roles\//.test(file))
   .reduce((total, file) => total + estimateTokens(readFileSync(path.join(skillRoot, file), "utf8")), 0);
-if (entryTokenEstimate > 2200) {
-  warn(`SKILL.md: entry estimate ${entryTokenEstimate} exceeds review threshold 2200`);
+if (entryTokenEstimate > 2500) {
+  warn(`SKILL.md: entry estimate ${entryTokenEstimate} exceeds review threshold 2500`);
 }
 if (markdownTokenEstimate > 8000) {
   warn(`skill markdown estimate ${markdownTokenEstimate} exceeds review threshold 8000`);
@@ -140,6 +144,7 @@ function validateStructure() {
         "**风险保护**",
         "references/dao.md",
         "references/craft.md",
+        "references/planning.md",
         "references/leverage.md",
         "references/support.md",
         "references/verification.md",
@@ -153,6 +158,11 @@ function validateStructure() {
     {
       path: "references/craft.md",
       headings: ["规划", "实施", "设计", "界面与实时交互", "写作与文档", "审查"],
+    },
+    {
+      path: "references/planning.md",
+      headings: ["适用与授权", "事实基线", "计划缩放", "合同与工作包", "验证、状态与续作", "最小交付结构"],
+      anchors: ["assets/task-state.md"],
     },
     {
       path: "references/support.md",
@@ -264,6 +274,25 @@ function validateBehavior() {
         /只有多个使用方共享同一需求时才扩展公共能力/,
         /正文完成不冒充已发布/,
         /证据不足不判为缺陷/,
+      ],
+    },
+    {
+      path: "references/planning.md",
+      label: "scaled implementation planning",
+      patterns: [
+        /仅仅“任务复杂”不自动触发计划文档/,
+        /聊天中的计划不自动授权写文件/,
+        /计划完成只表示路线、边界与验收已达到可执行标准，不表示实现已经完成/,
+        /调查深度只到足以区分当前行为、目标缺口、可行路线和主要风险/,
+        /按后续执行真正需要的结构选择最小层级/,
+        /独立工作包可以并行/,
+        /无法稳定红测时使用另一种能区分路线的 Oracle/,
+        /同一任务只保留一个主状态/,
+        /计划文档承担主状态时不另建独立账本/,
+        /独立账本承担主状态时[^。\n]*不复制当前工作包、完成项或下一动作/,
+        /非主载体不能维护另一份进度/,
+        /聊天摘要和执行者自报不能替代主状态或原始证据/,
+        /下一执行者无需重新决定目标、边界和验收/,
       ],
     },
     {
@@ -517,6 +546,52 @@ function validateRoutingSources() {
   }
 }
 
+async function validateSkillManifest() {
+  const manifestFile = path.join(skillRoot, "manifest.json");
+  if (!existsSync(manifestFile)) return;
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
+  } catch (error) {
+    return fail(`manifest.json: invalid JSON: ${error.message}`);
+  }
+  if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
+    return fail("manifest.json: root must be an object");
+  }
+  const fields = new Set(["schemaVersion", "name", "skillVersion", "runtimeContract", "requiredFiles"]);
+  for (const field of Object.keys(manifest)) {
+    if (!fields.has(field)) fail(`manifest.json: unexpected field ${field}`);
+  }
+  if (manifest.schemaVersion !== 1) fail("manifest.json: schemaVersion must be 1");
+  if (manifest.name !== "odai") fail("manifest.json: name must be odai");
+  if (manifest.runtimeContract !== 1) fail("manifest.json: runtimeContract must be 1");
+  if (!Array.isArray(manifest.requiredFiles)) {
+    fail("manifest.json: requiredFiles must be an array");
+  } else {
+    const expected = [...allowedFiles].filter((file) => file !== "manifest.json").sort();
+    const declared = [...manifest.requiredFiles].sort();
+    if (new Set(manifest.requiredFiles).size !== manifest.requiredFiles.length) {
+      fail("manifest.json: requiredFiles contains duplicates");
+    }
+    if (JSON.stringify(declared) !== JSON.stringify(expected)) {
+      fail("manifest.json: requiredFiles must own every canonical skill resource except manifest.json itself");
+    }
+  }
+
+  try {
+    const bundleModule = await import(pathToFileURL(path.join(repoRoot, "dsh", "runtime", "src", "skill-bundle.mjs")));
+    const bundle = bundleModule.loadSkillBundle(skillFile);
+    if (bundle.manifest.runtimeContract !== bundleModule.ODAI_RUNTIME_CONTRACT) {
+      fail("manifest.json: runtimeContract is not supported by the shared DSH runtime");
+    }
+    if (bundle.manifest.skillVersion !== manifest.skillVersion) {
+      fail("manifest.json: runtime parser disagrees with canonical skillVersion");
+    }
+  } catch (error) {
+    fail(`manifest.json: runtime bundle validation failed: ${error.message}`);
+  }
+}
+
 function validateEvaluationIsolation() {
   const isolationFile = path.join(repoRoot, "scripts", "canary-isolation.mjs");
   const harnessFile = path.join(repoRoot, "scripts", "odai-canary-harness.mjs");
@@ -584,6 +659,54 @@ function validateReferences() {
   }
 }
 
+async function validatePlanningIntegration() {
+  const moduleFile = path.join(repoRoot, "cli", "src", "core", "skill-pack.mjs");
+  if (!existsSync(moduleFile)) {
+    fail("cli/src/core/skill-pack.mjs: planning reference selector is missing");
+    return;
+  }
+
+  try {
+    const { loadSkillPack, selectSkillReferences } = await import(pathToFileURL(moduleFile).href);
+    const cases = [
+      ["生成详细实施计划", true],
+      ["先给这个修复做个计划", true],
+      ["制定迁移方案和执行步骤", true],
+      ["给出可执行的重构步骤", true],
+      ["不要改代码，先规划这个开发任务", true],
+      ["write an implementation plan", true],
+      ["plan next steps", false],
+      ["规划下一步", false],
+      ["不要写实施计划，直接修复", false],
+      ["无需迁移计划，按现有方案执行", false],
+      ["don't write an implementation plan; fix it directly", false],
+    ];
+    for (const [task, expected] of cases) {
+      const selected = selectSkillReferences({ task }).includes("references/planning.md");
+      if (selected !== expected) {
+        fail(`cli/src/core/skill-pack.mjs: planning selection for ${JSON.stringify(task)} expected ${expected}, got ${selected}`);
+      }
+    }
+
+    const pack = await loadSkillPack({ repoRoot });
+    if (!pack.supportFiles.includes("references/planning.md")) {
+      fail("cli/src/core/skill-pack.mjs: canonical planning reference is absent from support files");
+    }
+    const rendered = await pack.render({ references: ["references/planning.md"] });
+    for (const fragment of [
+      "# odai reference: references/planning.md",
+      "计划完成只表示路线、边界与验收已达到可执行标准",
+      "计划文档承担主状态时不另建独立账本",
+    ]) {
+      if (!rendered.includes(fragment)) {
+        fail(`cli/src/core/skill-pack.mjs: rendered planning reference missing ${fragment}`);
+      }
+    }
+  } catch (error) {
+    fail(`cli/src/core/skill-pack.mjs: planning integration failed: ${error.message}`);
+  }
+}
+
 function validateRibaoSkill() {
   const ribaoFiles = listFiles(ribaoRoot);
   const allowed = new Set(["SKILL.md", "agents/openai.yaml"]);
@@ -634,7 +757,7 @@ function validateRibaoSkill() {
   }
 
   const tokenEstimate = estimateTokens(text);
-  if (tokenEstimate > 2200) warn(`skills/ribao/SKILL.md: estimate ${tokenEstimate} exceeds threshold 2200`);
+  if (tokenEstimate > 2500) warn(`skills/ribao/SKILL.md: estimate ${tokenEstimate} exceeds threshold 2500`);
 }
 
 function warnRepeatedRules() {

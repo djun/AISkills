@@ -53,6 +53,16 @@ The controller calls `odai_routing_config` to persist that explicit choice. The 
 
 Planner, executor, and reviewer are independent optional responsibilities. If any needed one has no mapping, high-impact work fails closed and remains read-only; lower-impact work continues only where it does not depend on the missing independent responsibility. Odai never chooses a model on the user's behalf.
 
+## Skill sources
+
+The Agent keeps the managed preset's complete skill copy as its `bundled` default, so existing installations do not change behavior. When the user explicitly asks to show, set, or reset the Odai skill source, the controller uses `odai_skill_source_config` and stores the choice in `$DSH_HOME/odai/source.json`, outside the managed preset:
+
+- `bundled`: use the skill shipped with this Agent release.
+- `auto`: allow a compatible current-project `.dsh/skills/odai` or `.agents/skills/odai` bundle, then DSH custom roots and newer user installs under `$DSH_HOME/skills/odai` or `$DSH_AGENTS_HOME/skills/odai` (default `~/.agents/skills/odai`), with bundled fallback.
+- `user`: ignore project roots and require a compatible custom or user-level bundle. An unusable source produces an explicit bundled fallback diagnostic so it can be repaired through the same tool.
+
+An independent install must be a complete directory bundle containing `SKILL.md`, `manifest.json`, and every manifest-declared file. The runtime checks SemVer 2.0.0 `skillVersion`, an exact supported `runtimeContract`, complete-file SHA-256 integrity, and same-version content conflicts. Prompt governance and routing role contracts are selected atomically for one agent turn; project sources are scoped by that session's cwd, and changes are reconsidered on the next user turn. Explicit deployment `skillPath` or `ODAI_SKILL_PATH` remains highest priority and requires a DSH restart.
+
 ## Status and uninstall
 
 ```sh
@@ -71,7 +81,7 @@ Use only the surface that matches the desired scope:
 - `odai-dsh-agent`: selectable Odai governance for only sessions using this preset.
 - both: supported only for a deliberate combination of profile-wide and Agent-scoped behavior; normally redundant, so it is not the default recommendation.
 
-When both are deliberate, the shared compatibility-safe evidence store deduplicates tool and route records and denials remain monotonic. Neither package installs or changes the provider-neutral `odai-cli`.
+When both are deliberate, a process-shared per-agent/per-turn skill snapshot keeps prompt governance and role contracts identical, the compatibility-safe evidence store deduplicates tool and route records, and denials remain monotonic. Neither package installs or changes the provider-neutral `odai-cli`.
 
 ## Development
 

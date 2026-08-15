@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   decideRoute,
-  extractLatestUserText,
+  extractRoutingText,
   renderDelegationPrompt,
   renderMissingRouteConfigNotice,
   renderRouteFailureNotice,
@@ -27,6 +27,23 @@ import {
   resolveRoutingConfigPath,
 } from "./routing-config.mjs";
 import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
+import {
+  SKILL_SOURCE_CONFIG_PROMPT,
+  createSkillSourceConfigTool,
+  effectiveSkillSource,
+  resolveSkillSourceConfigPath,
+} from "./skill-source-config.mjs";
+import {
+  ODAI_RUNTIME_CONTRACT,
+  SKILL_SOURCE_MODES,
+  loadSkillBundle,
+} from "./skill-bundle.mjs";
+import { resolveSkillSelection } from "./skill-selector.mjs";
+import {
+  currentAgentTurn,
+  selectSharedSkillForTurn,
+  sharedSkillSelection,
+} from "./skill-selection-state.mjs";
 
 export const name = "odai-dsh-runtime";
 export const inject = ["systemPrompt", "tools", "subagents"];
@@ -54,6 +71,8 @@ export function resolveConfig(rawConfig = {}) {
   const maxInputChars = routing.maxInputChars ?? 12_000;
   const configPath = resolveRoutingConfigPath(routing.configPath);
   const additionalDeniedTools = governance.additionalDeniedTools ?? [];
+  const skillSource = governance.skillSource ?? "bundled";
+  const skillConfigPath = resolveSkillSourceConfigPath(governance.skillConfigPath);
   const unknownRoles = Object.keys(roles).filter((role) => !ROUTED_ROLES.includes(role));
 
   if (!ROUTING_MODES.has(mode)) {
@@ -71,6 +90,9 @@ export function resolveConfig(rawConfig = {}) {
   if (!Array.isArray(additionalDeniedTools)
     || additionalDeniedTools.some((tool) => typeof tool !== "string" || tool.trim() === "")) {
     throw new TypeError("config.governance.additionalDeniedTools must be an array of non-empty strings");
+  }
+  if (!SKILL_SOURCE_MODES.includes(skillSource)) {
+    throw new TypeError("config.governance.skillSource must be bundled, auto, or user");
   }
   if (raw.skillPath !== undefined && (typeof raw.skillPath !== "string" || raw.skillPath.trim() === "")) {
     throw new TypeError("config.skillPath must be a non-empty string");
@@ -90,32 +112,31 @@ export function resolveConfig(rawConfig = {}) {
     }),
     governance: Object.freeze({
       additionalDeniedTools: Object.freeze(additionalDeniedTools.map((tool) => tool.trim())),
+      skillSource,
+      skillConfigPath,
     }),
   });
 }
 
-export function resolveSkillPath(configuredPath) {
+export function resolveSkillPath(configuredPath, env = process.env) {
+  const explicit = configuredPath ?? env.ODAI_SKILL_PATH;
+  if (explicit !== undefined) {
+    const path = resolve(explicit);
+    if (!existsSync(path)) throw new Error(`explicit Odai canonical skill not found: ${path}`);
+    return path;
+  }
+
   const candidates = [
-    configuredPath,
-    process.env.ODAI_SKILL_PATH,
     resolve(PLUGIN_DIR, "skills/odai/SKILL.md"),
     resolve(PLUGIN_DIR, "../../skills/odai/SKILL.md"),
-  ].filter(Boolean).map((candidate) => resolve(candidate));
-
+  ];
   const found = candidates.find((candidate) => existsSync(candidate));
   if (found) return found;
-
-  throw new Error(`odai canonical skill not found; checked: ${candidates.join(", ")}`);
+  throw new Error(`Odai bundled canonical skill not found; checked: ${candidates.join(", ")}`);
 }
 
 export function loadRoleContracts(skillPath) {
-  const roleRoot = resolve(dirname(skillPath), "assets/routing-roles");
-  return Object.freeze(Object.fromEntries(ROUTED_ROLES.map((role) => {
-    const path = resolve(roleRoot, `${role}.md`);
-    const text = existsSync(path) ? readFileSync(path, "utf8").trim() : "";
-    if (!text) throw new Error(`odai canonical ${role} role is unavailable: ${path}`);
-    return [role, text];
-  })));
+  return loadSkillBundle(skillPath).roleContracts;
 }
 
 function deepFreeze(value) {
@@ -263,13 +284,20 @@ export async function runRoutedRole({ subagents, provider, decision, taskText, r
   return outcome;
 }
 
-function canonicalPrompt(skillPath, skillText) {
+function canonicalPrompt(selection) {
+  const { bundle } = selection;
+  const fallback = selection.status === "fallback"
+    ? `Selection fallback: ${selection.reasonCode}${selection.detail ? ` (${selection.detail})` : ""}.`
+    : undefined;
   return [
     "## odai canonical governance",
-    `Canonical source: ${skillPath}`,
+    `Canonical source: ${bundle.source} (${bundle.provider})`,
+    `Canonical skill: ${bundle.manifest.skillVersion}; runtime contract: ${bundle.manifest.runtimeContract}; digest: ${bundle.digest}.`,
+    ...(fallback ? [fallback] : []),
     "Apply this governance to every request. Keep the controller as the final delivery owner; use another role only for a real independent gap with observable net benefit.",
+    "Odai governance is already loaded by this runtime; do not call the skill tool to load odai again.",
     "",
-    skillText,
+    bundle.skillText,
   ].join("\n");
 }
 
@@ -303,19 +331,102 @@ export function apply(ctx, rawConfig) {
   };
   const hasSessionEvent = (agent, type, predicate) => evidence.has(agent, type, predicate);
   const skillPath = resolveSkillPath(config.skillPath);
-  const skillText = readFileSync(skillPath, "utf8").trim();
-  if (!skillText) throw new Error(`odai canonical skill is empty: ${skillPath}`);
-  const roleContracts = loadRoleContracts(skillPath);
+  const explicitSkillPath = config.skillPath !== undefined
+    || (typeof process.env.ODAI_SKILL_PATH === "string" && process.env.ODAI_SKILL_PATH.trim() !== "");
+  const bundled = loadSkillBundle(skillPath, {
+    source: explicitSkillPath ? "path" : "bundled",
+    provider: explicitSkillPath ? "odai-explicit-path" : "odai-dsh-runtime",
+  });
+  if (bundled.manifest.runtimeContract !== ODAI_RUNTIME_CONTRACT) {
+    throw new Error(`Odai canonical runtimeContract ${bundled.manifest.runtimeContract} is incompatible with this runtime`);
+  }
+  const baseSelection = Object.freeze({
+    mode: explicitSkillPath ? "path" : "bundled",
+    status: "selected",
+    reasonCode: explicitSkillPath ? "explicit-path" : "bundled-configured",
+    bundle: bundled,
+    rejections: Object.freeze([]),
+  });
 
   ctx.systemPrompt.section({
     name: "odai:canonical-governance",
     order: -20,
-    text: canonicalPrompt(skillPath, skillText),
+    text: canonicalPrompt(baseSelection),
   });
   ctx.systemPrompt.section({
     name: "odai:routing-configuration",
     order: -19,
     text: ROUTING_CONFIG_PROMPT,
+  });
+  ctx.systemPrompt.section({
+    name: "odai:skill-source-configuration",
+    order: -18,
+    text: SKILL_SOURCE_CONFIG_PROMPT,
+  });
+
+  const optionalSkillRegistry = () => {
+    try {
+      if (ctx.skills && typeof ctx.skills.get === "function") return ctx.skills;
+    } catch {}
+    try {
+      const service = typeof ctx.get === "function" ? ctx.get("skills") : undefined;
+      return service && typeof service.get === "function" ? service : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const selectForAgent = async (agent, context) => {
+    if (explicitSkillPath) return baseSelection;
+    let mode;
+    try {
+      mode = effectiveSkillSource(config.governance.skillConfigPath, config.governance.skillSource);
+    } catch (error) {
+      return Object.freeze({
+        ...baseSelection,
+        mode: "bundled",
+        status: "fallback",
+        reasonCode: "source-config-invalid",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return resolveSkillSelection({
+      mode,
+      bundled,
+      cwd: agent.session?.header?.cwd,
+      scope: context.scope,
+      signal: context.signal,
+      skills: optionalSkillRegistry(),
+    });
+  };
+  ctx.on("system-prompt/assemble", async (assembly, context, next) => {
+    const downstream = await next();
+    const agent = context.agent;
+    if (!agent) return downstream;
+    const selection = await selectSharedSkillForTurn(agent, () => selectForAgent(agent, context));
+    const turn = currentAgentTurn(agent);
+    const selectionEvidence = {
+      ...(turn === undefined ? {} : { turn }),
+      requestedMode: selection.mode,
+      status: selection.status,
+      reasonCode: selection.reasonCode,
+      effectiveSource: selection.bundle.source,
+      skillVersion: selection.bundle.manifest.skillVersion,
+      runtimeContract: selection.bundle.manifest.runtimeContract,
+      digest: selection.bundle.digest,
+      rejections: selection.rejections.map(({ source, reasonCode }) => ({ source, reasonCode })),
+    };
+    if (!hasSessionEvent(agent, "odai/skill-selected", (data) => data?.turn === turn && data?.digest === selection.bundle.digest)) {
+      appendEvent(agent, "odai/skill-selected", selectionEvidence);
+    }
+    if (selection.status === "fallback") {
+      logger.warn(`Odai skill source ${selection.mode} fell back to bundled governance (${selection.reasonCode})`);
+    }
+    return {
+      ...downstream,
+      sections: downstream.sections.map((section) => section.name === "odai:canonical-governance"
+        ? { ...section, text: canonicalPrompt(selection) }
+        : section),
+    };
   });
 
   const routeProtections = new WeakMap();
@@ -354,6 +465,16 @@ export function apply(ctx, rawConfig) {
       appendEvent(agent, "odai/routing-configured", data);
     },
   }));
+  ctx.tools.register(createSkillSourceConfigTool(
+    config.governance.skillConfigPath,
+    config.governance.skillSource,
+    {
+      explicitPath: explicitSkillPath,
+      onConfigured(agent, data) {
+        appendEvent(agent, "odai/skill-source-configured", data);
+      },
+    },
+  ));
   ctx.tools.guard((execution) => childGuard(execution) ?? routeProtectionGuard(execution));
 
   ctx.on("tools/result", (execution, result) => {
@@ -423,7 +544,7 @@ export function apply(ctx, rawConfig) {
       if (routed.has(routeKey)) return downstream;
       routed.add(routeKey);
 
-      const taskText = extractLatestUserText(downstream.messages).slice(0, config.routing.maxInputChars);
+      const taskText = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
       const decision = decideRoute({ text: taskText });
       const routeRole = decision.targetRole ?? decision.role;
       appendEvent(agent, "odai/route-decided", {
@@ -520,7 +641,7 @@ export function apply(ctx, rawConfig) {
             provider: config.routing.provider,
             decision: delegationDecision,
             taskText,
-            roleContract: roleContracts[routeRole],
+            roleContract: (sharedSkillSelection(agent, turn)?.bundle ?? bundled).roleContracts[routeRole],
             agent,
             signal,
             roleRoute,
@@ -577,7 +698,7 @@ export function apply(ctx, rawConfig) {
     }, { prepend: true });
   }
 
-  logger.info(`loaded canonical governance from ${skillPath}; routing=${config.routing.mode}`);
+  logger.info(`loaded canonical governance ${bundled.manifest.skillVersion} from ${skillPath}; skillSource=${explicitSkillPath ? "path" : config.governance.skillSource}; routing=${config.routing.mode}`);
 }
 
 function isSubagentSession(agent) {

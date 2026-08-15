@@ -3,6 +3,23 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+const PLANNING_INTENT_PATTERNS = Object.freeze([
+  /(?:详细|完整|可执行)(?:的)?(?:实施|开发|修复|迁移|重构|治理)?(?:计划|方案|步骤)/iu,
+  /(?:实施|开发|修复|迁移|重构|专项治理|分阶段落地|执行|交接|长任务)(?:计划|方案)/iu,
+  /(?:先)?(?:给|为)[^，。；\n]{0,24}(?:做|写|生成|制定|输出|给出)?(?:个|一份)?(?:详细|完整|可执行)?(?:的)?(?:计划|方案)/iu,
+  /(?:请|先|帮我)?规划(?:一下)?[^，。；\n]{0,24}(?:怎么|如何|实现|开发|修复|迁移|重构|落地|执行)/iu,
+  /(?:只|仅)(?:生成|写|输出|交付)[^，。；\n]{0,16}(?:计划|方案)/iu,
+  /计划文档|先规划再实现/iu,
+  /\b(?:implementation|development|migration|refactor(?:ing)?|remediation|execution|handoff) plan\b/iu,
+  /\bplan (?:the )?(?:implementation|migration|refactor)\b/iu,
+  /\bplan before (?:implementation|implementing|coding)\b/iu,
+]);
+
+const PLANNING_NEGATION_PATTERNS = Object.freeze([
+  /(?:不要|不用|无需|不必|别)(?:先)?(?:写|做|生成|制定|输出|给出)?[^，。；\n]{0,10}(?:计划|方案|步骤|规划)/iu,
+  /\b(?:do not|don't|skip|no need to)\s+(?:write|make|create|provide|produce|draft|start with)?\s*(?:an?\s+)?(?:implementation\s+|migration\s+|development\s+)?plan(?:ning)?\b/iu,
+]);
+
 export async function loadSkillPack({ repoRoot = process.cwd() } = {}) {
   const skillRoot = await resolveSkillRoot({ repoRoot });
   const entry = path.join(skillRoot, "SKILL.md");
@@ -19,6 +36,12 @@ export async function loadSkillPack({ repoRoot = process.cwd() } = {}) {
     selectReferences: (options) => selectSkillReferences(options),
     render: (options) => renderPromptPack({ skillRoot, entryText, ...options }),
   };
+}
+
+export function shouldSelectPlanningReference(task = "") {
+  const text = String(task || "").trim();
+  if (!text || matchesAny(text, PLANNING_NEGATION_PATTERNS)) return false;
+  return matchesAny(text, PLANNING_INTENT_PATTERNS);
 }
 
 /**
@@ -45,6 +68,9 @@ export function selectSkillReferences({ task = "", mode = "agent_loop", includeG
   }
   if (/长期任务|跨会话|恢复任务|任务状态|执行账本|断点续做|多人共享状态/i.test(text)) {
     refs.add("references/support.md");
+  }
+  if (shouldSelectPlanningReference(text)) {
+    refs.add("references/planning.md");
   }
   if (/code\s*review|代码审查|审这个\s*diff|review\s+(this\s+)?diff/i.test(text)) {
     refs.add("references/craft.md");
@@ -204,6 +230,10 @@ async function listMarkdown(root) {
   }
   await walk(root);
   return files.sort();
+}
+
+function matchesAny(text, patterns) {
+  return patterns.some((pattern) => pattern.test(text));
 }
 
 function sha256(value) {

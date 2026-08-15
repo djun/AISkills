@@ -74,6 +74,8 @@ test("config is strict at governance boundaries", () => {
   assert.throws(() => resolveConfig({ routing: { roles: { planner: { provider: "openai" } } } }), /planner\.model/u);
   assert.throws(() => resolveConfig({ routing: { roles: { critic: {} } } }), /unknown roles: critic/u);
   assert.throws(() => resolveConfig({ routing: { configPath: "" } }), /configPath must be a non-empty string/u);
+  assert.throws(() => resolveConfig({ governance: { skillSource: "latest" } }), /skillSource must be bundled, auto, or user/u);
+  assert.throws(() => resolveConfig({ governance: { skillConfigPath: "" } }), /skillConfigPath must be a non-empty string/u);
 
   const defaults = resolveConfig();
   assert.equal(defaults.routing.mode, "auto");
@@ -81,6 +83,8 @@ test("config is strict at governance boundaries", () => {
   assert.equal(defaults.routing.roles.executor, undefined);
   assert.equal(defaults.routing.roles.reviewer, undefined);
   assert.equal(defaults.routing.configPath, resolve(testDshHome, "odai/routing.json"));
+  assert.equal(defaults.governance.skillSource, "bundled");
+  assert.equal(defaults.governance.skillConfigPath, resolve(testDshHome, "odai/source.json"));
 
   const config = resolveConfig({
     routing: {
@@ -220,11 +224,14 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "observe" } });
 
-  assert.equal(ctx.captured.sections.length, 2);
+  assert.equal(ctx.captured.sections.length, 3);
   assert.match(ctx.captured.sections[0].text, /odai canonical governance/u);
   assert.match(ctx.captured.sections[1].text, /naturally asks to inspect, set, change, or remove/u);
   assert.match(ctx.captured.sections[1].text, /Never infer, recommend as chosen, or silently select/u);
+  assert.match(ctx.captured.sections[2].text, /explicitly asks to inspect, set, or reset that source/u);
   assert.equal(ctx.captured.tools[0].name, "odai_routing_config");
+  assert.equal(ctx.captured.tools[1].name, "odai_skill_source_config");
+  assert.ok(ctx.captured.handlers.has("system-prompt/assemble"));
   assert.equal(ctx.captured.guards.length, 1);
   assert.ok(ctx.captured.handlers.has("tools/result"));
   assert.ok(ctx.captured.handlers.has("agent/pre-step"));
@@ -605,6 +612,63 @@ test("configured auto mode upgrades the current controller turn without a child"
     messages: [userMessage("把普通按钮文案改得更清楚")],
   }));
   assert.deepEqual(await request({ agent, turn: 2, step: 1 }, async () => inherited), inherited);
+});
+
+test("auto mode upgrades an implicit continuation of earlier high-impact context", async () => {
+  const ctx = fakeContext();
+  apply(ctx, {
+    skillPath,
+    routing: {
+      roles: {
+        planner: {
+          provider: "openai",
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
+          maxTokens: 2_048,
+        },
+      },
+    },
+  });
+
+  const highImpact = userMessage("线上退款偶尔重复入账，我看就是确认超时太短。把确认超时改成 30 秒、最多重试 3 次。");
+  const continuation = userMessage("继续深入判断刚才这个迁移是否可以安全发布");
+  const events = [
+    { type: "user/message", data: highImpact },
+    { type: "user/message", data: userMessage("用一句话重述刚才的结论") },
+    { type: "user/message", data: continuation },
+  ];
+  const agent = {
+    session: {
+      header: {},
+      events,
+      append(type, data) {
+        events.push({ type, data });
+      },
+    },
+  };
+  await ctx.captured.handlers.get("agent/pre-step")({
+    agent,
+    turn: 3,
+    step: 1,
+    signal: new AbortController().signal,
+  }, async () => ({
+    kind: "enter",
+    messages: [continuation],
+  }));
+
+  const routeEvents = events.filter((event) => event.type.startsWith("odai/route-"));
+  assert.equal(routeEvents[0].type, "odai/route-decided");
+  assert.equal(routeEvents[0].data.action, "upgrade");
+  assert.equal(routeEvents[0].data.reasonCode, "PLANNER_UNVERIFIED_HIGH_IMPACT_CHANGE");
+  assert.equal(routeEvents[1].type, "odai/route-upgrade");
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 3, step: 1 },
+    async () => ({ provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" }),
+  ), {
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "high",
+  });
 });
 
 test("configured auto mode still delegates an explicit independent planner gap", async () => {

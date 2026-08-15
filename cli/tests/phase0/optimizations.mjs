@@ -89,6 +89,26 @@ assert.ok(governanceBaseline.includes("references/verification.md"));
 // broad nouns alone must NOT bloat skill pack
 assert.equal(selectSkillReferences({ task: "看看代码和测试" }).includes("references/craft.md"), false);
 assert.equal(selectSkillReferences({ task: "plan next steps" }).includes("references/craft.md"), false);
+assert.equal(selectSkillReferences({ task: "plan next steps" }).includes("references/planning.md"), false);
+
+const planningSelectionCases = [
+  ["生成一份详细实施计划，只写计划文档", true],
+  ["先给这个修复做个计划", true],
+  ["制定迁移方案和执行步骤", true],
+  ["给出可执行的重构步骤", true],
+  ["不要改代码，先规划这个开发任务", true],
+  ["规划下一步", false],
+  ["不要写实施计划，直接修复", false],
+  ["无需迁移计划，按现有方案执行", false],
+  ["别先规划再实现，直接改代码", false],
+];
+for (const [task, expected] of planningSelectionCases) {
+  assert.equal(
+    selectSkillReferences({ task }).includes("references/planning.md"),
+    expected,
+    task,
+  );
+}
 
 const implementRefs = selectSkillReferences({ task: "落地实现这个修复" });
 assert.ok(implementRefs.includes("references/craft.md"));
@@ -113,6 +133,8 @@ const referenceRouteCases = [
   ["设计一个后台工作台页面", "agent_loop", "references/craft.md"],
   ["做游戏策划和关卡设计", "agent_loop", "references/craft.md"],
   ["诊断报错后落地修复", "agent_loop", "references/craft.md"],
+  ["生成迁移实施计划", "agent_loop", "references/planning.md"],
+  ["write an implementation plan", "agent_loop", "references/planning.md"],
   ["下放 agent 做独立挑战", "agent_loop", "references/support.md"],
   ["启动多模型合议模式", "agent_loop", "references/support.md"],
   ["出正式完整报告并做全仓审查", "agent_loop", "references/support.md"],

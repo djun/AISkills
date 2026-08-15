@@ -2,6 +2,13 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-15 — DSH skill source 与多轮路由
+
+- 发布 `odai-dsh-agent@0.0.5` 与 `odai-dsh-plugin@0.0.4`。两个包继续不内置任何具体模型：controller 继承 DSH host 选择，planner、executor、reviewer 只使用用户明确配置的 provider/model；缺少高影响责任映射时保持 fail-closed。
+- `auto` 在同一主会话按 turn 路由。普通请求留在当前 controller；完整高影响判断缺口在本 turn 使用用户配置的 planner 路线，不创建 child。低风险总结、重述和翻译保持直接路径；引用前文高影响任务继续决策时继承最近的相关用户上下文，新实质任务会切断继承。
+- 新增完整 skill manifest 与 `bundled`、`auto`、`user` 来源选择。默认继续固定包内 bundle；只有用户明确设置后才考虑兼容的项目、自定义或用户安装，prompt 治理与路由 role contract 在同一 agent/turn 原子选择。
+- Plugin 与 Agent 的真实 DSH load、共存安装、session 兼容、模型配置持久化、完整单测和 npm dry-run pack 均通过；发布产物生成后会清理仓库内临时 runtime/skill 副本。
+
 ## 2026-08-15 — DSH 会话兼容修复
 
 - `odai-dsh-agent@0.0.4` 与 `odai-dsh-plugin@0.0.3` 不再把私有 `odai/*` 审计事件写入 DSH 核心 session log，改为保存到 `$DSH_HOME/odai/session-evidence/`，避免重启后旧 DSH 因未知事件拒绝加载历史。

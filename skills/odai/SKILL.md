@@ -54,7 +54,7 @@ description: 以“成事而不妄为”为入口处理通用任务。用户点�
 
 宿主提供项目文件访问时，首次行动前只检查项目根目录下的 `.odai/local.md`；存在则按有效范围读一次，不存在就继续，不搜索或创建替代层。
 
-按缺口读取：目标与边界用 `references/dao.md`，制作工艺用 `references/craft.md`，验收用 `references/verification.md`，失稳与状态用 `references/support.md`，能力升降、协作与外部能力用 `references/leverage.md`。
+缺口索引：边界 `references/dao.md`；制作 `references/craft.md`；专项计划与持久交接 `references/planning.md`；验收 `references/verification.md`；状态 `references/support.md`；能力协作 `references/leverage.md`。
 
 先读最能改变当前决定的一份，仍有明确缺口才读下一份。项目已有工具按权威用法使用；已安装技能明确匹配且能改变结果时，完整读取其 `SKILL.md`。odai 仍统一目标、边界、证据、验收与最终交付。
 

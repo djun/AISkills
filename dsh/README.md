@@ -10,7 +10,7 @@ The DSH integration has two independently published user surfaces and one intern
 
 The provider-neutral `cli/` remains a separate product and is not part of this subtree.
 
-Both published DSH surfaces default to `auto` but ship no planner, executor, or reviewer model mapping. Ordinary requests stay on the selected controller. A complete contextual decision gap upgrades that same turn only when the user has configured its responsibility model; explicit independent gaps still delegate when configured. If a needed responsibility is unconfigured, Odai names it and asks the user for a natural-language provider/model choice. A missing or failed high-impact route makes the controller read-only instead of silently proceeding.
+Both published DSH surfaces default routing to `auto` while keeping the governance skill source pinned to `bundled`; neither ships a planner, executor, or reviewer model mapping. Ordinary requests stay on the selected controller. A complete contextual decision gap upgrades that same turn only when the user has configured its responsibility model; explicit independent gaps still delegate when configured. If a needed responsibility is unconfigured, Odai names it and asks the user for a natural-language provider/model choice. A missing or failed high-impact route makes the controller read-only instead of silently proceeding.
 
 ## Install and use
 
@@ -36,6 +36,8 @@ Configure optional responsibility models by speaking naturally, for example:
 
 Odai persists only the mapping the user explicitly names. A change applies from the next user turn. The Plugin already includes the canonical skill and runtime; the Agent also includes both and does not require the Plugin. Installing both is normally redundant.
 
+An independently installed complete Odai skill bundle can update faster than either package without changing existing defaults. The user must explicitly ask to set the source to `auto` or `user`; `odai_skill_source_config` persists that choice in `$DSH_HOME/odai/source.json`. Project `.dsh/skills/odai` and `.agents/skills/odai` bundles participate only in `auto` and remain scoped to the current session cwd. The package READMEs define the complete precedence, manifest, compatibility, and fallback contract.
+
 ## Ownership
 
 - `skills/odai/` is the only editable governance and role-contract source.
@@ -59,8 +61,11 @@ node --test dsh/runtime/tests/*.test.mjs
 npm --prefix dsh/plugin run verify:dsh
 npm --prefix dsh/agent test
 npm --prefix dsh/agent run verify:dsh
+node scripts/verify-dsh-coexistence.mjs
 npm --prefix dsh/plugin run pack:dry-run
 npm --prefix dsh/agent run pack:dry-run
 ```
+
+The coexistence probe uses a temporary `DSH_HOME`: it packs and installs the real Plugin into a temporary Web profile, installs the Agent preset into the same home, and proves an Agent-scoped non-bundled project skill atomically supplies both prompt governance and routing role contracts while the profile-wide Plugin remains bundled for Standard sessions.
 
 Both packages currently pin `@deepseek-ai/dsh@0.1.0-rc.6`. A DSH version update must refresh the Agent composition from that version's `standard` preset and rerun both isolated load probes.

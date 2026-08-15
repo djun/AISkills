@@ -33,6 +33,7 @@ const markerPath = resolve(scratch, "loaded.marker");
 const deniedWritePath = resolve(scratch, "must-not-be-written.txt");
 const protectedWritePath = resolve(scratch, "protected-controller-must-not-write.txt");
 const routingConfigPath = resolve(scratch, "home", "odai", "routing.json");
+const sourceConfigPath = resolve(scratch, "home", "odai", "source.json");
 
 const yamlString = (value) => JSON.stringify(value);
 const wrapper = [
@@ -72,7 +73,13 @@ const wrapper = [
   "      throw new Error(`routing config was not persisted: ${JSON.stringify(stored)}`);",
   "    }",
   "  });",
-  "  Promise.all([guardsReady, configProbe]).then(() => {",
+  "  const sourceTool = ctx.tools.get('odai_skill_source_config');",
+  "  if (!sourceTool) throw new Error('odai_skill_source_config was not registered');",
+  "  const sourceProbe = sourceTool.execute({ action: 'set', source: 'auto' }, { agent: controller }).then(() => {",
+  `    const stored = JSON.parse(readFileSync(${JSON.stringify(sourceConfigPath)}, 'utf8'));`,
+  "    if (stored.source !== 'auto') throw new Error(`skill source config was not persisted: ${JSON.stringify(stored)}`);",
+  "  });",
+  "  Promise.all([guardsReady, configProbe, sourceProbe]).then(() => {",
   `    writeFileSync(${JSON.stringify(markerPath)}, 'loaded-guarded-and-configured\\n', 'utf8');`,
   "  }).catch((error) => process.stderr.write(`odai load probe: ${error.stack ?? error}\\n`));",
   "}",

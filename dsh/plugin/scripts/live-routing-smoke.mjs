@@ -13,6 +13,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { spawnDsh } from "./dsh-process.mjs";
+import { resolveControllerSelection, selectController } from "./live-routing-smoke-config.mjs";
 
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(pluginRoot, "../..");
@@ -47,11 +48,13 @@ try {
   if (!existsSync(sourceSettings)) throw new Error(`dsh settings not found: ${sourceSettings}`);
   await mkdir(dshHome, { recursive: true });
   const sourceSettingsText = await readFile(sourceSettings, "utf8");
-  await writeFile(resolve(dshHome, "settings.yaml"), selectController(sourceSettingsText, {
-    provider: args.controllerProvider,
-    model: args.controllerModel,
-    reasoningEffort: args.controllerReasoning,
-  }), "utf8");
+  const controller = resolveControllerSelection(sourceSettingsText, args);
+  Object.assign(args, {
+    controllerProvider: controller.provider,
+    controllerModel: controller.model,
+    controllerReasoning: controller.reasoningEffort,
+  });
+  await writeFile(resolve(dshHome, "settings.yaml"), selectController(sourceSettingsText, controller), "utf8");
   if (existsSync(sourceCredentials)) {
     await copyFile(sourceCredentials, resolve(dshHome, ".credentials.yaml"));
   }
@@ -95,10 +98,10 @@ try {
         model: args.controllerModel,
         reasoningEffort: args.controllerReasoning,
       },
-      planner: args.mode === "default" ? null : {
+      planner: args.plannerProvider === undefined ? null : {
         provider: args.plannerProvider,
         model: args.plannerModel,
-        reasoningEffort: args.plannerReasoning,
+        ...(args.plannerReasoning ? { reasoningEffort: args.plannerReasoning } : {}),
       },
     },
     verification,
@@ -117,12 +120,12 @@ function parseArgs(argv) {
     yes: false,
     sourceHome: undefined,
     cwd: undefined,
-    controllerProvider: "openai",
-    controllerModel: "gpt-5.6-luna",
-    controllerReasoning: "max",
-    plannerProvider: "openai",
-    plannerModel: "gpt-5.6-sol",
-    plannerReasoning: "high",
+    controllerProvider: undefined,
+    controllerModel: undefined,
+    controllerReasoning: undefined,
+    plannerProvider: undefined,
+    plannerModel: undefined,
+    plannerReasoning: undefined,
     mode: "default",
     timeoutMs: 360_000,
     task: "checkout 老超时，我看就是支付方不稳定。把客户端超时降到 3 秒、重试次数提到 3，先止血。请先核对当前工作区证据，不要修改文件。",
@@ -152,49 +155,50 @@ function parseArgs(argv) {
     "plannerProvider",
     "plannerModel",
     "plannerReasoning",
-    "task",
   ]) {
+    if (parsed[field] === undefined) continue;
     if (typeof parsed[field] !== "string" || parsed[field].trim() === "") {
       throw new Error(`${field} must be a non-empty string`);
     }
     parsed[field] = parsed[field].trim();
   }
+  if (typeof parsed.task !== "string" || parsed.task.trim() === "") {
+    throw new Error("task must be a non-empty string");
+  }
+  parsed.task = parsed.task.trim();
   if (!Number.isSafeInteger(parsed.timeoutMs) || parsed.timeoutMs < 1_000) {
     throw new Error("timeoutMs must be an integer of at least 1000");
   }
   if (!["default", "off", "observe", "auto", "execute"].includes(parsed.mode)) {
     throw new Error("mode must be default, off, observe, auto, or execute");
   }
+  if ((parsed.controllerProvider === undefined) !== (parsed.controllerModel === undefined)) {
+    throw new Error("controller provider and model must be supplied together");
+  }
+  if ((parsed.plannerProvider === undefined) !== (parsed.plannerModel === undefined)) {
+    throw new Error("planner provider and model must be supplied together");
+  }
+  if (["auto", "execute"].includes(parsed.mode) && parsed.plannerProvider === undefined) {
+    throw new Error(`${parsed.mode} mode requires an explicit --planner-provider and --planner-model`);
+  }
   return parsed;
-}
-
-function selectController(settings, selection) {
-  const lines = settings.split(/\r?\n/u);
-  const start = lines.findIndex((line) => line === "agent-default-model:");
-  if (start < 0) throw new Error("settings.yaml has no agent-default-model section");
-  let end = start + 1;
-  while (end < lines.length && (/^\s/u.test(lines[end]) || lines[end] === "")) end += 1;
-  const replacement = [
-    "agent-default-model:",
-    `  provider: ${selection.provider}`,
-    `  model: ${selection.model}`,
-    `  reasoningEffort: ${selection.reasoningEffort}`,
-  ];
-  return [...lines.slice(0, start), ...replacement, ...lines.slice(end)].join("\n");
 }
 
 function renderPatch(input) {
   const quote = (value) => JSON.stringify(value);
-  const routing = input.mode === "default" ? [] : [
-    "        routing:",
-    `          mode: ${input.mode}`,
-    "          provider: spawn",
+  const planner = input.plannerProvider === undefined ? [] : [
     "          roles:",
     "            planner:",
     `              provider: ${quote(input.plannerProvider)}`,
     `              model: ${quote(input.plannerModel)}`,
-    `              reasoningEffort: ${quote(input.plannerReasoning)}`,
+    ...(input.plannerReasoning ? [`              reasoningEffort: ${quote(input.plannerReasoning)}`] : []),
     "              maxTokens: 2048",
+  ];
+  const routing = input.mode === "default" ? [] : [
+    "        routing:",
+    `          mode: ${input.mode}`,
+    "          provider: spawn",
+    ...planner,
   ];
   return [
     "- id: session-persistence-jsonl",
@@ -215,16 +219,16 @@ function renderPatch(input) {
 function verifySmoke(sessions, options) {
   const errors = [];
   const expectedMode = options.mode === "default" ? "auto-unconfigured" : options.mode;
-  const expectedRoute = options.mode === "default"
+  const expectedRoute = ["auto", "execute"].includes(options.mode)
     ? {
-        provider: options.controllerProvider,
-        model: options.controllerModel,
-        reasoningEffort: options.controllerReasoning,
-      }
-    : {
         provider: options.plannerProvider,
         model: options.plannerModel,
         reasoningEffort: options.plannerReasoning,
+      }
+    : {
+        provider: options.controllerProvider,
+        model: options.controllerModel,
+        reasoningEffort: options.controllerReasoning,
       };
   const children = sessions.filter((session) => session.origin === "subagent");
   const controllers = sessions.filter((session) => session.origin !== "subagent");
@@ -284,7 +288,7 @@ function verifySmoke(sessions, options) {
       errors.push("auto mode did not record the expected requested controller route");
     }
     if (!controllerRoute) {
-      errors.push("controller request/header did not match the selected Sol route");
+      errors.push("controller request/header did not match the configured planner route");
     } else if (controllerRoute.maxTokens !== undefined) {
       errors.push("in-place controller upgrade inherited the child maxTokens cap");
     }

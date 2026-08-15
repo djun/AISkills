@@ -84,11 +84,13 @@ dsh plugin --profile web add odai-dsh-plugin
 npx odai-dsh-agent install
 ```
 
-The Plugin command requires `pnpm` on `PATH`; the Agent installer currently requires `dsh@0.1.0-rc.6`. Each package already includes the canonical Odai skill and shared DSH runtime. The Agent preserves every capability from the pinned DSH Standard preset and adds Odai as a scoped extension. Plugin needs neither a separate skill nor Agent; Agent needs neither a separate skill nor Plugin. Choose Plugin for profile-wide behavior or Agent for a selectable preset. Installing both is normally redundant and is only for a deliberate combination of those scopes. The existing provider-neutral `odai-cli` remains a separate product.
+The Plugin command requires `pnpm` on `PATH`; the Agent installer currently requires `dsh@0.1.0-rc.6`. Each package already includes the canonical Odai skill and shared DSH runtime, and existing installations keep that bundled skill as the default. The Agent preserves every capability from the pinned DSH Standard preset and adds Odai as a scoped extension. Plugin needs neither a separate skill nor Agent; Agent needs neither a separate skill nor Plugin. Choose Plugin for profile-wide behavior or Agent for a selectable preset. Installing both is normally redundant and is only for a deliberate combination of those scopes. The existing provider-neutral `odai-cli` remains a separate product.
+
+A complete independently installed Odai skill can update faster than either DSH package without changing the default. The user must explicitly ask Odai to switch the skill source to `auto` or `user`; `auto` can select compatible project `.dsh`/`.agents` bundles and newer user installs, while `user` ignores project roots. An explicit deployment path remains highest priority. Plugin and Agent deliberately installed together share one per-agent/per-turn snapshot, so prompt governance and routing role contracts cannot select different bundles.
 
 Neither DSH package chooses planner, executor, or reviewer models. Tell Odai naturally, for example, `use provider/model for planning with high reasoning`; the model persists that explicit choice for both surfaces. If a needed responsibility is still unconfigured, Odai names it and asks for the model instead of claiming that route ran.
 
-See [`dsh/README.md`](dsh/README.md) for package boundaries, natural-language configuration, and verification.
+See [`dsh/README.md`](dsh/README.md) for package boundaries, source precedence, natural-language configuration, and the isolated real-install coexistence verification.
 
 ### Host Capability Routing
 

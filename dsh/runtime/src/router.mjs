@@ -60,6 +60,16 @@ const IRREVERSIBLE_ACTION_PATTERNS = [
   /\b(?:delete|drop|clear|migrate|deploy|release|disable)\b/iu,
 ];
 
+const CONTINUATION_PATTERNS = [
+  /(?:继续|接着|进一步|深入|再(?:判断|分析|评估|检查|处理)|按(?:照)?(?:刚才|上面|上述|前面|这个|该)|那就|就按)/iu,
+  /\b(?:continue|proceed|go ahead|follow up|dig deeper|based on (?:that|the previous|the above))\b/iu,
+];
+
+const LOW_RISK_TRANSFORM_PATTERNS = [
+  /(?:重述|总结|概括|压缩|翻译|改写|润色|格式化|解释(?:一下)?)/iu,
+  /\b(?:restate|summari[sz]e|translate|shorten|rewrite|format|explain)\b/iu,
+];
+
 function matchesAny(text, patterns) {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -70,6 +80,48 @@ function stripQuotedMaterial(text) {
     .replace(/^\s*>.*$/gmu, " ")
     .replace(/`[^`\n]*`/gu, " ")
     .replace(/“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|《[^》\n]*》|"[^"\n]*"/gu, " ");
+}
+
+function hasContextualPlannerGap(text) {
+  return matchesAny(text, RISK_PATTERNS)
+    && matchesAny(text, UNVERIFIED_CAUSAL_PATTERNS)
+    && matchesAny(text, CONCRETE_CHANGE_PATTERNS)
+    && (matchesAny(text, SPECIFIC_PARAMETER_PATTERNS)
+      || matchesAny(text, URGENCY_PATTERNS)
+      || matchesAny(text, IRREVERSIBLE_ACTION_PATTERNS));
+}
+
+function isLowRiskTransform(text) {
+  return matchesAny(stripQuotedMaterial(text), LOW_RISK_TRANSFORM_PATTERNS);
+}
+
+function genuineUserText(message) {
+  if (message?.role !== "user" || message?.source?.kind !== "user" || !Array.isArray(message.content)) return "";
+  return message.content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+}
+
+function genuineUserTexts(messages, sessionEvents = []) {
+  const candidates = [
+    ...(Array.isArray(messages) ? [...messages].reverse() : []),
+    ...(Array.isArray(sessionEvents)
+      ? [...sessionEvents].reverse()
+        .filter((event) => event?.type === "user/message")
+        .map((event) => event.data)
+      : []),
+  ];
+  const seen = new Set();
+  const texts = [];
+  for (const message of candidates) {
+    const text = genuineUserText(message);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    texts.push(text);
+  }
+  return texts;
 }
 
 function route(role, reasonCode, reason, signals, action = role === "controller" ? "direct" : "delegate", targetRole) {
@@ -137,11 +189,11 @@ export function decideRoute(input = {}) {
     );
   }
 
-  const hasContextualPlannerGap = riskPresent
+  const contextualPlannerGap = riskPresent
     && unverifiedCausalClaim
     && concreteChangeRequest
     && (specificOperationalParameter || urgencyPressure || irreversibleAction);
-  if (hasContextualPlannerGap) {
+  if (contextualPlannerGap) {
     return route(
       "controller",
       HIGH_IMPACT_PLANNER_REASON,
@@ -162,23 +214,29 @@ export function decideRoute(input = {}) {
 }
 
 export function extractLatestUserText(messages) {
-  if (!Array.isArray(messages)) return "";
+  return genuineUserTexts(messages)[0] ?? "";
+}
 
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "user") continue;
-    if (message?.source?.kind !== "user") continue;
-    if (!Array.isArray(message.content)) continue;
-
-    const text = message.content
-      .filter((block) => block?.type === "text" && typeof block.text === "string")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
-    if (text) return text;
+export function extractRoutingText(messages, sessionEvents) {
+  const texts = genuineUserTexts(messages, sessionEvents);
+  const latest = texts[0] ?? "";
+  if (!latest
+    || hasContextualPlannerGap(latest)
+    || !matchesAny(stripQuotedMaterial(latest), CONTINUATION_PATTERNS)
+    || isLowRiskTransform(latest)) {
+    return latest;
   }
 
-  return "";
+  let referencedHighImpact;
+  for (const text of texts.slice(1)) {
+    if (hasContextualPlannerGap(text)) {
+      referencedHighImpact = text;
+      break;
+    }
+    if (!isLowRiskTransform(text)) break;
+  }
+  if (!referencedHighImpact) return latest;
+  return `${latest}\n\nReferenced earlier high-impact user context:\n${referencedHighImpact}`;
 }
 
 export function requiresFailClosedProtection(decision) {

@@ -29,7 +29,12 @@ const requiredFiles = Object.freeze([
   "runtime/index.mjs",
   "runtime/session-compat.mjs",
   "runtime/session-evidence.mjs",
+  "runtime/skill-bundle.mjs",
+  "runtime/skill-selection-state.mjs",
+  "runtime/skill-selector.mjs",
+  "runtime/skill-source-config.mjs",
   "skills/odai/SKILL.md",
+  "skills/odai/manifest.json",
 ]);
 
 export function resolveDshHome(configured, env = process.env) {
