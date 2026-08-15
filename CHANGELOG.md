@@ -2,6 +2,11 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-16 — DSH compaction 缓存兼容
+
+- 发布 `odai-dsh-agent@0.0.6` 与 `odai-dsh-plugin@0.0.5`。同 provider/model 的 DSH compaction 在自身未显式配置 reasoning 时继承当前会话 `request/header` 中用户实际选择的 reasoning effort；跨模型 summarizer 与显式设置保持不变，不内置任何模型名称。
+- 真实中转 A/B 使用同一随机前缀和 session：缺失 reasoning 的 compaction 为 `14,679` uncached / `0` cached，继承 `xhigh` 后为 `596` uncached / `14,080` cached，未缓存输入下降约 `95.9%`。压缩后因历史 summary 替换产生的新前缀仍需正常重建。
+
 ## 2026-08-15 — DSH skill source 与多轮路由
 
 - 发布 `odai-dsh-agent@0.0.5` 与 `odai-dsh-plugin@0.0.4`。两个包继续不内置任何具体模型：controller 继承 DSH host 选择，planner、executor、reviewer 只使用用户明确配置的 provider/model；缺少高影响责任映射时保持 fail-closed。

@@ -1,6 +1,6 @@
 {
   "name": "odai-dsh-plugin",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Profile-wide odai governance and routing bundle for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
@@ -34,6 +34,7 @@
     "scripts/dsh-process.mjs",
     "scripts/live-routing-smoke-config.mjs",
     "scripts/live-routing-smoke.mjs",
+    "scripts/live-compaction-cache-smoke.mjs",
     "scripts/verify-dsh-load.mjs",
     "scripts/verify-session-compat.mjs",
     "cordis.patch.yml",
@@ -55,7 +56,8 @@
     "pack:dry-run": "node ../../scripts/run-package-pack.mjs --clean runtime --clean skills -- --dry-run",
     "test": "node --test ../runtime/tests/*.test.mjs ./tests/*.test.mjs",
     "verify:dsh": "node ./scripts/verify-session-compat.mjs && node ./scripts/verify-dsh-load.mjs",
-    "smoke:live": "node ./scripts/live-routing-smoke.mjs"
+    "smoke:live": "node ./scripts/live-routing-smoke.mjs",
+    "smoke:compaction-cache": "node ./scripts/live-compaction-cache-smoke.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": "0.1.0-rc.6"

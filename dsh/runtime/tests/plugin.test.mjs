@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import {
   apply,
+  inheritCompactionReasoning,
   resolveConfig,
   runRoutedRole,
 } from "../src/index.mjs";
@@ -102,6 +103,51 @@ test("config is strict at governance boundaries", () => {
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
   });
+});
+
+test("compaction inherits routed reasoning only for the exact current target", async () => {
+  const sessions = {
+    get(sessionId) {
+      if (sessionId !== "session-cache") return undefined;
+      return {
+        requestHeader() {
+          return {
+            config: {
+              provider: "openai",
+              model: "user-selected-model",
+              reasoningEffort: "xhigh",
+            },
+          };
+        },
+      };
+    },
+  };
+  const eligible = {
+    purpose: "compaction",
+    sessionId: "session-cache",
+    provider: "openai",
+    model: "user-selected-model",
+  };
+  assert.equal(inheritCompactionReasoning(eligible, sessions), true);
+  assert.equal(eligible.reasoningEffort, "xhigh");
+
+  const explicit = { ...eligible, reasoningEffort: "medium" };
+  assert.equal(inheritCompactionReasoning(explicit, sessions), false);
+  assert.equal(explicit.reasoningEffort, "medium");
+  assert.equal(inheritCompactionReasoning({ ...eligible, model: "different-model", reasoningEffort: undefined }, sessions), false);
+  assert.equal(inheritCompactionReasoning({ ...eligible, purpose: undefined, reasoningEffort: undefined }, sessions), false);
+  assert.equal(inheritCompactionReasoning(Object.freeze({ ...eligible, reasoningEffort: undefined }), sessions), false);
+
+  const ctx = fakeContext({ sessions });
+  apply(ctx, { skillPath, routing: { mode: "off" } });
+  const streamed = {
+    purpose: "compaction",
+    sessionId: "session-cache",
+    provider: "openai",
+    model: "user-selected-model",
+  };
+  assert.equal(await ctx.captured.handlers.get("llm/stream")(streamed, async () => "next"), "next");
+  assert.equal(streamed.reasoningEffort, "xhigh");
 });
 
 test("routing off ignores stale protection evidence", () => {

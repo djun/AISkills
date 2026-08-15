@@ -46,7 +46,7 @@ import {
 } from "./skill-selection-state.mjs";
 
 export const name = "odai-dsh-runtime";
-export const inject = ["systemPrompt", "tools", "subagents"];
+export const inject = ["systemPrompt", "tools", "subagents", "sessions"];
 
 const PLUGIN_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ROUTING_MODES = new Set(["off", "observe", "auto", "execute"]);
@@ -116,6 +116,26 @@ export function resolveConfig(rawConfig = {}) {
       skillConfigPath,
     }),
   });
+}
+
+export function inheritCompactionReasoning(options, sessions) {
+  if (options?.purpose !== "compaction"
+    || options.reasoningEffort !== undefined
+    || options.sessionId === undefined
+    || !Object.isExtensible(options)) {
+    return false;
+  }
+
+  const route = sessions?.get?.(options.sessionId)?.requestHeader?.()?.config;
+  if (route?.provider !== options.provider
+    || route?.model !== options.model
+    || typeof route.reasoningEffort !== "string"
+    || route.reasoningEffort.length === 0) {
+    return false;
+  }
+
+  options.reasoningEffort = route.reasoningEffort;
+  return true;
 }
 
 export function resolveSkillPath(configuredPath, env = process.env) {
@@ -330,6 +350,10 @@ export function apply(ctx, rawConfig) {
     }
   };
   const hasSessionEvent = (agent, type, predicate) => evidence.has(agent, type, predicate);
+  ctx.on("llm/stream", (options, next) => {
+    inheritCompactionReasoning(options, ctx.sessions);
+    return next();
+  });
   const skillPath = resolveSkillPath(config.skillPath);
   const explicitSkillPath = config.skillPath !== undefined
     || (typeof process.env.ODAI_SKILL_PATH === "string" && process.env.ODAI_SKILL_PATH.trim() !== "");

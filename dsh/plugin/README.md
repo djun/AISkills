@@ -8,7 +8,8 @@ The bundle contributes:
 - deterministic routing that keeps ordinary work on the current controller, upgrades configured contextual decision gaps in place, and delegates only genuine independent gaps;
 - monotonic write boundaries for child agents and unresolved high-impact controller turns;
 - durable route decisions, upgrades, child outcomes, protections, policy denials, and compact tool outcomes stored outside DSH's core session-event vocabulary;
-- actual controller/child provider-model evidence, fail-closed high-impact failures, and direct fallback only where it is safe.
+- actual controller/child provider-model evidence, fail-closed high-impact failures, and direct fallback only where it is safe;
+- cache-compatible compaction calls: a same-provider/model summarizer with no explicit reasoning setting inherits the session's current user-selected reasoning effort, while cross-model and explicitly configured summarizers remain untouched.
 
 ## Install
 
@@ -86,5 +87,12 @@ npm --prefix dsh/plugin run smoke:live -- --yes --mode auto \
 ```
 
 The default smoke inherits `agent-default-model`, omits the routing block, and uses a natural high-impact decision gap. It requires one controller, zero children, a missing-planner event, read-only fail-closed protection, no false upgrade/result event, and the original controller `request/header`. Explicit `auto` and `execute` require `--planner-provider` plus `--planner-model`; the script has no built-in model name. `auto` requires a same-turn upgrade, `execute` requires one verified child, and `observe`/`off` require zero children with their mode-appropriate events.
+
+An explicitly authorized cache probe compares the current relay's compaction request with and without the same routed reasoning setting. It inherits the controller route from DSH settings, uses an isolated temporary home, and removes copied credentials and sessions on exit:
+
+```sh
+npm --prefix dsh/plugin run smoke:compaction-cache -- --yes
+npm --prefix dsh/plugin run smoke:compaction-cache -- --yes --runtime
+```
 
 The package is pinned to `@deepseek-ai/dsh@0.1.0-rc.6` because DSH remains a developer preview and its plugin API may change.
