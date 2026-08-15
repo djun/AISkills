@@ -201,11 +201,11 @@ test("routing text inherits referenced high-impact context but keeps low-risk tr
   assert.equal(decideRoute({ text: afterNewTask }).action, "direct");
 });
 
-test("delegation prompt requires a canonical role contract", () => {
+test("delegation prompt requires a canonical role contract and bounded context", () => {
   const decision = { role: "planner" };
   assert.throws(() => renderDelegationPrompt(decision, "task"), /canonical planner role contract/u);
-  assert.match(
-    renderDelegationPrompt(decision, "task", "Canonical planner body."),
-    /Canonical planner body\.[\s\S]*Task:\ntask/u,
-  );
+  const prompt = renderDelegationPrompt(decision, "task", "Canonical planner body.");
+  assert.match(prompt, /Canonical planner body\.[\s\S]*Task:\ntask/u);
+  assert.match(prompt, /bounded task and evidence packet, not an inherited controller transcript/u);
+  assert.match(prompt, /do not request or reconstruct the controller's full history/u);
 });

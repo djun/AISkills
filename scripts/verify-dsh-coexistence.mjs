@@ -45,6 +45,8 @@ const yaml = (value) => JSON.stringify(value);
 let child;
 let output = "";
 let finalReport;
+let bundledSkillVersion;
+let projectSkillVersion;
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -136,7 +138,11 @@ async function prepareProjectSkill() {
   await cp(canonicalSkillRoot, target, { recursive: true });
   const manifestPath = resolve(target, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  manifest.skillVersion = "0.1.1";
+  const version = String(manifest.skillVersion).match(/^(\d+)\.(\d+)\.(\d+)$/u);
+  if (!version) throw new Error(`canonical skillVersion is not a stable SemVer: ${String(manifest.skillVersion)}`);
+  bundledSkillVersion = manifest.skillVersion;
+  projectSkillVersion = `${version[1]}.${version[2]}.${Number(version[3]) + 1}`;
+  manifest.skillVersion = projectSkillVersion;
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   const skillPath = resolve(target, "SKILL.md");
   const plannerPath = resolve(target, "assets/routing-roles/planner.md");
@@ -203,6 +209,7 @@ function assertResults(results) {
   if (standard?.canonicalSectionCount !== 1
     || standard.mode !== "bundled"
     || standard.source !== "bundled"
+    || standard.skillVersion !== bundledSkillVersion
     || standard.promptHasProjectMarker !== false
     || standard.roleHasProjectMarker !== false
     || standard.promptDigest !== standard.digest) {
@@ -211,7 +218,7 @@ function assertResults(results) {
   if (odai?.canonicalSectionCount !== 1
     || odai.mode !== "auto"
     || odai.source !== "project-dsh"
-    || odai.skillVersion !== "0.1.1"
+    || odai.skillVersion !== projectSkillVersion
     || odai.promptHasProjectMarker !== true
     || odai.roleHasProjectMarker !== true
     || odai.promptDigest !== odai.digest) {

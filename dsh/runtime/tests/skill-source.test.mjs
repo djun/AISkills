@@ -106,7 +106,7 @@ function assemblyFor(ctx) {
 }
 
 test("bundle manifest validates complete content and full SemVer precedence", () => {
-  assert.equal(bundled.manifest.skillVersion, "0.1.0");
+  assert.equal(bundled.manifest.skillVersion, "0.1.1");
   assert.equal(bundled.manifest.runtimeContract, 1);
   assert.equal(bundled.manifest.requiredFiles.length, 25);
   assert.match(bundled.digest, /^[a-f0-9]{64}$/u);
@@ -117,7 +117,7 @@ test("bundle manifest validates complete content and full SemVer precedence", ()
 
   const scratch = fixtureRoot("bundle-conflict");
   try {
-    const conflicting = loadSkillBundle(installBundle(resolve(scratch, "odai"), "0.1.0", "CONFLICT"), {
+    const conflicting = loadSkillBundle(installBundle(resolve(scratch, "odai"), "0.1.1", "CONFLICT"), {
       source: "user-dsh",
     });
     const selection = chooseSkillBundle({ mode: "auto", bundled, candidate: conflicting });
@@ -194,7 +194,7 @@ test("invalid and conflicting candidates continue to the next compatible source"
     mkdirSync(resolve(project, ".git"), { recursive: true });
     installBundle(resolve(project, ".dsh/skills/odai"), "0.3.0", "BROKEN_PROJECT");
     rmSync(resolve(project, ".dsh/skills/odai/assets/routing-roles/reviewer.md"));
-    installBundle(resolve(dshHome, "skills/odai"), "0.1.0", "SAME_VERSION_CONFLICT");
+    installBundle(resolve(dshHome, "skills/odai"), "0.1.1", "SAME_VERSION_CONFLICT");
     installBundle(resolve(agentsHome, "skills/odai"), "0.2.0", "USER_AGENTS");
 
     const selection = await resolveSkillSelection({

@@ -213,6 +213,9 @@ function validateBehavior() {
         /只阻断依赖该能力的不可逆放行/,
         /不假装路由成功/,
         /subagent 回交或自报不算验收/,
+        /agent 协作默认使用新鲜独立上下文与有界交接/,
+        /不因方便 fork 或继承整个长会话/,
+        /缓存失效、压缩和延迟成本/,
         /原始产物、diff、工具或测试结果并统一收口/,
         /自主完成[\s\S]{0,180}不额外写计划、清单或状态/,
         /只答不写[^。\n]*单一权威来源[^。\n]*命中即停/,
@@ -319,6 +322,9 @@ function validateBehavior() {
         /planner[^。\n]*只补独立判断缺口/,
         /executor[^。\n]*决定已冻结、实施有界且可独立验证/,
         /reviewer[^。\n]*独立判断能改变尚未放行的具体属性/,
+        /agent 启动默认选择新鲜独立上下文/,
+        /不得复制完整总控会话/,
+        /宿主未暴露继承范围或用量时不使用 fork/,
         /高后果只提高证据、授权和验收强度，不自动制造角色调用/,
         /能力目录只认宿主已提供的系统说明、工具定义、已加载配置和实际调用结果/,
         /未暴露的能力不猜/,
@@ -452,10 +458,10 @@ function validateRoutingSources() {
     if (!codexRole.includes(fragment)) fail(`assets/codex-agents/role.toml: missing host wrapper field: ${fragment}`);
   }
   const roleSources = [
-    ["controller", readFileSync(roleFiles[0], "utf8"), ["唯一总控", "直接谋定、行动、验证和交付", "不为展示路由", "独立判断能改变路线", "实施有界且分离执行有可验净收益", "独立判断能改变放行结果", "实施失败但路线仍成立", "路线或验收设计失效", "已有决定性证据闭合所有要求时立即收口", "__ODAI_RUNTIME_VERIFICATION__"]],
+    ["controller", readFileSync(roleFiles[0], "utf8"), ["唯一总控", "直接谋定、行动、验证和交付", "不为展示路由", "独立判断能改变路线", "实施有界且分离执行有可验净收益", "独立判断能改变放行结果", "实施失败但路线仍成立", "新鲜独立上下文与有界任务包", "不复制完整总控会话", "路线或验收设计失效", "已有决定性证据闭合所有要求时立即收口", "__ODAI_RUNTIME_VERIFICATION__"]],
     ["planner", readFileSync(roleFiles[1], "utf8"), ["独立规划责任", "不预做实施", "当前上下文能可靠闭环", "mode: direct", "mode: planned", "target", "evidence", "scope", "decision", "execute: executor", "review: none", "accept", "stop", "steps", "增量重规划"]],
     ["executor", readFileSync(roleFiles[2], "utf8"), ["唯一 executor", "只接收冻结方案与证据指针", "不重新盘点仓库", "不重新盘点仓库、论证目标或另选路线", "验证需求不自动授权改测试", "必要验证只运行一次", "新证据推翻决定、范围或验收", "<odai_closeout>", "不得自行批准最终交付"]],
-    ["reviewer", readFileSync(roleFiles[3], "utf8"), ["独立验收责任", "不调用工具", "不扫描工作目录", "不重跑已成功的确定性检查", "完整 `accept`", "`pass`、`fail` 或 `unresolved`", "route: execution", "route: planning", "route: user", "route: blocked", "不得制造额外流程"]],
+    ["reviewer", readFileSync(roleFiles[3], "utf8"), ["独立验收责任", "按验收缺口裁剪", "不得包含完整会话转储", "不调用工具", "不扫描工作目录", "不重跑已成功的确定性检查", "完整 `accept`", "`pass`、`fail` 或 `unresolved`", "route: execution", "route: planning", "route: user", "route: blocked", "不得制造额外流程"]],
   ];
   for (const [label, text, fragments] of roleSources) {
     for (const fragment of fragments) {

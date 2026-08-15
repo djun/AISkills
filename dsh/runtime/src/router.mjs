@@ -341,6 +341,7 @@ export function renderDelegationPrompt(decision, taskText, roleContract) {
     `You are the odai ${decision.role}.`,
     roleContract.trim(),
     "Runtime boundary: do not edit files, run shell commands, ask the user, or delegate further. The controller owns all final decisions and delivery.",
+    "Context boundary: this is a bounded task and evidence packet, not an inherited controller transcript. Use only the supplied contract, task, evidence, and source pointers; do not request or reconstruct the controller's full history.",
     "",
     "Task:",
     taskText,
