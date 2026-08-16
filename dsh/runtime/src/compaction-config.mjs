@@ -12,7 +12,7 @@ import { dirname, resolve } from "node:path";
 import { acquireOwnedStoreLock } from "./store-lock.mjs";
 
 const STORE_SCHEMA_VERSION = 1;
-const TARGET_FIELDS = new Set(["provider", "model"]);
+const TARGET_FIELDS = new Set(["provider", "model", "reasoningEffort"]);
 const STATE_PROTOCOL_SOURCE = Object.freeze({
   kind: "plugin",
   plugin: "odai-dsh-runtime",
@@ -29,9 +29,9 @@ export const COMPACTION_STATE_PROTOCOL = [
 
 export const COMPACTION_CONFIG_PROMPT = [
   "## Odai compaction model configuration",
-  "When the user naturally asks to inspect, set, change, or reset the model used to summarize compacted context, use odai_compaction_config.",
-  "Set a compaction model only when the user explicitly supplies both provider and model. Never infer or silently choose either value. Ask a concise clarification when one is missing or ambiguous.",
-  "The default is inherit: compaction uses the current conversation route. A configured target changes only compaction-summary requests; it does not change the controller, planner, executor, reviewer, normal conversation, summary output budget, or cache-retention policy.",
+  "When the user naturally asks to inspect, set, change, or reset the model or reasoning effort used to summarize compacted context, use odai_compaction_config.",
+  "Set a compaction target only when the user explicitly supplies both provider and model. Pass reasoningEffort only when the user explicitly supplies it. Never infer or silently choose any value. If the user changes only the effort for an existing persisted target, inspect and preserve that exact provider/model pair.",
+  "The default is inherit: compaction uses the current conversation route. A configured target changes only compaction-summary requests; it does not change the controller, planner, executor, reviewer, normal conversation, summary output budget, or cache-retention policy. An optional explicit reasoning effort is likewise scoped only to compaction summaries; omitting it preserves the existing reasoning inheritance and cross-model isolation behavior.",
   "Configured targets also receive a provider-neutral checkpoint integrity protocol that keeps current facts above superseded or rejected history and preserves continuation-critical opaque values exactly.",
   "Do not ask the user to edit YAML, JSON, managed Agent files, or Plugin configuration. The tool owns persistence. Set/remove changes apply to the next compaction request.",
   "An invalid persisted store is visible through the tool while runtime requests safely inherit the conversation route. If the configured route fails or produces an incomplete summary, DSH must preserve the original history rather than landing a partial checkpoint.",
@@ -56,7 +56,15 @@ export function resolveCompactionTarget(value, field = "Odai compaction model ta
   if (typeof target.model !== "string" || target.model.trim() === "") {
     throw new TypeError(`${field}.model must be a non-empty string`);
   }
-  return Object.freeze({ provider: target.provider.trim(), model: target.model.trim() });
+  if (target.reasoningEffort !== undefined
+    && (typeof target.reasoningEffort !== "string" || target.reasoningEffort.trim() === "")) {
+    throw new TypeError(`${field}.reasoningEffort must be a non-empty string`);
+  }
+  return Object.freeze({
+    provider: target.provider.trim(),
+    model: target.model.trim(),
+    ...(target.reasoningEffort === undefined ? {} : { reasoningEffort: target.reasoningEffort.trim() }),
+  });
 }
 
 export function resolveCompactionConfigPath(configuredPath, env = process.env) {
@@ -133,12 +141,15 @@ export function applyCompactionTarget(options, target, sessions) {
     && currentRoute.reasoningEffort.length > 0
     && options.reasoningEffort === currentRoute.reasoningEffort;
   const changesRoute = options.provider !== target.provider || options.model !== target.model;
-  if (!changesRoute && !inheritedReasoning) return false;
+  const changesReasoning = target.reasoningEffort !== undefined
+    && options.reasoningEffort !== target.reasoningEffort;
+  if (!changesRoute && !inheritedReasoning && !changesReasoning) return false;
   if (!Object.isExtensible(options)) {
     throw new Error("configured Odai compaction model cannot be applied to an immutable request");
   }
 
-  if (inheritedReasoning) delete options.reasoningEffort;
+  if (target.reasoningEffort !== undefined) options.reasoningEffort = target.reasoningEffort;
+  else if (inheritedReasoning) delete options.reasoningEffort;
   if (changesRoute) {
     options.provider = target.provider;
     options.model = target.model;
@@ -214,9 +225,9 @@ export function createCompactionConfigTool(configPath, options = {}) {
   return {
     name: "odai_compaction_config",
     description: [
-      "Inspect, set, or remove the shared Odai compaction-summary model target.",
-      "Use only when the user naturally asks about the compaction model or explicitly supplies the provider and model to set. Never select either value on the user's behalf.",
-      "The default is inherit. A persisted target changes only future compaction-summary requests; controller and responsibility routes, output budget, and cache retention stay unchanged.",
+      "Inspect, set, or remove the shared Odai compaction-summary target.",
+      "Use only when the user naturally asks about the compaction model/reasoning effort or explicitly supplies the provider and model to set. Never select a provider, model, or reasoning effort on the user's behalf.",
+      "The default is inherit. A persisted target changes only future compaction-summary requests; controller and responsibility routes, output budget, and cache retention stay unchanged. An optional user-specified reasoning effort applies only to those summaries.",
       "Persisted targets also receive a provider-neutral integrity protocol that keeps current facts above superseded history and preserves continuation-critical opaque values exactly.",
       "An invalid store is reported while runtime requests safely inherit. If the configured route or summary fails, DSH preserves the original history. Changes apply from the next compaction request.",
     ].join(" "),
@@ -228,7 +239,7 @@ export function createCompactionConfigTool(configPath, options = {}) {
         action: {
           type: "string",
           enum: ["show", "set", "remove"],
-          description: "Show the effective target, set a user-specified provider/model, or remove it to restore inheritance.",
+          description: "Show the effective target, set a user-specified provider/model and optional reasoning effort, or remove it to restore inheritance.",
         },
         provider: {
           type: "string",
@@ -237,6 +248,10 @@ export function createCompactionConfigTool(configPath, options = {}) {
         model: {
           type: "string",
           description: "Model id explicitly supplied by the user; required for set.",
+        },
+        reasoningEffort: {
+          type: "string",
+          description: "Optional compaction reasoning effort explicitly supplied by the user.",
         },
       },
     },
@@ -256,6 +271,7 @@ export function createCompactionConfigTool(configPath, options = {}) {
             properties: {
               provider: { type: "string" },
               model: { type: "string" },
+              reasoningEffort: { type: "string" },
             },
           },
           requiresNextCompaction: { type: "boolean" },
@@ -265,12 +281,12 @@ export function createCompactionConfigTool(configPath, options = {}) {
       },
       render(_args, value) {
         const target = value.target
-          ? `${value.target.provider}/${value.target.model}`
-          : "inherit the current conversation model";
+          ? `${value.target.provider}/${value.target.model} (reasoning: ${value.target.reasoningEffort ?? "not configured"})`
+          : "inherit the current conversation model and reasoning";
         return [{
           type: "text",
           text: [
-            `${value.action === "show" ? "Current" : "Updated"} Odai compaction model (${value.source}): ${target}.`,
+            `${value.action === "show" ? "Current" : "Updated"} Odai compaction target (${value.source}): ${target}.`,
             " This affects compaction summaries only; other model routes, the summary budget, and cache retention are unchanged.",
             ...(value.invalidStore ? [" The persisted store is invalid, so runtime requests currently inherit; set or remove the target to repair it."] : []),
             ...(value.recoveredInvalidStore ? [" An invalid prior store was preserved before the configuration was repaired or reset."] : []),
@@ -283,12 +299,12 @@ export function createCompactionConfigTool(configPath, options = {}) {
       if (!execution.agent) throw new Error("odai_compaction_config requires an owning agent session");
       if (isChild(execution.agent)) throw new Error("child agents may not change Odai compaction model configuration");
       if (!args || typeof args !== "object" || Array.isArray(args)) throw new TypeError("arguments must be an object");
-      const unknown = Object.keys(args).filter((field) => !["action", "provider", "model"].includes(field));
+      const unknown = Object.keys(args).filter((field) => !["action", "provider", "model", "reasoningEffort"].includes(field));
       if (unknown.length > 0) throw new TypeError(`unknown arguments: ${unknown.join(", ")}`);
       if (!["show", "set", "remove"].includes(args.action)) throw new TypeError("action must be show, set, or remove");
       if (args.action === "show") {
-        if (args.provider !== undefined || args.model !== undefined) {
-          throw new TypeError("provider and model must be omitted for show");
+        if (args.provider !== undefined || args.model !== undefined || args.reasoningEffort !== undefined) {
+          throw new TypeError("provider, model, and reasoningEffort must be omitted for show");
         }
         let selection;
         try {
@@ -299,11 +315,16 @@ export function createCompactionConfigTool(configPath, options = {}) {
         }
         return Promise.resolve(resultFor(configPath, "show", selection));
       }
-      if (args.action === "remove" && (args.provider !== undefined || args.model !== undefined)) {
-        throw new TypeError("provider and model must be omitted for remove");
+      if (args.action === "remove"
+        && (args.provider !== undefined || args.model !== undefined || args.reasoningEffort !== undefined)) {
+        throw new TypeError("provider, model, and reasoningEffort must be omitted for remove");
       }
       const proposed = args.action === "set"
-        ? resolveCompactionTarget({ provider: args.provider, model: args.model })
+        ? resolveCompactionTarget({
+            provider: args.provider,
+            model: args.model,
+            ...(args.reasoningEffort === undefined ? {} : { reasoningEffort: args.reasoningEffort }),
+          })
         : undefined;
 
       const releaseLock = acquireOwnedStoreLock(configPath, "Odai compaction model configuration");

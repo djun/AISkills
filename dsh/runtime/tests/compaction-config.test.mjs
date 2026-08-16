@@ -17,15 +17,22 @@ import {
 } from "../src/compaction-config.mjs";
 import { acquireOwnedStoreLock } from "../src/store-lock.mjs";
 
-test("compaction model target validates explicit provider/model and applies only to compaction", () => {
-  assert.deepEqual(resolveCompactionTarget({ provider: " openai ", model: " gpt-5.6-luna " }), {
+test("compaction target validates explicit model options and applies only to compaction", () => {
+  assert.deepEqual(resolveCompactionTarget({
+    provider: " openai ",
+    model: " gpt-5.6-luna ",
+    reasoningEffort: " high ",
+  }), {
     provider: "openai",
     model: "gpt-5.6-luna",
+    reasoningEffort: "high",
   });
   assert.throws(() => resolveCompactionTarget({ provider: "openai" }), /\.model must be a non-empty string/u);
   assert.throws(() => resolveCompactionTarget({ provider: "", model: "luna" }), /\.provider must be a non-empty string/u);
+  assert.throws(() => resolveCompactionTarget({ provider: "openai", model: "luna", reasoningEffort: " " }), /\.reasoningEffort must be a non-empty string/u);
   assert.throws(() => resolveCompactionTarget({ provider: "openai", model: "luna", effort: "max" }), /unknown fields: effort/u);
   assert.match(COMPACTION_CONFIG_PROMPT, /Never infer or silently choose/iu);
+  assert.match(COMPACTION_CONFIG_PROMPT, /reasoning effort/iu);
   assert.match(COMPACTION_CONFIG_PROMPT, /checkpoint integrity protocol/iu);
   assert.match(COMPACTION_CONFIG_PROMPT, /original history/iu);
 
@@ -49,6 +56,12 @@ test("compaction model target validates explicit provider/model and applies only
     cacheRetention: "short",
   });
   assert.equal(applyCompactionTarget(compaction, { provider: "openai", model: "gpt-5.6-luna" }), false);
+
+  const configuredReasoning = { ...compaction, reasoningEffort: "medium" };
+  const configuredTarget = { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "high" };
+  assert.equal(applyCompactionTarget(configuredReasoning, configuredTarget), true);
+  assert.equal(configuredReasoning.reasoningEffort, "high");
+  assert.equal(applyCompactionTarget(configuredReasoning, configuredTarget), false);
 
   const sessions = {
     get(sessionId) {
@@ -147,6 +160,11 @@ test("compaction model store is atomic, repairable, locked, resettable, and chil
       onConfigured(_agent, data) { events.push(data); },
     });
     const execution = { agent: { session: { header: {} } } };
+    assert.deepEqual(tool.parameters.properties.reasoningEffort, {
+      type: "string",
+      description: "Optional compaction reasoning effort explicitly supplied by the user.",
+    });
+    assert.deepEqual(tool.output.schema.properties.target.properties.reasoningEffort, { type: "string" });
     const childTool = createCompactionConfigTool(configPath, { isChild: () => true });
     assert.throws(
       () => childTool.execute({ action: "set", provider: "openai", model: "gpt-5.6-luna" }, execution),
@@ -161,7 +179,12 @@ test("compaction model store is atomic, repairable, locked, resettable, and chil
       requiresNextCompaction: false,
     });
     assert.throws(() => tool.execute({ action: "show", provider: "openai" }, execution), /must be omitted for show/u);
+    assert.throws(() => tool.execute({ action: "show", reasoningEffort: "high" }, execution), /must be omitted for show/u);
     assert.throws(() => tool.execute({ action: "set", provider: "openai" }, execution), /\.model must be a non-empty string/u);
+    assert.throws(
+      () => tool.execute({ action: "set", provider: "openai", model: "luna", reasoningEffort: "" }, execution),
+      /\.reasoningEffort must be a non-empty string/u,
+    );
     assert.throws(() => tool.execute({ action: "remove", model: "luna" }, execution), /must be omitted for remove/u);
 
     const configured = await tool.execute({ action: "set", provider: " openai ", model: " gpt-5.6-luna " }, execution);
@@ -180,6 +203,28 @@ test("compaction model store is atomic, repairable, locked, resettable, and chil
       action: "set",
       target: { provider: "openai", model: "gpt-5.6-luna" },
     });
+
+    const configuredWithReasoning = await tool.execute({
+      action: "set",
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      reasoningEffort: " high ",
+    }, execution);
+    assert.deepEqual(configuredWithReasoning.target, {
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "high",
+    });
+    assert.deepEqual(readCompactionModelStore(configPath).target, configuredWithReasoning.target);
+    assert.deepEqual(events.at(-1).target, configuredWithReasoning.target);
+
+    const clearedReasoning = await tool.execute({
+      action: "set",
+      provider: "openai",
+      model: "gpt-5.6-luna",
+    }, execution);
+    assert.deepEqual(clearedReasoning.target, { provider: "openai", model: "gpt-5.6-luna" });
+    assert.deepEqual(readCompactionModelStore(configPath).target, clearedReasoning.target);
 
     const release = acquireOwnedStoreLock(configPath, "Odai compaction model configuration");
     assert.throws(

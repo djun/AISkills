@@ -340,6 +340,29 @@ test("managed compaction target overrides only summaries and restores inheritanc
     provider: "openai",
     model: "gpt-5.6-luna",
   });
+  await tool.execute({
+    action: "set",
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "high",
+  }, { agent: controller });
+  const explicitlyReasoned = {
+    purpose: "compaction",
+    sessionId: "managed-compaction",
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "xhigh",
+    messages: [{ id: "explicit-reasoning-stock", role: "user", content: [] }],
+  };
+  assert.equal(await stream(explicitlyReasoned, async () => "next"), "next");
+  assert.equal(explicitlyReasoned.model, "gpt-5.6-luna");
+  assert.equal(explicitlyReasoned.reasoningEffort, "high");
+  assert.equal(explicitlyReasoned.messages.length, 2);
+  assert.deepEqual((await tool.execute({ action: "show" }, { agent: controller })).target, {
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "high",
+  });
   await tool.execute({ action: "remove" }, { agent: controller });
 
   const inherited = {
