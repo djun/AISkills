@@ -2,6 +2,13 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-17 — DSH 托管压缩模型与状态完整性
+
+- 发布 `odai-dsh-agent@0.0.8` 与 `odai-dsh-plugin@0.0.7`。新增共享的 `odai_compaction_config`：默认与移除均继承当前会话 provider/model，只有用户明确给出完整 provider/model 后才持久化独立摘要目标；配置仅影响未来 compaction summary，不改变普通请求、责任路由、摘要预算或缓存策略，也不为目标另选 reasoning effort。
+- 显式摘要目标获得一条 provider-neutral 状态完整性后缀，严格区分 current 与 superseded/rejected 历史、逐字保留续接所需的不透明值并在输出前检查矛盾；Agent 与 Plugin 共存时幂等去重。非法 store 可见并安全回退继承，set/remove 可保留坏文件后修复；目标、provider、截断或摘要失败仍在 DSH rc.6 提交替换历史前关闭。
+- 冻结的 210k-token Luna 因子实验中，stock 基线精确恢复 `10/12`；单独增加 `max` 为 `11/12`，与严格协议组合反降到 `10/12`，因此不增加 reasoning 配置。严格协议单因素及正式 runtime 确认均达到 `12/12`，盲审分别为 `4.0/4` 与 `3.875/4`、无关键矛盾；正式确认的摘要加首条续接成本约 `$0.182056`，相对冻结 Sol 基线 `$0.685985` 低约 `73.5%`。该结果验证完整性协议，不把任何具体模型设为默认或静默推荐。
+- compaction cache retention 默认恢复为 `provider-default`，不再强制 `long`；显式 incoming/config/environment 值仍按既有优先级生效。Plugin/runtime、Agent、真实 DSH load 与两份 npm dry-run artifact 均纳入放行验证，DSH 事务顺序在升级固定 rc.6 时必须复核。
+
 ## 2026-08-16 — DSH 输出模式与缓存成本
 
 - 发布 `odai-dsh-agent@0.0.7` 与 `odai-dsh-plugin@0.0.6`。两个包默认使用软精简输出，并提供正常、软精简、经济三种命名模式；经济模式默认发送可调的 `500` provider 输出 ceiling，用户可指定其他正整数。该 ceiling 不影响 child、compaction、checkpoint 或其他内部预算，provider 超限会从逐请求 usage 中显式报告。

@@ -79,6 +79,7 @@ test("config is strict at governance boundaries", () => {
   assert.throws(() => resolveConfig({ governance: { skillConfigPath: "" } }), /skillConfigPath must be a non-empty string/u);
   assert.throws(() => resolveConfig({ output: { configPath: "" } }), /config\.output\.configPath must be a non-empty string/u);
   assert.throws(() => resolveConfig({ output: { concise: true } }), /config\.output has unknown fields: concise/u);
+  assert.throws(() => resolveConfig({ compaction: { configPath: "" } }), /config\.compaction\.configPath must be a non-empty string/u);
   assert.throws(() => resolveConfig({ compaction: { cacheRetention: "forever" } }), /provider-default, short, long, or none/u);
   assert.throws(() => resolveConfig({ compaction: { maxTokens: 500 } }), /config\.compaction has unknown fields: maxTokens/u);
 
@@ -91,7 +92,8 @@ test("config is strict at governance boundaries", () => {
   assert.equal(defaults.governance.skillSource, "bundled");
   assert.equal(defaults.governance.skillConfigPath, resolve(testDshHome, "odai/source.json"));
   assert.equal(defaults.output.configPath, resolve(testDshHome, "odai/output.json"));
-  assert.equal(defaults.compaction.cacheRetention, "long");
+  assert.equal(defaults.compaction.configPath, resolve(testDshHome, "odai/compaction.json"));
+  assert.equal(defaults.compaction.cacheRetention, "provider-default");
   assert.equal(resolveConfig({ compaction: { cacheRetention: "provider-default" } }).compaction.cacheRetention, "provider-default");
 
   const config = resolveConfig({
@@ -118,6 +120,8 @@ test("compaction cache retention honors config over the deployment environment",
     process.env.ODAI_COMPACTION_CACHE_RETENTION = "short";
     assert.equal(resolveConfig().compaction.cacheRetention, "short");
     assert.equal(resolveConfig({ compaction: { cacheRetention: "none" } }).compaction.cacheRetention, "none");
+    process.env.ODAI_COMPACTION_CACHE_RETENTION = "provider-default";
+    assert.equal(resolveConfig().compaction.cacheRetention, "provider-default");
     process.env.ODAI_COMPACTION_CACHE_RETENTION = "invalid";
     assert.throws(() => resolveConfig(), /provider-default, short, long, or none/u);
   } finally {
@@ -126,7 +130,7 @@ test("compaction cache retention honors config over the deployment environment",
   }
 });
 
-test("compaction inherits routed reasoning only for the exact current target", async () => {
+test("compaction inherits routed reasoning and applies configured retention for the exact target", async () => {
   const sessions = {
     get(sessionId) {
       if (sessionId !== "session-cache") return undefined;
@@ -151,7 +155,7 @@ test("compaction inherits routed reasoning only for the exact current target", a
   };
   assert.equal(inheritCompactionReasoning(eligible, sessions), true);
   assert.equal(eligible.reasoningEffort, "xhigh");
-  assert.equal(eligible.cacheRetention, "long");
+  assert.equal(eligible.cacheRetention, undefined);
 
   const providerDefault = {
     purpose: "compaction",
@@ -172,6 +176,18 @@ test("compaction inherits routed reasoning only for the exact current target", a
   };
   assert.equal(inheritCompactionReasoning(explicitRetention, sessions), true);
   assert.equal(explicitRetention.cacheRetention, "short");
+
+  const preselectedReasoning = { ...eligible, reasoningEffort: "medium" };
+  assert.equal(inheritCompactionReasoning(preselectedReasoning, sessions, "long"), true);
+  assert.equal(preselectedReasoning.reasoningEffort, "medium");
+  assert.equal(preselectedReasoning.cacheRetention, "long");
+
+  for (const configuredRetention of ["provider-default", "short", "long", "none"]) {
+    const preserved = { ...eligible, reasoningEffort: "medium", cacheRetention: "short" };
+    assert.equal(inheritCompactionReasoning(preserved, sessions, configuredRetention), false);
+    assert.equal(preserved.reasoningEffort, "medium");
+    assert.equal(preserved.cacheRetention, "short");
+  }
 
   const explicit = { ...eligible, reasoningEffort: "medium" };
   assert.equal(inheritCompactionReasoning(explicit, sessions), false);
@@ -196,7 +212,7 @@ test("compaction inherits routed reasoning only for the exact current target", a
   };
   assert.equal(await ctx.captured.handlers.get("llm/stream")(streamed, async () => "next"), "next");
   assert.equal(streamed.reasoningEffort, "xhigh");
-  assert.equal(streamed.cacheRetention, "long");
+  assert.equal(streamed.cacheRetention, undefined);
   assert.equal(streamed.maxTokens, undefined);
 
   const independentlyBudgetedCompaction = {
@@ -209,8 +225,32 @@ test("compaction inherits routed reasoning only for the exact current target", a
     "next",
   );
   assert.equal(independentlyBudgetedCompaction.reasoningEffort, "xhigh");
-  assert.equal(independentlyBudgetedCompaction.cacheRetention, "long");
+  assert.equal(independentlyBudgetedCompaction.cacheRetention, undefined);
   assert.equal(independentlyBudgetedCompaction.maxTokens, 8_192);
+
+  const configuredCtx = fakeContext({ sessions });
+  apply(configuredCtx, {
+    skillPath,
+    routing: { mode: "off" },
+    compaction: { cacheRetention: "long" },
+  });
+  const preRouted = {
+    purpose: "compaction",
+    sessionId: "session-cache",
+    provider: "openai",
+    model: "user-selected-model",
+    reasoningEffort: "medium",
+  };
+  assert.equal(await configuredCtx.captured.handlers.get("llm/stream")(preRouted, async () => "next"), "next");
+  assert.equal(preRouted.reasoningEffort, "medium");
+  assert.equal(preRouted.cacheRetention, "long");
+
+  const configuredButIncoming = { ...preRouted, cacheRetention: "short" };
+  assert.equal(
+    await configuredCtx.captured.handlers.get("llm/stream")(configuredButIncoming, async () => "next"),
+    "next",
+  );
+  assert.equal(configuredButIncoming.cacheRetention, "short");
 
   const independentlyBudgetedCheckpoint = {
     purpose: "checkpoint",
@@ -226,6 +266,107 @@ test("compaction inherits routed reasoning only for the exact current target", a
   assert.equal(independentlyBudgetedCheckpoint.reasoningEffort, undefined);
   assert.equal(independentlyBudgetedCheckpoint.cacheRetention, undefined);
   assert.equal(independentlyBudgetedCheckpoint.maxTokens, 8_192);
+});
+
+test("managed compaction target overrides only summaries and restores inheritance after removal", async () => {
+  const configPath = resolve(testDshHome, "managed-compaction-target", "compaction.json");
+  mkdirSync(resolve(testDshHome, "managed-compaction-target"), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify({
+    schemaVersion: 1,
+    target: { provider: "openai", model: "gpt-5.6-luna" },
+  })}\n`, "utf8");
+  const sessions = {
+    get(sessionId) {
+      if (sessionId !== "managed-compaction") return undefined;
+      return {
+        requestHeader() {
+          return { config: { provider: "openai", model: "gpt-5.6-sol", reasoningEffort: "xhigh" } };
+        },
+      };
+    },
+  };
+  const ctx = fakeContext({ sessions });
+  apply(ctx, {
+    skillPath,
+    routing: { mode: "off" },
+    compaction: { configPath },
+  });
+  const stream = ctx.captured.handlers.get("llm/stream");
+  const summary = {
+    purpose: "compaction",
+    sessionId: "managed-compaction",
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "xhigh",
+    maxTokens: 65_536,
+    messages: [{ id: "stock", role: "user", content: [{ type: "text", text: "stock compaction instruction" }] }],
+  };
+  assert.equal(await stream(summary, async () => "next"), "next");
+  assert.equal(summary.provider, "openai");
+  assert.equal(summary.model, "gpt-5.6-luna");
+  assert.equal(summary.reasoningEffort, undefined);
+  assert.equal(summary.maxTokens, 65_536);
+  assert.equal(summary.cacheRetention, undefined);
+  assert.equal(summary.messages.length, 2);
+  assert.deepEqual(summary.messages.at(-1).source, {
+    kind: "plugin",
+    plugin: "odai-dsh-runtime",
+    form: "instructions",
+  });
+  assert.match(summary.messages.at(-1).content[0].text, /SUPERSEDED.*REJECTED/iu);
+
+  const preTargetedSummary = {
+    purpose: "compaction",
+    sessionId: "managed-compaction",
+    provider: "openai",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "xhigh",
+    messages: [{ id: "pre-targeted-stock", role: "user", content: [] }],
+  };
+  assert.equal(await stream(preTargetedSummary, async () => "next"), "next");
+  assert.equal(preTargetedSummary.reasoningEffort, undefined);
+  assert.equal(preTargetedSummary.messages.length, 2);
+  assert.equal(preTargetedSummary.messages.at(-1).source.form, "instructions");
+  assert.equal(await stream(preTargetedSummary, async () => "next"), "next");
+  assert.equal(preTargetedSummary.messages.length, 2);
+
+  const ordinary = { provider: "openai", model: "gpt-5.6-sol" };
+  assert.equal(await stream(ordinary, async () => "next"), "next");
+  assert.deepEqual(ordinary, { provider: "openai", model: "gpt-5.6-sol" });
+
+  const tool = ctx.captured.tools.find((candidate) => candidate.name === "odai_compaction_config");
+  const controller = { session: { header: {}, append() {} } };
+  assert.deepEqual((await tool.execute({ action: "show" }, { agent: controller })).target, {
+    provider: "openai",
+    model: "gpt-5.6-luna",
+  });
+  await tool.execute({ action: "remove" }, { agent: controller });
+
+  const inherited = {
+    purpose: "compaction",
+    sessionId: "managed-compaction",
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    messages: [{ id: "inherit-stock", role: "user", content: [] }],
+  };
+  assert.equal(await stream(inherited, async () => "next"), "next");
+  assert.equal(inherited.model, "gpt-5.6-sol");
+  assert.equal(inherited.reasoningEffort, "xhigh");
+  assert.equal(inherited.messages.length, 1);
+
+  writeFileSync(configPath, "{broken\n", "utf8");
+  const fallback = {
+    purpose: "compaction",
+    sessionId: "managed-compaction",
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    messages: [{ id: "fallback-stock", role: "user", content: [] }],
+  };
+  assert.equal(await stream(fallback, async () => "next"), "next");
+  assert.equal(fallback.model, "gpt-5.6-sol");
+  assert.equal(fallback.reasoningEffort, "xhigh");
+  assert.equal(fallback.messages.length, 1);
+  assert.equal(ctx.captured.logs.some((message) => /compaction model configuration is invalid/iu.test(message)), true);
 });
 
 test("routing off ignores stale protection evidence", () => {
@@ -453,16 +594,19 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "observe" } });
 
-  assert.equal(ctx.captured.sections.length, 4);
+  assert.equal(ctx.captured.sections.length, 5);
   assert.match(ctx.captured.sections[0].text, /odai canonical governance/u);
   assert.match(ctx.captured.sections[0].text, /already loaded by this runtime; do not call the skill tool/u);
   assert.match(ctx.captured.sections[1].text, /naturally asks to inspect, set, change, or remove/u);
   assert.match(ctx.captured.sections[1].text, /Never infer, recommend as chosen, or silently select/u);
   assert.match(ctx.captured.sections[2].text, /explicitly asks to inspect, set, or reset that source/u);
   assert.equal(ctx.captured.sections[3].text, "");
+  assert.match(ctx.captured.sections[4].text, /compaction model configuration/u);
+  assert.match(ctx.captured.sections[4].text, /Never infer or silently choose/u);
   assert.equal(ctx.captured.tools[0].name, "odai_routing_config");
   assert.equal(ctx.captured.tools[1].name, "odai_skill_source_config");
   assert.equal(ctx.captured.tools[2].name, "odai_output_config");
+  assert.equal(ctx.captured.tools[3].name, "odai_compaction_config");
   assert.ok(ctx.captured.handlers.has("system-prompt/assemble"));
   assert.equal(ctx.captured.guards.length, 1);
   assert.ok(ctx.captured.handlers.has("tools/result"));

@@ -35,6 +35,14 @@ import {
   resolveOutputConfigPath,
 } from "./output-config.mjs";
 import { selectSharedOutputPolicyForTurn } from "./output-policy-state.mjs";
+import {
+  COMPACTION_CONFIG_PROMPT,
+  applyCompactionStateProtocol,
+  applyCompactionTarget,
+  createCompactionConfigTool,
+  effectiveCompactionTarget,
+  resolveCompactionConfigPath,
+} from "./compaction-config.mjs";
 import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
 import {
   SKILL_SOURCE_CONFIG_PROMPT,
@@ -86,12 +94,13 @@ export function resolveConfig(rawConfig = {}) {
   const skillSource = governance.skillSource ?? "bundled";
   const skillConfigPath = resolveSkillSourceConfigPath(governance.skillConfigPath);
   const outputConfigPath = resolveOutputConfigPath(output.configPath);
+  const compactionConfigPath = resolveCompactionConfigPath(compaction.configPath);
   const compactionCacheRetention = compaction.cacheRetention
     ?? process.env.ODAI_COMPACTION_CACHE_RETENTION
-    ?? "long";
+    ?? "provider-default";
   const unknownRoles = Object.keys(roles).filter((role) => !ROUTED_ROLES.includes(role));
   const unknownOutputFields = Object.keys(output).filter((field) => field !== "configPath");
-  const unknownCompactionFields = Object.keys(compaction).filter((field) => field !== "cacheRetention");
+  const unknownCompactionFields = Object.keys(compaction).filter((field) => !["cacheRetention", "configPath"].includes(field));
 
   if (!ROUTING_MODES.has(mode)) {
     throw new TypeError("config.routing.mode must be off, observe, auto, or execute");
@@ -143,13 +152,16 @@ export function resolveConfig(rawConfig = {}) {
       skillConfigPath,
     }),
     output: Object.freeze({ configPath: outputConfigPath }),
-    compaction: Object.freeze({ cacheRetention: compactionCacheRetention }),
+    compaction: Object.freeze({
+      cacheRetention: compactionCacheRetention,
+      configPath: compactionConfigPath,
+    }),
   });
 }
 
-export function inheritCompactionReasoning(options, sessions, cacheRetention = "long") {
+/** Mutate exact-route compaction options; returns true only when an option changed. */
+export function inheritCompactionReasoning(options, sessions, cacheRetention = "provider-default") {
   if (options?.purpose !== "compaction"
-    || options.reasoningEffort !== undefined
     || options.sessionId === undefined
     || !Object.isExtensible(options)) {
     return false;
@@ -163,11 +175,16 @@ export function inheritCompactionReasoning(options, sessions, cacheRetention = "
     return false;
   }
 
-  options.reasoningEffort = route.reasoningEffort;
+  let changed = false;
+  if (options.reasoningEffort === undefined) {
+    options.reasoningEffort = route.reasoningEffort;
+    changed = true;
+  }
   if (options.cacheRetention === undefined && cacheRetention !== "provider-default") {
     options.cacheRetention = cacheRetention;
+    changed = true;
   }
-  return true;
+  return changed;
 }
 
 export function resolveSkillPath(configuredPath, env = process.env) {
@@ -382,8 +399,21 @@ export function apply(ctx, rawConfig) {
     }
   };
   const hasSessionEvent = (agent, type, predicate) => evidence.has(agent, type, predicate);
+  const selectCompactionTarget = () => {
+    try {
+      return effectiveCompactionTarget(config.compaction.configPath);
+    } catch (error) {
+      logger.warn(`Odai compaction model configuration is invalid; inheriting the conversation route: ${error instanceof Error ? error.message : String(error)}`);
+      return Object.freeze({ source: "inherit", status: "fallback", reasonCode: "compaction-config-invalid" });
+    }
+  };
   ctx.on("llm/stream", (options, next) => {
-    inheritCompactionReasoning(options, ctx.sessions, config.compaction.cacheRetention);
+    if (options?.purpose === "compaction") {
+      const selection = selectCompactionTarget();
+      applyCompactionTarget(options, selection.target, ctx.sessions);
+      applyCompactionStateProtocol(options, selection.target);
+      inheritCompactionReasoning(options, ctx.sessions, config.compaction.cacheRetention);
+    }
     return next();
   });
   const skillPath = resolveSkillPath(config.skillPath);
@@ -423,6 +453,11 @@ export function apply(ctx, rawConfig) {
     name: "odai:controller-output-policy",
     order: -17,
     text: "",
+  });
+  ctx.systemPrompt.section({
+    name: "odai:compaction-model-configuration",
+    order: -16,
+    text: COMPACTION_CONFIG_PROMPT,
   });
 
   const optionalSkillRegistry = () => {
@@ -566,6 +601,12 @@ export function apply(ctx, rawConfig) {
     isChild: isSubagent,
     onConfigured(agent, data) {
       appendEvent(agent, "odai/output-configured", data);
+    },
+  }));
+  ctx.tools.register(createCompactionConfigTool(config.compaction.configPath, {
+    isChild: isSubagent,
+    onConfigured(agent, data) {
+      appendEvent(agent, "odai/compaction-configured", data);
     },
   }));
   ctx.tools.guard((execution) => childGuard(execution) ?? routeProtectionGuard(execution));

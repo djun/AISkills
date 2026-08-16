@@ -35,6 +35,7 @@ const protectedWritePath = resolve(scratch, "protected-controller-must-not-write
 const routingConfigPath = resolve(scratch, "home", "odai", "routing.json");
 const sourceConfigPath = resolve(scratch, "home", "odai", "source.json");
 const outputConfigPath = resolve(scratch, "home", "odai", "output.json");
+const compactionConfigPath = resolve(scratch, "home", "odai", "compaction.json");
 
 const yamlString = (value) => JSON.stringify(value);
 const wrapper = [
@@ -86,7 +87,13 @@ const wrapper = [
   `    const stored = JSON.parse(readFileSync(${JSON.stringify(outputConfigPath)}, 'utf8'));`,
   "    if (stored.policy?.concise !== true || stored.policy?.maxTokens !== 2500) throw new Error(`output config was not persisted: ${JSON.stringify(stored)}`);",
   "  });",
-  "  Promise.all([guardsReady, configProbe, sourceProbe, outputProbe]).then(() => {",
+  "  const compactionTool = ctx.tools.get('odai_compaction_config');",
+  "  if (!compactionTool) throw new Error('odai_compaction_config was not registered');",
+  "  const compactionProbe = compactionTool.execute({ action: 'set', provider: 'probe-provider', model: 'probe-summary' }, { agent: controller }).then(() => {",
+  `    const stored = JSON.parse(readFileSync(${JSON.stringify(compactionConfigPath)}, 'utf8'));`,
+  "    if (stored.target?.provider !== 'probe-provider' || stored.target?.model !== 'probe-summary') throw new Error(`compaction config was not persisted: ${JSON.stringify(stored)}`);",
+  "  });",
+  "  Promise.all([guardsReady, configProbe, sourceProbe, outputProbe, compactionProbe]).then(() => {",
   `    writeFileSync(${JSON.stringify(markerPath)}, 'loaded-guarded-and-configured\\n', 'utf8');`,
   "  }).catch((error) => process.stderr.write(`odai load probe: ${error.stack ?? error}\\n`));",
   "}",
