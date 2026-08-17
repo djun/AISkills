@@ -21,7 +21,7 @@ testInstallLifecycle();
 testStageRunnerDirect();
 testNoRetiredArchitecture();
 
-console.log("odai routing keeps one controller and uses planner, executor, or reviewer only where their independent responsibility can change the result.");
+console.log("odai routing keeps one controller and uses configured researcher, planner, executor, reviewer, or frontend only where that responsibility can change the result.");
 
 function testBuilds() {
   const root = temp("odai-routing-build-");
@@ -40,7 +40,31 @@ function testBuilds() {
     for (const role of roles.slice(1)) assert.ok(existsSync(path.join(autoRoot, ".codex", "agents", `odai-${role}.toml`)));
     for (const role of retired) assert.ok(!existsSync(path.join(autoRoot, ".codex", "agents", `odai-${role}.toml`)));
     assert.ok(existsSync(path.join(autoRoot, ".codex", "odai-run-role.mjs")));
+    assert.match(
+      readFileSync(path.join(autoRoot, ".codex", "config.toml"), "utf8"),
+      /任务列表、计划、状态更新、委派说明与回交也使用该语言/u,
+    );
     assert.ok(!existsSync(path.join(autoRoot, ".codex", "odai-run-provider-role.mjs")));
+    assert.equal(autoAdapter.routing_policy.researcher_activation, "unconfigured");
+    assert.equal(autoAdapter.routing_policy.frontend_activation, "unconfigured");
+    assert.ok(!existsSync(path.join(autoRoot, ".codex", "agents", "odai-researcher.toml")));
+    assert.ok(!existsSync(path.join(autoRoot, ".codex", "agents", "odai-frontend.toml")));
+
+    const codexResearcher = runNode(builder, [...buildArgs("codex", path.join(root, "codex-researcher"), "auto"), "--researcher-model", "researcher-model", "--researcher-effort", "low"]);
+    assert.equal(codexResearcher.status, 0, codexResearcher.stderr);
+    const codexResearcherRoot = path.join(root, "codex-researcher", "codex");
+    const codexResearcherAdapter = json(path.join(codexResearcherRoot, "ADAPTER.json"));
+    assert.equal(codexResearcherAdapter.mapping.researcher.model, "researcher-model");
+    assert.equal(codexResearcherAdapter.mapping.researcher.reasoning_effort, "low");
+    assert.ok(existsSync(path.join(codexResearcherRoot, ".codex", "agents", "odai-researcher.toml")));
+    assert.match(readFileSync(path.join(codexResearcherRoot, ".codex", "odai-run-role.mjs"), "utf8"), /args\.role === "researcher"/u);
+    assert.notEqual(runNode(builder, [...buildArgs("codex", path.join(root, "researcher-effort-only"), "auto"), "--researcher-effort", "low"]).status, 0);
+
+    const codexFrontend = runNode(builder, [...buildArgs("codex", path.join(root, "codex-frontend"), "auto"), "--frontend-model", "frontend-model", "--frontend-effort", "high"]);
+    assert.equal(codexFrontend.status, 0, codexFrontend.stderr);
+    const codexFrontendRoot = path.join(root, "codex-frontend", "codex");
+    assert.equal(json(path.join(codexFrontendRoot, "ADAPTER.json")).mapping.frontend.model, "frontend-model");
+    assert.ok(existsSync(path.join(codexFrontendRoot, ".codex", "agents", "odai-frontend.toml")));
 
     const stage = runNode(builder, buildArgs("codex", path.join(root, "stage"), "stage"));
     assert.equal(stage.status, 0, stage.stderr);
@@ -58,8 +82,25 @@ function testBuilds() {
       assert.deepEqual(Object.keys(adapter.mapping), roles);
       for (const role of roles) {
         const relative = host === "claude" ? `.claude/agents/odai-${role}.md` : `.github/agents/odai-${role}.agent.md`;
-        assert.ok(existsSync(path.join(root, host, host, relative)));
+        const profilePath = path.join(root, host, host, relative);
+        assert.ok(existsSync(profilePath));
+        if (role === "controller") {
+          assert.match(readFileSync(profilePath, "utf8"), /任务列表、计划、状态更新、委派说明与回交也使用该语言/u);
+        }
       }
+      const frontend = runNode(builder, [...buildArgs(host, path.join(root, `${host}-frontend`), "auto"), "--frontend-model", "frontend-model"]);
+      assert.equal(frontend.status, 0, frontend.stderr);
+      const frontendRoot = path.join(root, `${host}-frontend`, host);
+      assert.equal(json(path.join(frontendRoot, "ADAPTER.json")).mapping.frontend.model, "frontend-model");
+      const frontendRelative = host === "claude" ? ".claude/agents/odai-frontend.md" : ".github/agents/odai-frontend.agent.md";
+      assert.ok(existsSync(path.join(frontendRoot, frontendRelative)));
+      const researcher = runNode(builder, [...buildArgs(host, path.join(root, `${host}-researcher`), "auto"), "--researcher-model", "researcher-model"]);
+      assert.equal(researcher.status, 0, researcher.stderr);
+      const researcherRoot = path.join(root, `${host}-researcher`, host);
+      assert.equal(json(path.join(researcherRoot, "ADAPTER.json")).mapping.researcher.model, "researcher-model");
+      const researcherRelative = host === "claude" ? ".claude/agents/odai-researcher.md" : ".github/agents/odai-researcher.agent.md";
+      const researcherProfile = readFileSync(path.join(researcherRoot, researcherRelative), "utf8");
+      assert.match(researcherProfile, host === "claude" ? /permissionMode: plan/u : /tools: \["view", "glob", "grep"\]/u);
       const rejected = runNode(builder, buildArgs(host, path.join(root, `${host}-stage`), "stage"));
       assert.notEqual(rejected.status, 0);
     }
@@ -80,6 +121,15 @@ function testInstallLifecycle() {
     assert.deepEqual(Object.keys(manifest.mapping), roles);
     assert.ok(manifest.files["odai-run-role.mjs"]);
     assert.ok(!manifest.files["odai-run-provider-role.mjs"]);
+
+    const withResearcher = runNode(installer, [...installArgs(project, "auto"), "--researcher-model", "researcher-model", "--researcher-effort", "low"]);
+    assert.equal(withResearcher.status, 0, withResearcher.stderr);
+    assert.equal(json(manifestFile).mapping.researcher.model, "researcher-model");
+    assert.ok(existsSync(path.join(config, "agents", "odai-researcher.toml")));
+    const withoutResearcher = runNode(installer, installArgs(project, "auto"));
+    assert.equal(withoutResearcher.status, 0, withoutResearcher.stderr);
+    assert.equal(json(manifestFile).mapping.researcher, undefined);
+    assert.ok(!existsSync(path.join(config, "agents", "odai-researcher.toml")));
 
     const oldHooks = Buffer.from('{"hooks":{"PreToolUse":[]}}\n');
     const oldRouteHook = Buffer.from("// retired transparent route hook\n");
@@ -131,6 +181,19 @@ function testInstallLifecycle() {
     assert.equal(readFileSync(path.join(clean, ".codex", "hooks.json"), "utf8"), "{\"projectHook\":true}\n");
     assert.equal(readFileSync(path.join(clean, ".codex", "config.toml"), "utf8"), originalConfig);
   } finally { rmSync(clean, { recursive: true, force: true }); }
+
+  const optionalFrontend = temp("odai-routing-frontend-install-");
+  try {
+    const withFrontend = runNode(installer, [...installArgs(optionalFrontend, "auto"), "--frontend-model", "frontend-model", "--frontend-effort", "high"]);
+    assert.equal(withFrontend.status, 0, withFrontend.stderr);
+    const config = path.join(optionalFrontend, ".codex");
+    assert.equal(json(path.join(config, "odai-routing.json")).mapping.frontend.model, "frontend-model");
+    assert.ok(existsSync(path.join(config, "agents", "odai-frontend.toml")));
+    const withoutFrontend = runNode(installer, installArgs(optionalFrontend, "auto"));
+    assert.equal(withoutFrontend.status, 0, withoutFrontend.stderr);
+    assert.equal(json(path.join(config, "odai-routing.json")).mapping.frontend, undefined);
+    assert.ok(!existsSync(path.join(config, "agents", "odai-frontend.toml")));
+  } finally { rmSync(optionalFrontend, { recursive: true, force: true }); }
 
   for (const host of ["claude", "copilot"]) {
     const target = temp(`odai-routing-${host}-install-`);

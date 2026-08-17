@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "name": "odai",
-  "skillVersion": "0.1.1",
-  "runtimeContract": 1,
+  "skillVersion": "0.2.0",
+  "runtimeContract": 3,
   "requiredFiles": [
     "SKILL.md",
     "agents/openai.yaml",
@@ -13,7 +13,9 @@
     "assets/hooks-policy.example.json",
     "assets/routing-roles/controller.md",
     "assets/routing-roles/executor.md",
+    "assets/routing-roles/frontend.md",
     "assets/routing-roles/planner.md",
+    "assets/routing-roles/researcher.md",
     "assets/routing-roles/reviewer.md",
     "assets/task-state.md",
     "references/craft.md",

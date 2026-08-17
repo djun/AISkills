@@ -40,7 +40,7 @@ Existing installations stay pinned to `bundled`, the complete skill copy shipped
 - `auto`: check the current project's `.dsh/skills/odai` and `.agents/skills/odai`, then DSH custom skill roots, `$DSH_HOME/skills/odai`, and `$DSH_AGENTS_HOME/skills/odai` (default `~/.agents/skills/odai`), with bundled fallback. A valid compatible project/custom bundle may intentionally pin another version. A user-level bundle must be newer than bundled.
 - `user`: ignore project roots and require a compatible custom or user-level bundle. If none is usable, Odai keeps bundled governance visible with an explicit fallback diagnostic so the user can recover through the same tool.
 
-Every independently installed Odai skill must be a complete directory bundle with `SKILL.md`, `manifest.json`, and every file named by the manifest. The runtime requires a supported `runtimeContract`, uses SemVer 2.0.0 for `skillVersion`, hashes every declared file, rejects same-version/different-content conflicts, and continues past invalid candidates. A selected bundle supplies both the canonical prompt and planner/executor/reviewer role contracts as one immutable per-turn snapshot. Project choices are scoped by the session cwd, Plugin and Agent share one selection when deliberately combined, and a setting or skill update is reconsidered on the next user turn. Explicit deployment `skillPath` or `ODAI_SKILL_PATH` remains highest priority and requires a DSH restart.
+Every independently installed Odai skill must be a complete directory bundle with `SKILL.md`, `manifest.json`, and every file named by the manifest. The runtime requires a supported `runtimeContract`, uses SemVer 2.0.0 for `skillVersion`, hashes every declared file, rejects same-version/different-content conflicts, and continues past invalid candidates. A selected bundle supplies both the canonical prompt and researcher/planner/executor/reviewer/frontend role contracts as one immutable per-turn snapshot. Project choices are scoped by the session cwd, Plugin and Agent share one selection when deliberately combined, and a setting or skill update is reconsidered on the next user turn. Explicit deployment `skillPath` or `ODAI_SKILL_PATH` remains highest priority and requires a DSH restart.
 
 ## Controller output policy
 
@@ -66,18 +66,20 @@ A configured target affects only future compaction-summary requests. Controller 
 
 - `off`: disable task routing while retaining canonical governance, the child boundary, and user-requested responsibility configuration.
 - `observe`: calculate and record the route without changing model or starting a child. The controller receives a local responsibility protocol requiring decisive evidence, unresolved assumptions, concrete evidence-gathering steps, and explicit decision criteria. A high-impact gap additionally makes the controller read-only for that turn.
-- `auto` (default): ordinary work stays on the configured controller. A complete contextual high-impact decision gap upgrades that same controller turn when its planner mapping is configured, so there is one session and no child handoff. Explicit independent planning/review requests still use a child when that responsibility is configured because independence is the requested capability.
+- `auto` (default): ordinary work stays on the configured controller. A narrowly matched multi-source decision blocker may first use one configured read-only researcher child; a complete contextual high-impact decision gap then upgrades that same controller turn when its planner mapping is configured. A substantial interface-production gap can likewise upgrade the current turn through an explicit frontend mapping. Explicit independent planning/review requests still use a child when that responsibility is configured because independence is the requested capability.
 - `execute`: preserve the experimental delegation behavior for comparison or installations that explicitly require separation. Every planner/reviewer gap, including a contextual upgrade gap, calls the configured DSH subagent provider (`spawn` by default), verifies the child route, injects its result, and disposes the run.
 
-The package ships no planner, executor, or reviewer model mapping. Each responsibility is optional and configured independently only by an explicit user choice. There is no startup warning for an unused responsibility. When a real gap needs an unconfigured responsibility, Odai states which one is missing, confirms that no such model was called, and asks the user to name the provider, model, and optional reasoning effort naturally. For example:
+The package ships no researcher, planner, executor, reviewer, or frontend model mapping. Each responsibility is optional and configured independently only by an explicit user choice. There is no startup warning for an unused responsibility. When a real gap needs an unconfigured responsibility, Odai states which one is missing, confirms that no such model was called, and asks the user to name the provider, model, and optional reasoning effort naturally. For example:
 
 ```text
+证据调查用 provider-r/model-research，推理档 high。
 把规划模型设为 provider-x/model-plan，推理档设为 high。
 执行用 provider-x/model-y。
 验收模型改成 provider-z/model-review，推理档 max。
+前端制作用 provider-f/model-frontend，输出上限 4096。
 ```
 
-The controller translates that request into the `odai_routing_config` tool call. Users do not edit YAML or JSON, run an installation command, or add routing words to later task prompts. The tool stores the explicit choices in `$DSH_HOME/odai/routing.json`, outside managed package files, and Plugin and Agent installations read the same store. A changed mapping applies from the next user turn. The same tool can show current mappings or remove one when the user asks naturally. If reasoning effort is omitted, the target provider/model uses its own default; Odai does not silently carry a source controller's effort across providers or models.
+The controller translates that request into the `odai_routing_config` tool call. Researcher activation is task-gated but not price-aware: configuring it enables the narrow trigger and does not guarantee lower cost. The tool repeats that warning whenever a researcher mapping is shown, and Odai must compare authoritative provider prices with measured usage rather than inventing either. Users do not edit YAML or JSON, run an installation command, or add routing words to later task prompts. The tool stores the explicit choices in `$DSH_HOME/odai/routing.json`, outside managed package files, and Plugin and Agent installations read the same store. A changed mapping applies from the next user turn. The same tool can show current mappings or remove one when the user asks naturally. If reasoning effort is omitted, the target provider/model uses its own default; Odai does not silently carry a source controller's effort across providers or models.
 
 A user may also supply a positive child `maxTokens` limit; in-place controller upgrades retain the controller's normal output budget. For an in-place upgrade, the durable controller `request/header` is the actual route proof. For child delegation, the runtime verifies the child's durable header before injecting its output; a missing or mismatched provider, model, or reasoning effort makes the child result untrusted. A failed auto model request cannot fall back to the original controller model inside that turn. A failed high-impact child route makes the controller read-only instead of silently implementing without independent evidence; low-impact child failures may return to the controller without claiming delegated evidence.
 
@@ -105,9 +107,16 @@ npm --prefix dsh/plugin run smoke:live -- --yes
 # Use only a provider/model that the operator explicitly selects and can access.
 npm --prefix dsh/plugin run smoke:live -- --yes --mode auto \
   --planner-provider provider-id --planner-model model-id
+
+# Frontend auto mode also verifies the explicit role budget against a lower controller ceiling.
+npm --prefix dsh/plugin run smoke:live -- --yes --mode auto \
+  --controller-max-tokens controller-limit \
+  --frontend-provider provider-id --frontend-model model-id \
+  --frontend-reasoning effort --frontend-max-tokens frontend-limit \
+  --task "substantial interface task"
 ```
 
-The default smoke inherits `agent-default-model`, omits the routing block, and uses a natural high-impact decision gap. It requires one controller, zero children, a missing-planner event, read-only fail-closed protection, no false upgrade/result event, and the original controller `request/header`. Explicit `auto` and `execute` require `--planner-provider` plus `--planner-model`; the script has no built-in model name. `auto` requires a same-turn upgrade, `execute` requires one verified child, and `observe`/`off` require zero children with their mode-appropriate events.
+The default smoke inherits `agent-default-model`, omits the routing block, and uses a natural high-impact decision gap. It requires one controller, zero children, a missing-planner event, read-only fail-closed protection, no false upgrade/result event, and the original controller `request/header`. Explicit planner `auto` and `execute` require `--planner-provider` plus `--planner-model`; frontend `auto` requires `--frontend-provider` plus `--frontend-model`. The script has no built-in model name, reasoning effort, or token value. Planner `auto` requires a same-turn upgrade, `execute` requires one verified child, frontend `auto` additionally requires zero children plus matching request-header and budget-override evidence, and `observe`/`off` require zero children with their mode-appropriate events.
 
 An explicitly authorized cache probe compares the current relay's compaction request with and without the same routed reasoning setting. It inherits the controller route from DSH settings, uses an isolated temporary home, and removes copied credentials and sessions on exit. A diagnostic run may vary only the compaction output budget to determine whether the relay partitions its prompt cache by that field:
 

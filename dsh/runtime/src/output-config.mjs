@@ -144,7 +144,7 @@ export function renderOutputPolicyPrompt(policy) {
     ...(policy.maxTokens === undefined ? [] : [
       `Each controller model request carries a provider output ceiling request of ${policy.maxTokens} tokens, which may include reasoning. Provider enforcement is not guaranteed; prioritize completion and finish before the requested ceiling.`,
     ]),
-    "This policy applies only to controller requests and the final user-facing response. It never reduces child-agent, compaction, checkpoint, or other internal context budgets.",
+    "This policy applies only to controller requests and the final user-facing response. It never reduces child-agent, compaction, checkpoint, or other internal context budgets. A user-configured frontend responsibility maxTokens may explicitly override this ceiling only on a routed frontend controller turn; the runtime records that exception.",
     "The policy changes presentation and the requested controller budget only; it never permits omitting required results, evidence, risks, blockers, or verification.",
   ].join("\n");
 }

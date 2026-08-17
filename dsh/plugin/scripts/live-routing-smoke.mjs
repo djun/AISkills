@@ -58,6 +58,14 @@ try {
   if (existsSync(sourceCredentials)) {
     await copyFile(sourceCredentials, resolve(dshHome, ".credentials.yaml"));
   }
+  if (args.controllerMaxTokens !== undefined) {
+    const outputRoot = resolve(dshHome, "odai");
+    await mkdir(outputRoot, { recursive: true });
+    await writeFile(resolve(outputRoot, "output.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      policy: { concise: true, maxTokens: args.controllerMaxTokens },
+    }, null, 2)}\n`, "utf8");
+  }
   await writeFile(patchPath, renderPatch({
     pluginPath,
     skillPath,
@@ -65,6 +73,10 @@ try {
     plannerProvider: args.plannerProvider,
     plannerModel: args.plannerModel,
     plannerReasoning: args.plannerReasoning,
+    frontendProvider: args.frontendProvider,
+    frontendModel: args.frontendModel,
+    frontendReasoning: args.frontendReasoning,
+    frontendMaxTokens: args.frontendMaxTokens,
     mode: args.mode,
   }), "utf8");
 
@@ -97,11 +109,18 @@ try {
         provider: args.controllerProvider,
         model: args.controllerModel,
         reasoningEffort: args.controllerReasoning,
+        ...(args.controllerMaxTokens === undefined ? {} : { maxTokens: args.controllerMaxTokens }),
       },
       planner: args.plannerProvider === undefined ? null : {
         provider: args.plannerProvider,
         model: args.plannerModel,
         ...(args.plannerReasoning ? { reasoningEffort: args.plannerReasoning } : {}),
+      },
+      frontend: args.frontendProvider === undefined ? null : {
+        provider: args.frontendProvider,
+        model: args.frontendModel,
+        ...(args.frontendReasoning ? { reasoningEffort: args.frontendReasoning } : {}),
+        ...(args.frontendMaxTokens === undefined ? {} : { maxTokens: args.frontendMaxTokens }),
       },
     },
     verification,
@@ -123,9 +142,14 @@ function parseArgs(argv) {
     controllerProvider: undefined,
     controllerModel: undefined,
     controllerReasoning: undefined,
+    controllerMaxTokens: undefined,
     plannerProvider: undefined,
     plannerModel: undefined,
     plannerReasoning: undefined,
+    frontendProvider: undefined,
+    frontendModel: undefined,
+    frontendReasoning: undefined,
+    frontendMaxTokens: undefined,
     mode: "default",
     timeoutMs: 360_000,
     task: "checkout 老超时，我看就是支付方不稳定。把客户端超时降到 3 秒、重试次数提到 3，先止血。请先核对当前工作区证据，不要修改文件。",
@@ -139,9 +163,14 @@ function parseArgs(argv) {
     else if (arg === "--controller-provider") parsed.controllerProvider = argv[++index];
     else if (arg === "--controller-model") parsed.controllerModel = argv[++index];
     else if (arg === "--controller-reasoning") parsed.controllerReasoning = argv[++index];
+    else if (arg === "--controller-max-tokens") parsed.controllerMaxTokens = Number(argv[++index]);
     else if (arg === "--planner-provider") parsed.plannerProvider = argv[++index];
     else if (arg === "--planner-model") parsed.plannerModel = argv[++index];
     else if (arg === "--planner-reasoning") parsed.plannerReasoning = argv[++index];
+    else if (arg === "--frontend-provider") parsed.frontendProvider = argv[++index];
+    else if (arg === "--frontend-model") parsed.frontendModel = argv[++index];
+    else if (arg === "--frontend-reasoning") parsed.frontendReasoning = argv[++index];
+    else if (arg === "--frontend-max-tokens") parsed.frontendMaxTokens = Number(argv[++index]);
     else if (arg === "--mode") parsed.mode = argv[++index];
     else if (arg === "--timeout-ms") parsed.timeoutMs = Number(argv[++index]);
     else if (arg === "--task") parsed.task = argv[++index];
@@ -155,6 +184,9 @@ function parseArgs(argv) {
     "plannerProvider",
     "plannerModel",
     "plannerReasoning",
+    "frontendProvider",
+    "frontendModel",
+    "frontendReasoning",
   ]) {
     if (parsed[field] === undefined) continue;
     if (typeof parsed[field] !== "string" || parsed[field].trim() === "") {
@@ -178,27 +210,60 @@ function parseArgs(argv) {
   if ((parsed.plannerProvider === undefined) !== (parsed.plannerModel === undefined)) {
     throw new Error("planner provider and model must be supplied together");
   }
-  if (["auto", "execute"].includes(parsed.mode) && parsed.plannerProvider === undefined) {
-    throw new Error(`${parsed.mode} mode requires an explicit --planner-provider and --planner-model`);
+  if ((parsed.frontendProvider === undefined) !== (parsed.frontendModel === undefined)) {
+    throw new Error("frontend provider and model must be supplied together");
+  }
+  if (parsed.frontendProvider === undefined
+    && (parsed.frontendReasoning !== undefined || parsed.frontendMaxTokens !== undefined)) {
+    throw new Error("frontend reasoning and max tokens require a frontend provider and model");
+  }
+  if (parsed.plannerProvider !== undefined && parsed.frontendProvider !== undefined) {
+    throw new Error("configure only one routed responsibility per live smoke");
+  }
+  for (const field of ["controllerMaxTokens", "frontendMaxTokens"]) {
+    if (parsed[field] !== undefined && (!Number.isSafeInteger(parsed[field]) || parsed[field] < 1)) {
+      throw new Error(`${field} must be a positive integer`);
+    }
+  }
+  if (["auto", "execute"].includes(parsed.mode)
+    && parsed.plannerProvider === undefined
+    && parsed.frontendProvider === undefined) {
+    throw new Error(`${parsed.mode} mode requires an explicit planner or frontend provider and model`);
+  }
+  if (parsed.frontendProvider !== undefined && parsed.mode !== "auto") {
+    throw new Error("frontend live smoke currently requires --mode auto");
   }
   return parsed;
 }
 
 function renderPatch(input) {
   const quote = (value) => JSON.stringify(value);
-  const planner = input.plannerProvider === undefined ? [] : [
+  const role = input.frontendProvider !== undefined ? {
+    name: "frontend",
+    provider: input.frontendProvider,
+    model: input.frontendModel,
+    reasoningEffort: input.frontendReasoning,
+    maxTokens: input.frontendMaxTokens,
+  } : input.plannerProvider !== undefined ? {
+    name: "planner",
+    provider: input.plannerProvider,
+    model: input.plannerModel,
+    reasoningEffort: input.plannerReasoning,
+    maxTokens: 2_048,
+  } : undefined;
+  const roleMapping = role === undefined ? [] : [
     "          roles:",
-    "            planner:",
-    `              provider: ${quote(input.plannerProvider)}`,
-    `              model: ${quote(input.plannerModel)}`,
-    ...(input.plannerReasoning ? [`              reasoningEffort: ${quote(input.plannerReasoning)}`] : []),
-    "              maxTokens: 2048",
+    `            ${role.name}:`,
+    `              provider: ${quote(role.provider)}`,
+    `              model: ${quote(role.model)}`,
+    ...(role.reasoningEffort ? [`              reasoningEffort: ${quote(role.reasoningEffort)}`] : []),
+    ...(role.maxTokens === undefined ? [] : [`              maxTokens: ${role.maxTokens}`]),
   ];
   const routing = input.mode === "default" ? [] : [
     "        routing:",
     `          mode: ${input.mode}`,
     "          provider: spawn",
-    ...planner,
+    ...roleMapping,
   ];
   return [
     "- id: session-persistence-jsonl",
@@ -219,12 +284,19 @@ function renderPatch(input) {
 function verifySmoke(sessions, options) {
   const errors = [];
   const expectedMode = options.mode === "default" ? "auto-unconfigured" : options.mode;
+  const targetRole = options.frontendProvider === undefined ? "planner" : "frontend";
   const expectedRoute = ["auto", "execute"].includes(options.mode)
-    ? {
-        provider: options.plannerProvider,
-        model: options.plannerModel,
-        reasoningEffort: options.plannerReasoning,
-      }
+    ? targetRole === "frontend"
+      ? {
+          provider: options.frontendProvider,
+          model: options.frontendModel,
+          reasoningEffort: options.frontendReasoning,
+        }
+      : {
+          provider: options.plannerProvider,
+          model: options.plannerModel,
+          reasoningEffort: options.plannerReasoning,
+        }
     : {
         provider: options.controllerProvider,
         model: options.controllerModel,
@@ -238,6 +310,7 @@ function verifySmoke(sessions, options) {
   const upgrade = events.find((event) => event.type === "odai/route-upgrade");
   const result = events.find((event) => event.type === "odai/route-result");
   const protection = events.find((event) => event.type === "odai/route-protection");
+  const budgetOverride = events.find((event) => event.type === "odai/output-budget-overridden");
   const sameRoute = (route) => route?.provider === expectedRoute.provider
     && route?.model === expectedRoute.model
     && route?.reasoningEffort === expectedRoute.reasoningEffort;
@@ -280,17 +353,29 @@ function verifySmoke(sessions, options) {
     if (children.length !== 0) errors.push(`auto mode started ${children.length} child sessions`);
     if (decision?.data?.role !== "controller"
       || decision?.data?.action !== "upgrade"
-      || decision?.data?.targetRole !== "planner"
+      || decision?.data?.targetRole !== targetRole
       || decision?.data?.mode !== "auto") {
-      errors.push("auto mode did not record the expected controller-upgrade decision");
+      errors.push(`auto mode did not record the expected ${targetRole} controller-upgrade decision`);
     }
     if (upgrade?.data?.status !== "requested" || !sameRoute(upgrade?.data?.requestedRoute)) {
       errors.push("auto mode did not record the expected requested controller route");
     }
     if (!controllerRoute) {
-      errors.push("controller request/header did not match the configured planner route");
-    } else if (controllerRoute.maxTokens !== undefined) {
-      errors.push("in-place controller upgrade inherited the child maxTokens cap");
+      errors.push(`controller request/header did not match the configured ${targetRole} route`);
+    } else if (targetRole === "frontend") {
+      const expectedMaxTokens = options.frontendMaxTokens ?? options.controllerMaxTokens;
+      if (controllerRoute.maxTokens !== expectedMaxTokens) {
+        errors.push(`frontend request/header maxTokens was ${controllerRoute.maxTokens}, expected ${expectedMaxTokens}`);
+      }
+      if (options.frontendMaxTokens !== undefined && (
+        budgetOverride?.data?.responsibility !== "frontend"
+        || budgetOverride?.data?.configuredControllerMaxTokens !== options.controllerMaxTokens
+        || budgetOverride?.data?.effectiveMaxTokens !== options.frontendMaxTokens
+      )) {
+        errors.push("frontend budget override audit evidence was missing or mismatched");
+      }
+    } else if (controllerRoute.maxTokens !== options.controllerMaxTokens) {
+      errors.push(`planner in-place route maxTokens was ${controllerRoute.maxTokens}, expected ${options.controllerMaxTokens}`);
     }
   } else {
     if (children.length !== 1) errors.push(`execute mode expected one child session, found ${children.length}`);
@@ -310,7 +395,7 @@ function verifySmoke(sessions, options) {
     }
   }
 
-  return { ok: errors.length === 0, expectedMode, expectedRoute, errors };
+  return { ok: errors.length === 0, expectedMode, targetRole, expectedRoute, errors };
 }
 
 function runProcess(command, commandArgs, options) {
@@ -409,7 +494,7 @@ function summarizeSession(session) {
         maxTokens: config?.maxTokens,
       });
     }
-    if (["odai/route-decided", "odai/route-config-missing", "odai/route-upgrade", "odai/route-result", "odai/route-protection"].includes(event.type)) {
+    if (["odai/route-decided", "odai/route-config-missing", "odai/route-upgrade", "odai/route-result", "odai/route-protection", "odai/output-budget-overridden"].includes(event.type)) {
       routeEvents.push({ type: event.type, data: event.data });
     }
     if (event.type === "assistant/message") {

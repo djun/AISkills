@@ -32,6 +32,7 @@ export const DEFAULT_PROTECTED_CONTROLLER_ALLOWED_TOOLS = Object.freeze([
   "job_output",
   "job_list",
   "skill",
+  "odai_route_card",
 ]);
 
 export function isSubagent(agent) {

@@ -22,6 +22,8 @@ const ZSTD_MAGIC = 4247762216;
 const ODAI_EVENT_PREFIX = "odai/";
 const LEGACY_ODAI_AUDIT_EVENT_TYPES = new Set([
   "odai/governance-denied",
+  "odai/research-decided",
+  "odai/research-result",
   "odai/route-config-missing",
   "odai/route-decided",
   "odai/route-protection",

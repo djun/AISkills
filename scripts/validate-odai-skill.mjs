@@ -21,8 +21,10 @@ const allowedFiles = new Set([
   "assets/copilot-agents/agent.md",
   "assets/routing-roles/controller.md",
   "assets/routing-roles/planner.md",
+  "assets/routing-roles/researcher.md",
   "assets/routing-roles/executor.md",
   "assets/routing-roles/reviewer.md",
+  "assets/routing-roles/frontend.md",
   "assets/hooks-policy.example.json",
   "assets/task-state.md",
   "references/dao.md",
@@ -65,14 +67,14 @@ warnRepeatedRules();
 validateRibaoSkill();
 
 const entryTokenEstimate = estimateTokens(skillText);
-const markdownTokenEstimate = files
-  .filter((file) => file.endsWith(".md") && !/^assets\/(?:claude|copilot)-agents\//.test(file) && !/^assets\/routing-roles\//.test(file))
+const referenceTokenEstimate = files
+  .filter((file) => /^references\/.*\.md$/u.test(file))
+  .reduce((total, file) => total + estimateTokens(readFileSync(path.join(skillRoot, file), "utf8")), 0);
+const roleContractTokenEstimate = files
+  .filter((file) => /^assets\/routing-roles\/.*\.md$/u.test(file))
   .reduce((total, file) => total + estimateTokens(readFileSync(path.join(skillRoot, file), "utf8")), 0);
 if (entryTokenEstimate > 2500) {
   warn(`SKILL.md: entry estimate ${entryTokenEstimate} exceeds review threshold 2500`);
-}
-if (markdownTokenEstimate > 8000) {
-  warn(`skill markdown estimate ${markdownTokenEstimate} exceeds review threshold 8000`);
 }
 
 if (warnings.length > 0) {
@@ -88,7 +90,8 @@ if (failures.length > 0) {
   console.log(
     `odai skill ecosystem is valid (${files.length} odai files, ${listFiles(ribaoRoot).length} ribao files, ` +
     `${warnings.length} warnings, entry estimate ${entryTokenEstimate} tokens, ` +
-    `odai markdown estimate ${markdownTokenEstimate} tokens).`,
+    `on-demand references estimate ${referenceTokenEstimate} tokens, ` +
+    `role contracts estimate ${roleContractTokenEstimate} tokens).`,
   );
 }
 
@@ -152,17 +155,23 @@ function validateStructure() {
       ],
     },
     {
+      path: "assets/task-state.md",
+      headings: ["任务状态"],
+      anchors: ["用户当前主要语言"],
+    },
+    {
       path: "references/dao.md",
       headings: ["合作与决定", "目标、参考与写入", "高影响动作"],
     },
     {
       path: "references/craft.md",
-      headings: ["规划", "实施", "设计", "界面与实时交互", "写作与文档", "审查"],
+      headings: ["制作前定形", "实施", "设计", "界面与实时交互", "写作与文档", "审查"],
+      anchors: ["references/planning.md", "references/leverage.md"],
     },
     {
       path: "references/planning.md",
       headings: ["适用与授权", "事实基线", "计划缩放", "合同与工作包", "验证、状态与续作", "最小交付结构"],
-      anchors: ["assets/task-state.md"],
+      anchors: ["assets/task-state.md", "references/craft.md", "references/leverage.md"],
     },
     {
       path: "references/support.md",
@@ -171,7 +180,7 @@ function validateStructure() {
     },
     {
       path: "references/leverage.md",
-      headings: ["唯一总控与四责任", "宿主能力与降级", "安装宿主路由", "使用、安装与创建其他能力", "组合与下放"],
+      headings: ["唯一总控与六责任", "宿主能力与降级", "安装宿主路由", "使用、安装与创建其他能力", "组合与下放"],
     },
     {
       path: "references/verification.md",
@@ -205,10 +214,9 @@ function validateBehavior() {
         /使用最低充分能力/,
         /总控是持续持有[^。\n]*任务线程/,
         /能力足够就同一线程直接成事/,
-        /只有独立判断能改变路线时才请 planner/,
-        /决定冻结、实施有界且交接有净收益时才交 executor/,
-        /独立判断能改变放行结果时才请 reviewer/,
-        /不为角色齐全或模型更便宜启动分工/,
+        /只有当前能力不能可靠闭合、独立责任能改变结果且净收益覆盖交接成本时/,
+        /按真实缺口选择最低充分责任/,
+        /不为角色齐全、领域名称或模型更便宜启动分工/,
         /取不到所需能力[^。\n]*安全降级/,
         /只阻断依赖该能力的不可逆放行/,
         /不假装路由成功/,
@@ -236,6 +244,7 @@ function validateBehavior() {
         /“严格、完整、增强”提高证据、反证、保持项和验收强度/,
         /未读、未做、未跑、未验证或未调用都如实说明/,
         /明确要求须有结果或标明未决，不因内部取舍静默丢失/,
+        /任务列表、计划、状态更新、委派说明与回交默认使用用户当前主要语言/,
       ],
     },
     {
@@ -303,6 +312,7 @@ function validateBehavior() {
       label: "weak-model support",
       patterns: [
         /同一路线没有新证据却继续尝试/,
+        /计划、TODO、状态标题与内容使用用户当前主要语言/,
         /把下一步缩成能独立验证的动作/,
         /触发支撑的缺口已闭合[^。\n]*先撤掉对应额外结构再继续/,
         /极复杂或真实并行任务[^。\n]*稳定标识、依赖、负责人、范围、产物与验收/,
@@ -318,11 +328,18 @@ function validateBehavior() {
       label: "external leverage",
       patterns: [
         /odai 是唯一用户入口和最终交付 owner/,
-        /规划、执行与验收是可分离责任，不是必走阶段/,
+        /调查、规划、执行、前端制作与验收是可分离责任，不是必走阶段/,
+        /researcher[^。\n]*只补多源事实获取与原始上下文压缩缺口/,
+        /有界来源账本能直接补足该决定缺口/,
+        /单一权威来源、普通仓库查看、实现期调试[^。\n]*都不触发/,
+        /researcher 运行时只判任务适配，不感知模型价格/,
+        /映射只是用户显式启用窄触发，不证明或保证降本/,
         /planner[^。\n]*只补独立判断缺口/,
         /executor[^。\n]*决定已冻结、实施有界且可独立验证/,
         /reviewer[^。\n]*独立判断能改变尚未放行的具体属性/,
+        /frontend[^。\n]*不是领域资料包[^。\n]*不构成按数据库、安全等领域名称追加平行责任/,
         /agent 启动默认选择新鲜独立上下文/,
+        /任务标题、委派说明与回交都使用该语言/,
         /不得复制完整总控会话/,
         /宿主未暴露继承范围或用量时不使用 fork/,
         /高后果只提高证据、授权和验收强度，不自动制造角色调用/,
@@ -441,7 +458,7 @@ function validateRoutingSources() {
   const runnerFile = path.join(skillRoot, "scripts", "run-routing.mjs");
   const verifierFile = path.join(skillRoot, "scripts", "verify-routing.mjs");
   const harnessFile = path.join(repoRoot, "scripts", "odai-canary-harness.mjs");
-  const roleFiles = ["controller", "planner", "executor", "reviewer"]
+  const roleFiles = ["controller", "researcher", "planner", "executor", "reviewer", "frontend"]
     .map((role) => path.join(roleRoot, `${role}.md`));
   if (![configFile, codexRoleFile, claudeTemplateFile, copilotTemplateFile, ...roleFiles, builderFile, installerFile, roleRunnerFile, runnerFile, verifierFile].every(existsSync)) return;
 
@@ -458,12 +475,17 @@ function validateRoutingSources() {
     if (!codexRole.includes(fragment)) fail(`assets/codex-agents/role.toml: missing host wrapper field: ${fragment}`);
   }
   const roleSources = [
-    ["controller", readFileSync(roleFiles[0], "utf8"), ["唯一总控", "直接谋定、行动、验证和交付", "不为展示路由", "独立判断能改变路线", "实施有界且分离执行有可验净收益", "独立判断能改变放行结果", "实施失败但路线仍成立", "新鲜独立上下文与有界任务包", "不复制完整总控会话", "路线或验收设计失效", "已有决定性证据闭合所有要求时立即收口", "__ODAI_RUNTIME_VERIFICATION__"]],
-    ["planner", readFileSync(roleFiles[1], "utf8"), ["独立规划责任", "不预做实施", "当前上下文能可靠闭环", "mode: direct", "mode: planned", "target", "evidence", "scope", "decision", "execute: executor", "review: none", "accept", "stop", "steps", "增量重规划"]],
-    ["executor", readFileSync(roleFiles[2], "utf8"), ["唯一 executor", "只接收冻结方案与证据指针", "不重新盘点仓库", "不重新盘点仓库、论证目标或另选路线", "验证需求不自动授权改测试", "必要验证只运行一次", "新证据推翻决定、范围或验收", "<odai_closeout>", "不得自行批准最终交付"]],
-    ["reviewer", readFileSync(roleFiles[3], "utf8"), ["独立验收责任", "按验收缺口裁剪", "不得包含完整会话转储", "不调用工具", "不扫描工作目录", "不重跑已成功的确定性检查", "完整 `accept`", "`pass`、`fail` 或 `unresolved`", "route: execution", "route: planning", "route: user", "route: blocked", "不得制造额外流程"]],
+    ["controller", readFileSync(roleFiles[0], "utf8"), ["唯一总控", "任务列表、计划、状态更新、委派说明与回交", "直接谋定、行动、验证和交付", "不为展示路由", "独立判断能改变路线", "实施有界且分离执行有可验净收益", "独立判断能改变放行结果", "实施失败但路线仍成立", "新鲜独立上下文与有界任务包", "不复制完整总控会话", "路线或验收设计失效", "已有决定性证据闭合所有要求时立即收口", "__ODAI_RESEARCHER_ROLE__", "__ODAI_RUNTIME_VERIFICATION__"]],
+    ["researcher", readFileSync(roleFiles[1], "utf8"), ["researcher 证据获取责任", "会改变后续决定的具体事实问题", "单一权威来源", "只读", "精确来源指针", "相互冲突", "仍未知事项", "停止依据", "不得编辑、实施、选方案", "来源账本只是检索索引", "不宣称节省成本"]],
+    ["planner", readFileSync(roleFiles[2], "utf8"), ["独立规划责任", "不预做实施", "当前上下文能可靠闭环", "mode: direct", "mode: planned", "target", "evidence", "scope", "decision", "execute: executor", "review: none", "accept", "stop", "steps", "增量重规划", "researcher 来源账本"]],
+    ["executor", readFileSync(roleFiles[3], "utf8"), ["唯一 executor", "只接收冻结方案与证据指针", "不重新盘点仓库", "不重新盘点仓库、论证目标或另选路线", "验证需求不自动授权改测试", "必要验证只运行一次", "新证据推翻决定、范围或验收", "<odai_closeout>", "不得自行批准最终交付"]],
+    ["reviewer", readFileSync(roleFiles[4], "utf8"), ["独立验收责任", "按验收缺口裁剪", "不得包含完整会话转储", "不调用工具", "不扫描工作目录", "不重跑已成功的确定性检查", "完整 `accept`", "`pass`、`fail` 或 `unresolved`", "route: execution", "route: planning", "route: user", "route: blocked", "不得制造额外流程"]],
+    ["frontend", readFileSync(roleFiles[5], "utf8"), ["frontend 专业责任", "不是第二个总控", "允许与禁止范围", "总控或 planner", "当前任务线程", "有界独立上下文", "references/craft.md", "局部修复保持最小", "不写入本通用责任合同"]],
   ];
   for (const [label, text, fragments] of roleSources) {
+    if (!text.includes("跟随用户当前的主要语言")) {
+      fail(`assets/routing-roles/${label}.md: missing user-language contract`);
+    }
     for (const fragment of fragments) {
       if (!text.includes(fragment)) fail(`assets/routing-roles/${label}.md: missing routing contract: ${fragment}`);
     }
@@ -484,9 +506,9 @@ function validateRoutingSources() {
 
   const builder = readFileSync(builderFile, "utf8");
   for (const fragment of [
-    "--host", "--out", "--controller-model", "--planner-model", "--executor-model", "--reviewer-model",
-    "--verifier-command", "single-controller-conditional-routing", "single-controller-stage-routing",
-    "routing-roles", "roleBody", "codexAgentSections", "odai-planner", "odai-executor", "odai-reviewer", "ADAPTER.json", '"codex"', '"claude"', '"copilot"',
+    "--host", "--out", "--controller-model", "--researcher-model", "--planner-model", "--executor-model", "--reviewer-model", "--frontend-model",
+    "--verifier-command", "single-controller-conditional-routing", "single-controller-stage-routing", "Canonical 制作工艺",
+    "routing-roles", "roleBody", "codexAgentSections", "odai-researcher", "odai-planner", "odai-executor", "odai-reviewer", "odai-frontend", "ADAPTER.json", '"codex"', '"claude"', '"copilot"',
   ]) {
     if (!builder.includes(fragment)) fail(`scripts/build-routing.mjs: missing adapter behavior: ${fragment}`);
   }
@@ -495,12 +517,12 @@ function validateRoutingSources() {
   }
 
   const installer = readFileSync(installerFile, "utf8");
-  for (const fragment of ["--scope", "--target", "--uninstall", "--yes", "--controller-model", "--planner-model", "--executor-model", "--reviewer-model", "odai-routing.json", "odai-run-routing.mjs", "odai-run-role.mjs", "odai-verify-routing.mjs", "assertManagedState", "uninstall", "requiresNewSession", "settings.local.json", "目标已有非 odai 管理的配置", "拒绝删除"]) {
+  for (const fragment of ["--scope", "--target", "--uninstall", "--yes", "--controller-model", "--researcher-model", "--planner-model", "--executor-model", "--reviewer-model", "--frontend-model", "odai-routing.json", "odai-run-routing.mjs", "odai-run-role.mjs", "odai-verify-routing.mjs", "assertManagedState", "uninstall", "requiresNewSession", "settings.local.json", "目标已有非 odai 管理的配置", "拒绝删除"]) {
     if (!installer.includes(fragment)) fail(`scripts/install-routing.mjs: missing safe installation behavior: ${fragment}`);
   }
 
   const roleRunner = readFileSync(roleRunnerFile, "utf8");
-  for (const fragment of ["--role", "controller", "planner", "executor", "reviewer", "model_verified", "tool_evidence", "odai-routing.json", "reasoning_efforts", "requested"] ) {
+  for (const fragment of ["--role", "controller", "researcher", "planner", "executor", "reviewer", "frontend", "model_verified", "tool_evidence", "odai-routing.json", "reasoning_efforts", "requested"] ) {
     if (!roleRunner.includes(fragment)) fail(`scripts/run-role.mjs: missing role routing behavior: ${fragment}`);
   }
 
@@ -570,7 +592,7 @@ async function validateSkillManifest() {
   }
   if (manifest.schemaVersion !== 1) fail("manifest.json: schemaVersion must be 1");
   if (manifest.name !== "odai") fail("manifest.json: name must be odai");
-  if (manifest.runtimeContract !== 1) fail("manifest.json: runtimeContract must be 1");
+  if (manifest.runtimeContract !== 3) fail("manifest.json: runtimeContract must be 3");
   if (!Array.isArray(manifest.requiredFiles)) {
     fail("manifest.json: requiredFiles must be an array");
   } else {

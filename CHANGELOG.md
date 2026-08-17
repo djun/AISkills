@@ -2,6 +2,13 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-17 — DSH 可选证据压缩、前端升级与责任闭环
+
+- 发布 `odai-dsh-agent@0.0.10` 与 `odai-dsh-plugin@0.0.10`，两包从该版本起作为同一发布单元保持版本同步；内置 canonical skill 升为 `0.2.0`、runtime contract 升为 `3`。新增 researcher 与 frontend 可选责任，但二者默认均未映射，只有用户明确给出各自 provider/model 后才可用，不内置 Luna、Sol、K3、token 或推理档默认值。
+- Researcher 只在“未验证因果判断 + 具体高影响修改”的多源决定阻断中启动一个只读 child，不因风险、复杂、泛泛调查或模型便宜触发。回交 packet 必须包含至少两个仓库内来源及逐字摘录，并通过项目根、symlink、文件、行号、原文、实际 child route 与 digest 校验；缺配置、无效 packet、模型错配、provider 或清理失败均审计后安全直退，planner/controller 仍拥有决定与交付。
+- Planner 改为 same-turn 责任升级并接收有界上下文；冻结 route card 使 executor 自动续作首次可达，reviewer 只接受完整、可识别且未截断的不可变证据包。Frontend 在同 turn 使用用户显式映射并只为该责任覆盖输出 ceiling，窄修复与缺配置仍保持当前 controller。任务列表、计划、状态、委派说明和回交统一跟随用户当前主要语言。
+- 原生 C04 中，纯 Sol 与 Luna researcher + Sol same-turn planner/controller 均为 `4/4`；按 OpenAI Standard short-context 实际 usage，成本从约 `$0.239508` 降至 `$0.154871`，下降约 `35.34%`。C01/C05 均未触发 researcher；原生 C08 的用户显式 K3/max/`4096` frontend 映射在同 turn 达到 `4/4`，不成为默认模型或领域角色扩张依据。Provider 仍可能超过请求的 `500` ceiling，因此费用按实际 usage 计算，不把 ceiling 冒充硬限制。Plugin/Runtime `94/94`、Agent `11/11`、跨宿主路由、canonical 校验、三份 dry-run package、Agent/Plugin 共存及真实 DSH load 均通过。
+
 ## 2026-08-17 — DSH 托管压缩模型与状态完整性
 
 - 发布 `odai-dsh-agent@0.0.8` 与 `odai-dsh-plugin@0.0.7`。新增共享的 `odai_compaction_config`：默认与移除均继承当前会话 provider/model，只有用户明确给出完整 provider/model 后才持久化独立摘要目标；配置仅影响未来 compaction summary，不改变普通请求、责任路由、摘要预算或缓存策略，也不为目标另选 reasoning effort。

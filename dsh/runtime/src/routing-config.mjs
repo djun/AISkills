@@ -11,13 +11,14 @@ import {
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
-export const CONFIGURABLE_ROLES = Object.freeze(["planner", "executor", "reviewer"]);
+export const CONFIGURABLE_ROLES = Object.freeze(["researcher", "planner", "executor", "reviewer", "frontend"]);
 export const ROUTING_CONFIG_PROMPT = [
   "## Odai responsibility model configuration",
-  "When the user naturally asks to inspect, set, change, or remove the planning/planner, execution/executor, or review/acceptance/reviewer model, use odai_routing_config.",
+  "When the user naturally asks to inspect, set, change, or remove the research/investigation, planning/planner, execution/executor, review/acceptance/reviewer, or frontend design/implementation model, use odai_routing_config.",
   "Translate the user's natural responsibility wording into the tool's responsibility field. Do not require internal routing terms or a special prompt form.",
   "For set, call the tool only after the user explicitly supplies both provider and model. Pass reasoningEffort or maxTokens only when the user supplies them; otherwise omit them.",
-  "Never infer, recommend as chosen, or silently select any provider, model, effort, or token limit. Ask a concise clarification when provider or model is ambiguous.",
+  "Never infer, recommend as chosen, or silently select any provider, model, effort, token limit, or price. Ask a concise clarification when provider or model is ambiguous.",
+  "Researcher routing is task-gated but not price-aware. A researcher mapping enables the narrow trigger but does not guarantee lower cost; compare actual provider prices and measured usage without inventing either.",
   "Do not ask the user to edit YAML, JSON, managed Agent files, or Plugin configuration. The tool owns persistence. A set/remove change applies from the next user turn.",
   "Base controller selection remains host-owned and is not changed by this tool.",
 ].join("\n");
@@ -185,9 +186,10 @@ export function createRoutingConfigTool(configPath, options = {}) {
   return {
     name: "odai_routing_config",
     description: [
-      "Inspect, set, or remove Odai model mappings for planner, executor, and reviewer responsibilities.",
+      "Inspect, set, or remove Odai model mappings for researcher, planner, executor, reviewer, and frontend responsibilities.",
       "Use this only when the user naturally and explicitly asks to inspect/remove a mapping or names the provider/model to set.",
-      "Never choose a provider, model, reasoning effort, or token limit on the user's behalf.",
+      "Never choose a provider, model, reasoning effort, token limit, or price on the user's behalf.",
+      "Researcher routing is task-gated but not price-aware; its mapping does not guarantee lower cost.",
       "For set/remove, handle one responsibility per call. Persisted mappings are shared by the Odai DSH Plugin and Agent and apply from the next user turn.",
     ].join(" "),
     parameters: {
@@ -219,7 +221,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
         },
         maxTokens: {
           type: "integer",
-          description: "Optional positive child output limit explicitly supplied by the user.",
+          description: "Optional positive output limit explicitly supplied by the user. It limits routed child requests; on a routed frontend controller turn it instead explicitly overrides the global controller ceiling only for that turn. Other same-turn responsibility upgrades remain governed by the controller policy."
         },
       },
     },
@@ -256,6 +258,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
           text: [
             `${value.action === "show" ? "Current" : "Updated"} Odai routing configuration:\n${mapping}`,
             ...(value.recoveredInvalidStore ? ["\nAn invalid prior store was preserved and replaced."] : []),
+            ...(value.roles.researcher ? ["\nResearcher routing is task-gated but not price-aware. This mapping does not guarantee lower cost; compare actual provider prices and measured usage."] : []),
             ...(value.requiresNextTurn ? ["\nThe change applies from the next user turn."] : []),
           ].join(""),
         }];
@@ -274,7 +277,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
         return Promise.resolve(resultFor(configPath, "show", readRoutingStore(configPath).roles));
       }
       if (!CONFIGURABLE_ROLES.includes(args.responsibility)) {
-        throw new TypeError("responsibility must be planner, executor, or reviewer for set/remove");
+        throw new TypeError("responsibility must be researcher, planner, executor, reviewer, or frontend for set/remove");
       }
       const proposedRoute = args.action === "set" ? resolveRoleRoute({
         provider: args.provider,

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
-export const ODAI_RUNTIME_CONTRACT = 1;
+export const ODAI_RUNTIME_CONTRACT = 3;
 export const SKILL_MANIFEST_FILE = "manifest.json";
 export const SKILL_SOURCE_MODES = Object.freeze(["bundled", "auto", "user"]);
 
@@ -16,9 +16,11 @@ const MANIFEST_FIELDS = new Set([
 const REQUIRED_RUNTIME_FILES = Object.freeze([
   "SKILL.md",
   "assets/routing-roles/controller.md",
+  "assets/routing-roles/researcher.md",
   "assets/routing-roles/planner.md",
   "assets/routing-roles/executor.md",
   "assets/routing-roles/reviewer.md",
+  "assets/routing-roles/frontend.md",
 ]);
 const PROJECT_SOURCES = new Set(["project-dsh", "project-agents", "custom"]);
 const USER_SOURCES = new Set(["user-dsh", "user-agents"]);
@@ -199,11 +201,17 @@ export function loadSkillBundle(skillPath, options = {}) {
     throw new Error(`Odai canonical skill entry does not declare name odai: ${entryPath}`);
   }
 
-  const roleContracts = Object.freeze(Object.fromEntries(["controller", "planner", "executor", "reviewer"].map((role) => {
+  const roleContracts = Object.freeze(Object.fromEntries(["controller", "researcher", "planner", "executor", "reviewer", "frontend"].map((role) => {
     const relativePath = `assets/routing-roles/${role}.md`;
     const text = contents.get(relativePath).toString("utf8").trim();
     if (!text) throw new Error(`Odai canonical ${role} role is unavailable: ${resolve(root, relativePath)}`);
     return [role, text];
+  })));
+  const referenceContracts = Object.freeze(Object.fromEntries(["craft"].map((reference) => {
+    const relativePath = `references/${reference}.md`;
+    const text = contents.get(relativePath)?.toString("utf8").trim();
+    if (!text) throw new Error(`Odai canonical ${reference} reference is unavailable: ${resolve(root, relativePath)}`);
+    return [reference, text];
   })));
 
   return Object.freeze({
@@ -214,6 +222,7 @@ export function loadSkillBundle(skillPath, options = {}) {
     manifest,
     skillText,
     roleContracts,
+    referenceContracts,
     digest: digest.digest("hex"),
   });
 }

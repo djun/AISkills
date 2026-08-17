@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  decideResearchPrefetch,
   decideRoute,
   extractLatestUserText,
   extractRoutingText,
@@ -19,12 +20,37 @@ test("direct is the default even when risk is present", () => {
   assert.deepEqual(decision.signals, ["risk-present", "irreversible-action", "no-independent-gap"]);
 });
 
-test("explicit independent decision gap routes to planner", () => {
-  const decision = decideRoute({ text: "请独立规划一下这次架构选型，再给我建议" });
-  assert.equal(decision.role, "planner");
+test("research prefetch is narrow and independent from the primary route", () => {
+  const causal = "checkout 老超时，我看就是支付方不稳定。把客户端超时降到 3 秒、重试次数提到 3，先止血。";
+  const decision = decideResearchPrefetch({ text: causal });
+  assert.equal(decision.role, "researcher");
   assert.equal(decision.action, "delegate");
+  assert.equal(decision.reasonCode, "RESEARCHER_MULTI_SOURCE_DECISION_EVIDENCE");
+  assert.deepEqual(decision.signals, [
+    "decision-blocking-causal-claim",
+    "high-impact-change",
+    "bounded-evidence-compression",
+  ]);
+  assert.equal(decideRoute({ text: causal }).targetRole, "planner");
+
+  for (const text of [
+    "README 的安装命令是什么？",
+    "结合这三份材料，设计设置页保存体验。",
+    "这是一次高风险生产迁移，请帮我实现",
+    "把『先调查多个供应商』改成更短的按钮文案",
+    "先调查跨供应商的多个权威来源，只建立事实基线",
+  ]) {
+    assert.equal(decideResearchPrefetch({ text }).action, "direct", text);
+  }
+});
+
+test("explicit planning keeps the current turn and upgrades its responsibility", () => {
+  const decision = decideRoute({ text: "请独立规划一下这次架构选型，再给我建议" });
+  assert.equal(decision.role, "controller");
+  assert.equal(decision.action, "upgrade");
+  assert.equal(decision.targetRole, "planner");
   assert.equal(decision.reasonCode, "PLANNER_EXPLICIT_DECISION_GAP");
-  assert.equal(decideRoute({ text: "请替我独立决定是否删除生产数据" }).role, "planner");
+  assert.equal(decideRoute({ text: "请替我独立决定是否删除生产数据" }).targetRole, "planner");
 });
 
 test("quoted role language does not create an independent gap", () => {
@@ -152,16 +178,46 @@ test("contextual signals do not delegate unless the complete planner gap exists"
   }
 });
 
-test("executor requires a frozen route card and observable benefit", () => {
+test("executor requires a frozen card, observable benefit, and explicit continuation", () => {
   assert.equal(decideRoute({
     text: "请执行这个方案",
     routeCard: { frozen: true, observableBenefit: false },
-  }).role, "controller");
-
+  }).action, "direct");
   assert.equal(decideRoute({
-    text: "请执行这个方案",
+    text: "介绍一下刚才的方案",
     routeCard: { frozen: true, observableBenefit: true },
-  }).role, "executor");
+  }).action, "direct");
+
+  const decision = decideRoute({
+    text: "继续执行这个方案",
+    routeCard: { frozen: true, observableBenefit: true },
+  });
+  assert.equal(decision.role, "controller");
+  assert.equal(decision.action, "upgrade");
+  assert.equal(decision.targetRole, "executor");
+  assert.equal(decision.reasonCode, "EXECUTOR_FROZEN_ROUTE_NET_BENEFIT");
+});
+
+test("substantial frontend work upgrades in place while narrow fixes stay direct", () => {
+  const redesign = decideRoute({ text: "整体改版这个运维仪表盘，覆盖移动端和多状态，并用 Playwright 做浏览器验收。" });
+  assert.equal(redesign.role, "controller");
+  assert.equal(redesign.action, "upgrade");
+  assert.equal(redesign.targetRole, "frontend");
+  assert.equal(redesign.reasonCode, "FRONTEND_SUBSTANTIAL_INTERFACE_WORK");
+
+  const handoff = decideRoute({ text: "值班同学说这个运维台找事故太慢，给设计和前端一份能直接交接的改版说明，先别改代码。" });
+  assert.equal(handoff.action, "upgrade");
+  assert.equal(handoff.targetRole, "frontend");
+
+  for (const text of [
+    "修复这个组件的 padding。",
+    "题目选项一多，手机上文字就会换行错位，帮我把这个界面优化稳一点。",
+    "把按钮文案改成保存。",
+    "总结一下这个界面改版方案。",
+    "请把 README 中“整体改版这个网站”这句话缩短。",
+  ]) {
+    assert.equal(decideRoute({ text }).action, "direct", text);
+  }
 });
 
 test("latest genuine user text ignores plugin notices", () => {

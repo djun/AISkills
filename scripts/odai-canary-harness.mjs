@@ -3863,7 +3863,7 @@ function runCase(root, outRoot, schemaPath, testCase, args, skillFiles) {
       /skills[\\/]ribao[\\/]/i,
       /\.odai[\\/]local\.md/i,
       /ODAI_ROUTING_ACTIVE/,
-      /odai[_-](?:controller|planner|executor|reviewer)/i,
+      /odai[_-](?:controller|planner|executor|reviewer|frontend)/i,
       /事由人定，路由实证/,
       /成事而不妄为/,
     ].filter((pattern) => pattern.test(rawTranscript)).map((pattern) => pattern.source);

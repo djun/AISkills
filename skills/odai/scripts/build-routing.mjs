@@ -13,10 +13,11 @@ if (argv.includes("--help") || argv.includes("-h")) {
   console.log(`Usage:
   node skills/odai/scripts/build-routing.mjs --host <codex|claude|copilot> --out <directory> \\
     --controller-model <model> --planner-model <model> [--executor-model <model>] --reviewer-model <model> \\
-    [--planning-policy <auto|stage>] [--controller-effort <effort>] [--planner-effort <effort>] \\
-    [--executor-effort <effort>] [--reviewer-effort <effort>] [--verifier-command <command>]
+    [--researcher-model <model>] [--frontend-model <model>] [--planning-policy <auto|stage>] [--controller-effort <effort>] \\
+    [--researcher-effort <effort>] [--planner-effort <effort>] [--executor-effort <effort>] [--reviewer-effort <effort>] \\
+    [--frontend-effort <effort>] [--verifier-command <command>]
 
-生成 odai 的可选宿主路由适配器。auto 保留一个持续总控，只在独立规划、有界执行或独立验收能改变结果时调用相应责任。stage 仅生成从任务起点显式运行的 Codex 实验 runner，不注入每轮 Hook。这里不跨 provider 、不增加第二总控。`);
+生成 odai 的可选宿主路由适配器。auto 保留一个持续总控，只在多源证据压缩、独立规划、有界执行、独立验收或前端专业制作能改变结果时调用相应责任；researcher 与 frontend 映射默认不生成。stage 仅生成从任务起点显式运行的 Codex 实验 runner，不注入每轮 Hook。这里不跨 provider 、不增加第二总控。`);
   process.exit(0);
 }
 
@@ -25,28 +26,41 @@ const out = option("--out");
 const requestedPolicy = option("--planning-policy") || "auto";
 const models = {
   controller: option("--controller-model"),
+  researcher: option("--researcher-model"),
   planner: option("--planner-model"),
   executor: option("--executor-model") || option("--controller-model"),
   reviewer: option("--reviewer-model"),
+  frontend: option("--frontend-model"),
 };
 const efforts = {
   controller: option("--controller-effort"),
+  researcher: option("--researcher-effort"),
   planner: option("--planner-effort"),
   executor: option("--executor-effort") || option("--controller-effort"),
   reviewer: option("--reviewer-effort"),
+  frontend: option("--frontend-effort"),
 };
 const verifierCommand = option("--verifier-command") || "node .codex/odai-verify-routing.mjs";
-const roles = ["controller", "planner", "executor", "reviewer"];
+const requiredRoles = ["controller", "planner", "executor", "reviewer"];
+const roles = Object.freeze([
+  ...requiredRoles,
+  ...(models.researcher ? ["researcher"] : []),
+  ...(models.frontend ? ["frontend"] : []),
+]);
 const descriptions = {
   controller: "持续持有用户目标、全局状态、修正回路与最终交付。",
+  researcher: "只在多源决定证据压缩有实测收益时返回可追溯来源账本。",
   planner: "只在独立判断能改变路线时形成有界的证据化规划。",
   executor: "只按冻结方案实施，不重新解释请求、选路或批准交付。",
   reviewer: "只在独立判断能改变放行结果时依据真实证据验收。",
+  frontend: "只在界面设计或前端制作存在专业缺口时形成可验证成品。",
 };
 
 if (!new Set(["codex", "claude", "copilot"]).has(host)) throw new Error(`Unsupported routing host: ${host || "(missing)"}`);
 if (!out) throw new Error("--out requires a directory");
-for (const role of roles) if (!models[role]) throw new Error(`--${role}-model is required`);
+for (const role of requiredRoles) if (!models[role]) throw new Error(`--${role}-model is required`);
+if (efforts.researcher && !models.researcher) throw new Error("--researcher-effort requires --researcher-model");
+if (efforts.frontend && !models.frontend) throw new Error("--frontend-effort requires --frontend-model");
 if (!new Set(["auto", "stage"]).has(requestedPolicy)) throw new Error(`Unsupported --planning-policy: ${requestedPolicy}`);
 if (requestedPolicy === "stage" && host !== "codex") throw new Error("stage routing currently requires Codex");
 if (host === "copilot" && Object.values(efforts).some(Boolean)) {
@@ -75,9 +89,15 @@ const metadata = {
     requested_mode: requestedPolicy,
     controller_identity: "persistent-task-thread",
     controller_owns_final_delivery: true,
+    researcher_activation: models.researcher
+      ? "only-when-multi-source-decision-evidence-compression-has-measured-net-benefit"
+      : "unconfigured",
     planner_activation: "only-when-independent-judgment-can-change-route",
     executor_activation: "only-after-plan-is-frozen-and-handoff-has-net-value",
     reviewer_activation: "only-when-independent-judgment-can-change-release",
+    frontend_activation: models.frontend
+      ? "only-when-interface-design-or-production-needs-specialist-capability"
+      : "unconfigured",
     bounded_fresh_execution_context: policy === "stage",
     controller_reentry_on_failure: policy === "stage",
     sufficient_controller_defaults_to_single_pass: true,
@@ -130,7 +150,7 @@ function buildClaude(root) {
       __ODAI_ROLE_DESCRIPTION__: descriptions[role],
       __ODAI_ROLE_MODEL__: models[role],
       __ODAI_ROLE_EFFORT_LINE__: yamlEffortLine(efforts[role]),
-      __ODAI_PERMISSION_MODE__: role === "planner" || role === "reviewer" ? "plan" : "default",
+      __ODAI_PERMISSION_MODE__: ["researcher", "planner", "reviewer"].includes(role) ? "plan" : "default",
       __ODAI_TOOLS_LINE__: "",
       __ODAI_ROLE_BODY__: roleBody(role, "claude"),
     });
@@ -149,7 +169,9 @@ function buildCopilot(root) {
       __ODAI_ROLE_MODEL__: models[role],
       __ODAI_DISABLE_MODEL_INVOCATION__: role === "controller" ? "true" : "false",
       __ODAI_USER_INVOCABLE__: role === "controller" ? "true" : "false",
-      __ODAI_TOOLS__: role === "planner" || role === "reviewer" ? '["view", "glob", "grep", "shell"]' : '["*"]',
+      __ODAI_TOOLS__: role === "researcher"
+        ? '["view", "glob", "grep"]'
+        : ["planner", "reviewer"].includes(role) ? '["view", "glob", "grep", "shell"]' : '["*"]',
       __ODAI_ROLE_BODY__: roleBody(role, "copilot"),
     });
   }
@@ -164,25 +186,38 @@ function roleBody(role, hostName) {
   const source = path.join(skillRoot, "assets", "routing-roles", `${role}.md`);
   if (!existsSync(source)) throw new Error(`Missing canonical routing role body: ${source}`);
   const names = hostName === "codex"
-    ? { planner: "odai_planner", executor: "odai_executor", reviewer: "odai_reviewer" }
-    : { planner: "odai-planner", executor: "odai-executor", reviewer: "odai-reviewer" };
+    ? { researcher: "odai_researcher", planner: "odai_planner", executor: "odai_executor", reviewer: "odai_reviewer", frontend: "odai_frontend" }
+    : { researcher: "odai-researcher", planner: "odai-planner", executor: "odai-executor", reviewer: "odai-reviewer", frontend: "odai-frontend" };
   const rendered = renderText(readFileSync(source, "utf8"), {
     __ODAI_POLICY__: policy,
+    __ODAI_RESEARCHER_ROLE__: models.researcher ? names.researcher : "researcher（当前适配器未配置映射，不能调用）",
     __ODAI_PLANNER_ROLE__: names.planner,
     __ODAI_EXECUTOR_ROLE__: names.executor,
     __ODAI_REVIEWER_ROLE__: names.reviewer,
+    __ODAI_FRONTEND_ROLE__: models.frontend ? names.frontend : "frontend（当前适配器未配置映射，不能调用）",
     __ODAI_RUNTIME_VERIFICATION__: hostName === "codex"
       ? "实际路由必须用宿主返回的线程、角色、模型与用量证据核对，不从调用请求推断成功。"
       : "只有宿主原生运行证据能识别实际角色与模型时，路由才算已核实。",
     __ODAI_HOST_NOTE__: hostName === "copilot" ? "Copilot Auto 会覆盖角色模型选择；需要区分角色时不使用 Auto。" : "",
   }, source);
-  if (hostName !== "codex") return rendered;
+  const craft = role === "frontend"
+    ? readFileSync(path.join(skillRoot, "references", "craft.md"), "utf8").trim()
+    : "";
+  if (hostName !== "codex") {
+    return [rendered, ...(craft ? ["## Canonical 制作工艺", craft] : [])].join("\n\n");
+  }
   const canonical = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8")
     .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
   const responsibility = role === "controller"
     ? "你是唯一总控，持有完整目标、全局状态、修正回路与最终交付。"
     : `你只承担 ${role} 责任，不是第二个总控。`;
-  return `以下 canonical odai 是所有责任共享的内核；宿主角色契约只限制本责任，不得另建流程。${responsibility}\n\n${canonical}\n\n## 宿主角色契约\n\n${rendered}`;
+  return [
+    `以下 canonical odai 是所有责任共享的内核；宿主角色契约只限制本责任，不得另建流程。${responsibility}`,
+    canonical,
+    ...(craft ? ["## Canonical 制作工艺", craft] : []),
+    "## 宿主角色契约",
+    rendered,
+  ].join("\n\n");
 }
 
 function codexAgentSections() {

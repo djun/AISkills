@@ -106,9 +106,11 @@ function assemblyFor(ctx) {
 }
 
 test("bundle manifest validates complete content and full SemVer precedence", () => {
-  assert.equal(bundled.manifest.skillVersion, "0.1.1");
-  assert.equal(bundled.manifest.runtimeContract, 1);
-  assert.equal(bundled.manifest.requiredFiles.length, 25);
+  assert.equal(bundled.manifest.skillVersion, "0.2.0");
+  assert.equal(bundled.manifest.runtimeContract, 3);
+  assert.equal(bundled.manifest.requiredFiles.length, 27);
+  assert.match(bundled.roleContracts.researcher, /来源账本只是检索索引/u);
+  assert.match(bundled.referenceContracts.craft, /通用制作工艺/u);
   assert.match(bundled.digest, /^[a-f0-9]{64}$/u);
   assert.equal(compareSkillVersions("1.0.0-alpha.2", "1.0.0-alpha.10"), -1);
   assert.equal(compareSkillVersions("1.0.0+build.1", "1.0.0+build.2"), 0);
@@ -117,7 +119,7 @@ test("bundle manifest validates complete content and full SemVer precedence", ()
 
   const scratch = fixtureRoot("bundle-conflict");
   try {
-    const conflicting = loadSkillBundle(installBundle(resolve(scratch, "odai"), "0.1.1", "CONFLICT"), {
+    const conflicting = loadSkillBundle(installBundle(resolve(scratch, "odai"), "0.2.0", "CONFLICT"), {
       source: "user-dsh",
     });
     const selection = chooseSkillBundle({ mode: "auto", bundled, candidate: conflicting });
@@ -149,7 +151,7 @@ test("auto source keeps project pins scoped and selects newer user installs else
     mkdirSync(resolve(projectA, ".git"), { recursive: true });
     mkdirSync(resolve(projectB, ".git"), { recursive: true });
     installBundle(resolve(projectA, ".dsh/skills/odai"), "0.0.9", "PROJECT_A");
-    installBundle(resolve(dshHome, "skills/odai"), "0.2.0", "USER_DSH");
+    installBundle(resolve(dshHome, "skills/odai"), "0.4.0", "USER_DSH");
     const env = { DSH_HOME: dshHome, DSH_AGENTS_HOME: agentsHome };
 
     const projectSelection = await resolveSkillSelection({
@@ -169,7 +171,7 @@ test("auto source keeps project pins scoped and selects newer user installs else
       env,
     });
     assert.equal(userSelection.bundle.source, "user-dsh");
-    assert.equal(userSelection.bundle.manifest.skillVersion, "0.2.0");
+    assert.equal(userSelection.bundle.manifest.skillVersion, "0.4.0");
     assert.doesNotMatch(userSelection.bundle.skillText, /PROJECT_A/u);
 
     const forcedUser = await resolveSkillSelection({
@@ -192,10 +194,10 @@ test("invalid and conflicting candidates continue to the next compatible source"
     const dshHome = resolve(scratch, "dsh-home");
     const agentsHome = resolve(scratch, "agents-home");
     mkdirSync(resolve(project, ".git"), { recursive: true });
-    installBundle(resolve(project, ".dsh/skills/odai"), "0.3.0", "BROKEN_PROJECT");
+    installBundle(resolve(project, ".dsh/skills/odai"), "0.5.0", "BROKEN_PROJECT");
     rmSync(resolve(project, ".dsh/skills/odai/assets/routing-roles/reviewer.md"));
-    installBundle(resolve(dshHome, "skills/odai"), "0.1.1", "SAME_VERSION_CONFLICT");
-    installBundle(resolve(agentsHome, "skills/odai"), "0.2.0", "USER_AGENTS");
+    installBundle(resolve(dshHome, "skills/odai"), "0.2.0", "SAME_VERSION_CONFLICT");
+    installBundle(resolve(agentsHome, "skills/odai"), "0.4.0", "USER_AGENTS");
 
     const selection = await resolveSkillSelection({
       mode: "auto",
@@ -204,7 +206,7 @@ test("invalid and conflicting candidates continue to the next compatible source"
       env: { DSH_HOME: dshHome, DSH_AGENTS_HOME: agentsHome },
     });
     assert.equal(selection.bundle.source, "user-agents");
-    assert.equal(selection.bundle.manifest.skillVersion, "0.2.0");
+    assert.equal(selection.bundle.manifest.skillVersion, "0.4.0");
     assert.deepEqual(selection.rejections.map(({ source, reasonCode }) => [source, reasonCode]), [
       ["project-dsh", "external-invalid"],
       ["user-dsh", "same-version-content-conflict"],
@@ -383,6 +385,7 @@ test("runtime injects one project snapshot into both prompt and routed role cont
     apply(ctx, {
       governance: { skillSource: "auto", skillConfigPath: sourceConfigPath },
       routing: {
+        mode: "execute",
         roles: { planner: { provider: "fixture", model: "planner" } },
       },
     });

@@ -1,9 +1,14 @@
 export const HIGH_IMPACT_PLANNER_REASON = "PLANNER_UNVERIFIED_HIGH_IMPACT_CHANGE";
+export const RESEARCHER_EVIDENCE_REASON = "RESEARCHER_MULTI_SOURCE_DECISION_EVIDENCE";
+export const FRONTEND_SPECIALIST_REASON = "FRONTEND_SUBSTANTIAL_INTERFACE_WORK";
+export const EXECUTOR_ROUTE_CARD_REASON = "EXECUTOR_FROZEN_ROUTE_NET_BENEFIT";
 
 const RESPONSIBILITY_LABELS = Object.freeze({
+  researcher: "多源事实调查",
   planner: "规划",
   executor: "执行",
   reviewer: "验收",
+  frontend: "前端设计与制作",
 });
 
 const PLANNER_PATTERNS = [
@@ -70,6 +75,34 @@ const LOW_RISK_TRANSFORM_PATTERNS = [
   /\b(?:restate|summari[sz]e|translate|shorten|rewrite|format|explain)\b/iu,
 ];
 
+const EXECUTION_CONTINUATION_PATTERNS = [
+  /(?:继续|开始|执行|实施|落实|动手|按(?:照)?(?:方案|计划|卡片)|就按)/iu,
+  /\b(?:continue|proceed|execute|implement|apply|go ahead|follow the plan)\b/iu,
+];
+
+const FRONTEND_SCOPE_PATTERNS = [
+  /(?:前端|界面|页面|网页|网站|着陆页|应用界面|仪表盘|控制台|组件|交互界面|移动端|桌面端|游戏界面|3D场景)/iu,
+  /\b(?:front[- ]?end|ui|ux|interface|web(?:site| app)?|landing page|page|dashboard|component|mobile|desktop|game ui|3d scene)\b/iu,
+];
+const FRONTEND_DELIVERY_PATTERNS = [
+  /(?:设计|制作|实现|开发|构建|创建|搭建|改版|重做|重构|优化|美化|修复)/iu,
+  /\b(?:design|build|implement|develop|create|craft|redesign|revamp|rework|optimi[sz]e|fix)\b/iu,
+];
+const FRONTEND_STRONG_WORK_PATTERNS = [
+  /(?:从零|新建|新做|整页|整站|整体改版|完整界面|设计并实现|重新设计|重做|改版|搭建)/iu,
+  /\b(?:build|create|design and implement|redesign|revamp|rebuild)\b[^.!?\n]{0,60}\b(?:ui|interface|page|website|web app|dashboard|component|game)\b/iu,
+];
+const FRONTEND_EXPLICIT_SPECIALIST_PATTERNS = [
+  /(?:交给|使用|用)[^。！？\n]{0,30}(?:前端|UI|UX)(?:专长|专家|模型)/iu,
+  /\b(?:use|with|via)\b[^.!?\n]{0,30}\b(?:front[- ]?end|ui|ux) (?:specialist|expert|model)\b/iu,
+];
+const FRONTEND_AXIS_PATTERNS = Object.freeze({
+  responsive: [/(?:响应式|移动端|桌面端|多端|窄屏|宽屏|视口)/iu, /\b(?:responsive|mobile|desktop|viewport|breakpoint)\b/iu],
+  interaction: [/(?:交互|动效|动画|拖拽|手势|状态流转|多状态)/iu, /\b(?:interaction|animation|motion|drag|gesture|state flow|multiple states)\b/iu],
+  visual: [/(?:视觉|品牌|排版|配色|设计系统|素材|图片|图标|3D|游戏界面)/iu, /\b(?:visual|brand|typography|palette|design system|asset|image|icon|3d|game ui)\b/iu],
+  acceptance: [/(?:截图|浏览器验收|视觉验收|无障碍|Playwright|真机)/iu, /\b(?:screenshot|browser acceptance|visual acceptance|accessibility|playwright|device testing)\b/iu],
+});
+
 function matchesAny(text, patterns) {
   return patterns.some((pattern) => pattern.test(text));
 }
@@ -93,6 +126,24 @@ function hasContextualPlannerGap(text) {
 
 function isLowRiskTransform(text) {
   return matchesAny(stripQuotedMaterial(text), LOW_RISK_TRANSFORM_PATTERNS);
+}
+
+function frontendSpecializationSignals(text) {
+  const explicit = matchesAny(text, FRONTEND_EXPLICIT_SPECIALIST_PATTERNS);
+  const scope = matchesAny(text, FRONTEND_SCOPE_PATTERNS);
+  const delivery = matchesAny(text, FRONTEND_DELIVERY_PATTERNS);
+  const strongWork = matchesAny(text, FRONTEND_STRONG_WORK_PATTERNS);
+  const axes = Object.entries(FRONTEND_AXIS_PATTERNS)
+    .filter(([, patterns]) => matchesAny(text, patterns))
+    .map(([axis]) => axis);
+  return Object.freeze({
+    explicit,
+    scope,
+    delivery,
+    strongWork,
+    axes: Object.freeze(axes),
+    substantial: scope && delivery && (explicit || strongWork || axes.length >= 2),
+  });
 }
 
 function genuineUserText(message) {
@@ -136,6 +187,28 @@ function route(role, reasonCode, reason, signals, action = role === "controller"
   });
 }
 
+export function decideResearchPrefetch(input = {}) {
+  const text = typeof input.text === "string" ? input.text.trim() : "";
+  const explicitIntentText = stripQuotedMaterial(text);
+  if (!explicitIntentText || isLowRiskTransform(explicitIntentText)) {
+    return route("controller", "RESEARCHER_PREFETCH_NOT_NEEDED", "No separable multi-source evidence compression gap was found.", ["no-research-prefetch"]);
+  }
+  if (!hasContextualPlannerGap(explicitIntentText)) {
+    return route("controller", "RESEARCHER_PREFETCH_NOT_NEEDED", "No separable multi-source evidence compression gap was found.", ["no-research-prefetch"]);
+  }
+  const signals = [
+    "decision-blocking-causal-claim",
+    "high-impact-change",
+    "bounded-evidence-compression",
+  ];
+  return route(
+    "researcher",
+    RESEARCHER_EVIDENCE_REASON,
+    "A bounded read-only pass over multiple decisive sources can reduce downstream context while preserving provenance.",
+    signals,
+  );
+}
+
 /**
  * Choose the smallest useful odai role. Risk alone never creates another role.
  * Executor routing requires a frozen route card and observable net benefit;
@@ -151,6 +224,7 @@ export function decideRoute(input = {}) {
   const specificOperationalParameter = matchesAny(text, SPECIFIC_PARAMETER_PATTERNS);
   const urgencyPressure = matchesAny(text, URGENCY_PATTERNS);
   const irreversibleAction = matchesAny(text, IRREVERSIBLE_ACTION_PATTERNS);
+  const frontend = frontendSpecializationSignals(explicitIntentText);
 
   if (riskPresent) signals.push("risk-present");
   if (unverifiedCausalClaim) signals.push("unverified-causal-claim");
@@ -159,13 +233,17 @@ export function decideRoute(input = {}) {
   if (urgencyPressure) signals.push("urgency-pressure");
   if (irreversibleAction) signals.push("irreversible-action");
 
-  if (input.routeCard?.frozen === true && input.routeCard?.observableBenefit === true) {
-    signals.push("route-card-frozen", "observable-net-benefit");
+  if (input.routeCard?.frozen === true
+    && input.routeCard?.observableBenefit === true
+    && matchesAny(explicitIntentText, EXECUTION_CONTINUATION_PATTERNS)) {
+    signals.push("route-card-frozen", "observable-net-benefit", "explicit-execution-continuation");
     return route(
-      "executor",
-      "EXECUTOR_FROZEN_ROUTE_NET_BENEFIT",
-      "A frozen route card exists and executor delegation has an observable net benefit.",
+      "controller",
+      EXECUTOR_ROUTE_CARD_REASON,
+      "A frozen route card exists, executor separation has an observable net benefit, and the user explicitly continued implementation.",
       signals,
+      "upgrade",
+      "executor",
     );
   }
 
@@ -182,10 +260,12 @@ export function decideRoute(input = {}) {
   if (matchesAny(explicitIntentText, PLANNER_PATTERNS)) {
     signals.push("explicit-independent-decision-gap");
     return route(
-      "planner",
+      "controller",
       "PLANNER_EXPLICIT_DECISION_GAP",
-      "The request explicitly asks for an independent plan or architecture decision.",
+      "The request explicitly asks for a planning or architecture decision that needs the current controller context.",
       signals,
+      "upgrade",
+      "planner",
     );
   }
 
@@ -201,6 +281,24 @@ export function decideRoute(input = {}) {
       signals,
       "upgrade",
       "planner",
+    );
+  }
+
+  if (frontend.substantial && !isLowRiskTransform(explicitIntentText)) {
+    signals.push(
+      "frontend-interface-scope",
+      "frontend-delivery-request",
+      ...(frontend.explicit ? ["explicit-frontend-specialist"] : []),
+      ...(frontend.strongWork ? ["substantial-frontend-work"] : []),
+      ...frontend.axes.map((axis) => `frontend-${axis}`),
+    );
+    return route(
+      "controller",
+      FRONTEND_SPECIALIST_REASON,
+      "Substantial user-facing interface work can benefit from a configured frontend specialist without a child handoff.",
+      signals,
+      "upgrade",
+      "frontend",
     );
   }
 
@@ -271,7 +369,8 @@ function observeProtocol(decision) {
 
 export function renderRouteNotice(decision, runtimeMode, actualRoute) {
   const routeRole = decision.targetRole ?? decision.role;
-  const isUpgrade = decision.action === "upgrade" && runtimeMode === "auto";
+  const isUpgrade = decision.action === "upgrade"
+    && (runtimeMode === "auto" || ["executor", "frontend"].includes(routeRole));
   const action = isUpgrade
     ? "The current controller turn requested an in-place upgrade; no child was started."
     : runtimeMode === "observe"
@@ -319,12 +418,13 @@ export function renderMissingRouteConfigNotice(decision, runtimeMode, configFail
 }
 
 export function renderRouteFailureNotice(decision, failure) {
+  const routeRole = decision.targetRole ?? decision.role;
   if (!requiresFailClosedProtection(decision)) {
-    return `odai ${decision.role} route failed (${failure}); continue directly as controller and do not claim delegated evidence.`;
+    return `odai ${routeRole} route failed (${failure}); continue directly as controller and do not claim delegated evidence.`;
   }
 
   return [
-    `odai ${decision.role} route failed (${failure}); no independent evidence was obtained.`,
+    `odai ${routeRole} route failed (${failure}); no independent evidence was obtained.`,
     "High-impact fail-closed protection is active for this turn.",
     "Do not implement, persist, or publish the requested change. Use read-only evidence only.",
     "Ground the path in capabilities and evidence that actually exist. Treat unavailable environments, tools, owners, thresholds, and protections as missing conditions, not facts.",

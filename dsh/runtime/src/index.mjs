@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  decideResearchPrefetch,
   decideRoute,
   extractRoutingText,
   renderDelegationPrompt,
@@ -44,6 +45,14 @@ import {
   resolveCompactionConfigPath,
 } from "./compaction-config.mjs";
 import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
+import { ROUTE_CARD_PROMPT, activeRouteCard, createRouteCardTool } from "./route-card.mjs";
+import { buildRoleContextPacket, renderRoleContextPacket } from "./routing-context.mjs";
+import {
+  parseResearchPacket,
+  renderResearchPacket,
+  verifyResearchPacketSources,
+} from "./research-packet.mjs";
+import { dshRoleContract } from "./role-overlays.mjs";
 import {
   SKILL_SOURCE_CONFIG_PROMPT,
   createSkillSourceConfigTool,
@@ -240,6 +249,19 @@ function outputText(blocks) {
     .map((block) => block.text)
     .join("\n")
     .trim();
+}
+
+function renderResearchTaskContract(taskText) {
+  return [
+    "Decision-blocking factual question: Determine whether the user's causal claim is supported and which existing repository facts govern the safety of the requested high-impact change.",
+    "Allowed source scope: the current project root only. Use repository-relative paths and read-only source tools; do not inspect parent, sibling, user, or unrelated directories.",
+    "Authority and freshness: label each current-checkout source by its actual role (for example runtime configuration, implementation, test, incident record, or documentation). Do not invent an authority hierarchy; report unresolved conflicts and missing freshness evidence as unknowns.",
+    "Stop condition: return the smallest packet with 2-6 source-backed facts from at least two files, or stop with the missing evidence boundary. Do not select a route or continue after additional reading cannot change this factual question.",
+    "For every fact, excerpt must exactly equal the complete cited source line after trimming leading and trailing whitespace.",
+    "",
+    "Original user request:",
+    taskText,
+  ].join("\n");
 }
 
 function roleAgentOptions(roleRoute) {
@@ -445,6 +467,11 @@ export function apply(ctx, rawConfig) {
     text: ROUTING_CONFIG_PROMPT,
   });
   ctx.systemPrompt.section({
+    name: "odai:route-card",
+    order: -18.5,
+    text: ROUTE_CARD_PROMPT,
+  });
+  ctx.systemPrompt.section({
     name: "odai:skill-source-configuration",
     order: -18,
     text: SKILL_SOURCE_CONFIG_PROMPT,
@@ -587,6 +614,17 @@ export function apply(ctx, rawConfig) {
       appendEvent(agent, "odai/routing-configured", data);
     },
   }));
+  ctx.tools.register(createRouteCardTool({
+    activeFor(agent) {
+      return activeRouteCard(evidence.events(agent));
+    },
+    onFrozen(agent, card) {
+      appendEvent(agent, "odai/route-card-frozen", { card });
+    },
+    onCleared(agent, cardId) {
+      appendEvent(agent, "odai/route-card-cleared", { cardId });
+    },
+  }));
   ctx.tools.register(createSkillSourceConfigTool(
     config.governance.skillConfigPath,
     config.governance.skillSource,
@@ -623,11 +661,13 @@ export function apply(ctx, rawConfig) {
     const childRole = routedRoleOf(agent);
     const childRoleState = childRole ? configuredRole(childRole) : undefined;
     const upgrade = controllerUpgrades.get(agent);
+    const upgradeRole = upgrade && upgrade.turn === turn ? upgrade.role : undefined;
     const roleRoute = childRole
       ? childRoleState.route
-      : upgrade && upgrade.turn === turn
+      : upgradeRole
         ? upgrade.route
         : undefined;
+    const scopedFrontendMaxTokens = upgradeRole === "frontend" ? roleRoute?.maxTokens : undefined;
     let request = proposed;
     if (roleRoute) {
       const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = proposed;
@@ -636,13 +676,29 @@ export function apply(ctx, rawConfig) {
         provider: roleRoute.provider,
         model: roleRoute.model,
         ...(roleRoute.reasoningEffort === undefined ? {} : { reasoningEffort: roleRoute.reasoningEffort }),
-        ...(childRole && roleRoute.maxTokens !== undefined ? { maxTokens: roleRoute.maxTokens } : {}),
+        ...((childRole || scopedFrontendMaxTokens !== undefined) && roleRoute.maxTokens !== undefined
+          ? { maxTokens: roleRoute.maxTokens }
+          : {}),
       });
     }
     if (childRole || isSubagentSession(agent)) return request;
 
     const outputSelection = await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
     const configuredMaxTokens = outputSelection.policy.maxTokens;
+    if (scopedFrontendMaxTokens !== undefined) {
+      if (!hasSessionEvent(agent, "odai/output-budget-overridden", (data) => data?.turn === turn && data?.step === step)) {
+        appendEvent(agent, "odai/output-budget-overridden", {
+          turn,
+          ...(step === undefined ? {} : { step }),
+          responsibility: "frontend",
+          responsibilityMaxTokens: scopedFrontendMaxTokens,
+          ...(configuredMaxTokens === undefined ? {} : { configuredControllerMaxTokens: configuredMaxTokens }),
+          effectiveMaxTokens: scopedFrontendMaxTokens,
+          semantics: "explicit-responsibility-override",
+        });
+      }
+      return Object.freeze({ ...request, maxTokens: scopedFrontendMaxTokens });
+    }
     if (configuredMaxTokens === undefined) return request;
     const priorMaxTokens = request.maxTokens;
     const effectiveMaxTokens = priorMaxTokens === undefined
@@ -700,8 +756,124 @@ export function apply(ctx, rawConfig) {
       routed.add(routeKey);
 
       const taskText = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
-      const decision = decideRoute({ text: taskText });
-      const routeRole = decision.targetRole ?? decision.role;
+      let routedDownstream = downstream;
+      let researchPacketText = "";
+      const researchDecision = decideResearchPrefetch({ text: taskText });
+      if (researchDecision.action === "delegate") {
+        appendEvent(agent, "odai/research-decided", {
+          turn,
+          step,
+          role: "researcher",
+          action: "delegate",
+          mode: config.routing.mode,
+          reasonCode: researchDecision.reasonCode,
+          signals: researchDecision.signals,
+        }, logger);
+        if (config.routing.mode === "observe") {
+          appendEvent(agent, "odai/research-result", {
+            turn,
+            step,
+            role: "researcher",
+            status: "observed",
+            stopReason: "observe-mode",
+          }, logger);
+        } else {
+          const researchState = configuredRole("researcher");
+          const researchRoute = researchState.route;
+          if (!researchRoute) {
+            appendEvent(agent, "odai/research-result", {
+              turn,
+              step,
+              role: "researcher",
+              status: "fallback",
+              stopReason: researchState.error ? "route-config-invalid" : "route-config-missing",
+              ...(researchState.error ? { error: researchState.detail } : {}),
+            }, logger);
+          } else {
+            const researchBundle = sharedSkillSelection(agent, turn)?.bundle ?? bundled;
+            const researchContract = dshRoleContract(
+              "researcher",
+              researchBundle.roleContracts.researcher,
+              researchBundle.referenceContracts,
+            );
+            const result = ctx.subagents?.start
+              ? await runRoutedRole({
+                  subagents: ctx.subagents,
+                  provider: config.routing.provider,
+                  decision: researchDecision,
+                  taskText: renderResearchTaskContract(taskText),
+                  roleContract: researchContract,
+                  agent,
+                  signal,
+                  roleRoute: researchRoute,
+                })
+              : Object.freeze({
+                  status: "fallback",
+                  stopReason: "infrastructure-error",
+                  output: [],
+                  error: "dsh subagents service unavailable",
+                });
+            let packet;
+            let packetError;
+            if (result.status === "completed") {
+              try {
+                packet = verifyResearchPacketSources(
+                  parseResearchPacket(outputText(result.output)),
+                  agent?.session?.header?.cwd,
+                );
+              } catch (error) {
+                packetError = error instanceof Error ? error.message : String(error);
+              }
+            }
+            const completed = result.status === "completed" && packet !== undefined;
+            appendEvent(agent, "odai/research-result", {
+              turn,
+              step,
+              role: "researcher",
+              status: completed ? "completed" : "fallback",
+              stopReason: completed ? result.stopReason : (packetError ? "packet-invalid" : result.stopReason),
+              ...(result.actualRoute ? { actualRoute: result.actualRoute } : {}),
+              ...(packet ? { packetDigest: packet.digest, sourceCount: packet.sourceCount } : {}),
+              ...(packetError ? { error: packetError } : result.error ? { error: result.error } : {}),
+            }, logger);
+            if (completed) {
+              researchPacketText = renderResearchPacket(packet);
+              routedDownstream = {
+                ...downstream,
+                messages: [
+                  ...routedDownstream.messages,
+                  pluginMessage(
+                    researchPacketText,
+                    `odai completed researcher evidence compression (${packet.sourceCount} sources)`,
+                  ),
+                ],
+              };
+            }
+          }
+        }
+      }
+
+      const frozenCard = activeRouteCard(evidence.events(agent));
+      let decision = decideRoute({ text: taskText, routeCard: frozenCard });
+      let routeRole = decision.targetRole ?? decision.role;
+      const roleTaskText = researchPacketText ? `${taskText}\n\n${researchPacketText}` : taskText;
+      let roleContext = decision.action === "direct"
+        ? undefined
+        : buildRoleContextPacket(agent, routeRole, roleTaskText);
+      if (config.routing.mode === "auto"
+        && routeRole === "reviewer"
+        && decision.action === "delegate"
+        && !roleContext.sufficient) {
+        decision = Object.freeze({
+          ...decision,
+          role: "controller",
+          mode: "upgrade",
+          action: "upgrade",
+          targetRole: "reviewer",
+          signals: Object.freeze([...decision.signals, "review-evidence-packet-missing"]),
+        });
+        routeRole = "reviewer";
+      }
       appendEvent(agent, "odai/route-decided", {
         turn,
         step,
@@ -713,7 +885,7 @@ export function apply(ctx, rawConfig) {
         signals: decision.signals,
       }, logger);
 
-      if (decision.action === "direct") return downstream;
+      if (decision.action === "direct") return routedDownstream;
 
       if (config.routing.mode === "observe") {
         if (requiresFailClosedProtection(decision)) {
@@ -722,7 +894,7 @@ export function apply(ctx, rawConfig) {
         return {
           kind: "enter",
           messages: [
-            ...downstream.messages,
+            ...routedDownstream.messages,
             pluginMessage(
               renderRouteNotice(decision, "observe"),
               `odai observed ${routeRole} gap (${decision.reasonCode})`,
@@ -753,10 +925,11 @@ export function apply(ctx, rawConfig) {
             invalidConfig ? "route-config-invalid" : "route-config-missing",
           );
         }
+        if (routeRole === "frontend") return routedDownstream;
         return {
           kind: "enter",
           messages: [
-            ...downstream.messages,
+            ...routedDownstream.messages,
             pluginMessage(
               renderMissingRouteConfigNotice(decision, config.routing.mode, roleState.error),
               `odai ${routeRole} route is ${invalidConfig ? "invalid" : "not configured"}`,
@@ -765,8 +938,58 @@ export function apply(ctx, rawConfig) {
         };
       }
 
-      if (config.routing.mode === "auto" && decision.action === "upgrade") {
-        controllerUpgrades.set(agent, Object.freeze({ turn, route: roleRoute }));
+      const roleBundle = sharedSkillSelection(agent, turn)?.bundle ?? bundled;
+      const canonicalRoleContract = roleBundle.roleContracts[routeRole];
+      const roleContract = dshRoleContract(routeRole, canonicalRoleContract, roleBundle.referenceContracts);
+      roleContext ??= buildRoleContextPacket(agent, routeRole, taskText);
+      const inPlaceUpgrade = decision.action === "upgrade"
+        && (config.routing.mode === "auto" || ["executor", "frontend"].includes(routeRole));
+      const contextMode = inPlaceUpgrade ? "same-turn" : "bounded-packet";
+      appendEvent(agent, "odai/route-context", {
+        turn,
+        step,
+        role: routeRole,
+        mode: contextMode,
+        digest: roleContext.digest,
+        evidenceCount: roleContext.evidenceCount,
+        toolEvidenceCount: roleContext.toolEvidenceCount,
+        acceptanceCount: roleContext.coverage.acceptanceCount,
+        diffCount: roleContext.coverage.diffCount,
+        testCount: roleContext.coverage.testCount,
+        truncated: roleContext.truncated,
+        sufficient: roleContext.sufficient,
+      }, logger);
+
+      if (routeRole === "reviewer" && decision.action === "delegate" && !roleContext.sufficient) {
+        appendEvent(agent, "odai/route-result", {
+          turn,
+          step,
+          role: "reviewer",
+          action: "delegate",
+          status: "fallback",
+          stopReason: "evidence-packet-missing",
+          contextDigest: roleContext.digest,
+        }, logger);
+        return {
+          kind: "enter",
+          messages: [
+            ...routedDownstream.messages,
+            pluginMessage(
+              `odai reviewer child was not started because the bounded packet is incomplete (${JSON.stringify(roleContext.coverage)}). Gather requirements, acceptance conditions, actual diff, tests, and matching tool evidence first; do not claim independent acceptance.`,
+              "odai reviewer evidence packet is incomplete",
+            ),
+          ],
+        };
+      }
+
+      if (inPlaceUpgrade) {
+        if (["planner", "reviewer"].includes(routeRole)) {
+          protectController(agent, turn, step, decision, `same-turn-${routeRole}`);
+        }
+        if (routeRole === "executor" && frozenCard) {
+          appendEvent(agent, "odai/route-card-consumed", { cardId: frozenCard.id, turn, step });
+        }
+        controllerUpgrades.set(agent, Object.freeze({ turn, role: routeRole, route: roleRoute }));
         appendEvent(agent, "odai/route-upgrade", {
           turn,
           step,
@@ -774,13 +997,30 @@ export function apply(ctx, rawConfig) {
           targetRole: routeRole,
           status: "requested",
           requestedRoute: roleRoute,
+          contextDigest: roleContext.digest,
+          contextMode,
+          ...(routeRole === "reviewer" ? { independent: false } : {}),
         }, logger);
+        const contextBoundary = routeRole === "reviewer"
+          ? `The bounded packet is not independently reviewable (${JSON.stringify(roleContext.coverage)}). Perform a same-turn read-only check and do not claim independent acceptance.`
+          : "Retain the current controller conversation and workspace context; do not reconstruct it through a child handoff.";
         return {
           kind: "enter",
           messages: [
-            ...downstream.messages,
+            ...routedDownstream.messages,
             pluginMessage(
-              renderRouteNotice(decision, "auto", roleRoute),
+              [
+                renderRouteNotice(decision, config.routing.mode, roleRoute),
+                "",
+                `Context digest: sha256:${roleContext.digest}`,
+                contextBoundary,
+                "",
+                `${routeRole} responsibility contract:`,
+                roleContract,
+                ...(routeRole === "executor" && frozenCard
+                  ? ["", "Frozen route card:", JSON.stringify(frozenCard, null, 2)]
+                  : []),
+              ].join("\n"),
               `odai upgraded controller route (${decision.reasonCode})`,
             ),
           ],
@@ -795,8 +1035,8 @@ export function apply(ctx, rawConfig) {
             subagents: ctx.subagents,
             provider: config.routing.provider,
             decision: delegationDecision,
-            taskText,
-            roleContract: (sharedSkillSelection(agent, turn)?.bundle ?? bundled).roleContracts[routeRole],
+            taskText: renderRoleContextPacket(roleContext),
+            roleContract,
             agent,
             signal,
             roleRoute,
@@ -814,6 +1054,7 @@ export function apply(ctx, rawConfig) {
         action: "delegate",
         status: result.status,
         stopReason: result.stopReason,
+        contextDigest: roleContext.digest,
         ...(result.actualRoute ? { actualRoute: result.actualRoute } : {}),
         ...(result.error ? { error: result.error } : {}),
       }, logger);
@@ -824,9 +1065,9 @@ export function apply(ctx, rawConfig) {
         return {
           kind: "enter",
           messages: [
-            ...downstream.messages,
+            ...routedDownstream.messages,
             pluginMessage(
-              childText ? `${heading}\n\n${routeRole} output:\n${childText}` : heading,
+              childText ? `${heading}\ncontext digest: sha256:${roleContext.digest}\n\n${routeRole} output:\n${childText}` : heading,
               `odai completed ${routeRole} route`,
               result.output.filter((block) => block?.type !== "text"),
             ),
@@ -841,7 +1082,7 @@ export function apply(ctx, rawConfig) {
       return {
         kind: "enter",
         messages: [
-          ...downstream.messages,
+          ...routedDownstream.messages,
           pluginMessage(
             renderRouteFailureNotice(delegationDecision, failure),
             requiresFailClosedProtection(delegationDecision)

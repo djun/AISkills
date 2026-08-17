@@ -69,6 +69,8 @@ test("legacy plain and multi-frame Zstandard logs mark every known Odai audit ev
     const secondEventFrame = zstdCompressSync(Buffer.from([
       event("odai/route-upgrade", 3, { turn: 1, step: 1 }),
       event("odai/route-result", 4, { status: "completed" }),
+      event("odai/research-decided", 5, { role: "researcher" }),
+      event("odai/research-result", 6, { status: "completed" }),
       "",
     ].join("\n")), ZSTD_OPTIONS);
     writeFileSync(zstdPath, Buffer.concat([headerFrame, firstEventFrame, secondEventFrame]));
@@ -76,7 +78,7 @@ test("legacy plain and multi-frame Zstandard logs mark every known Odai audit ev
     const repaired = repairLegacySessionLogs({ dshHome: scratch, confirmDshStopped: true, processScanner: noDshProcesses });
     assert.equal(repaired.failures.length, 0);
     assert.equal(repaired.repairedArtifacts, 2);
-    assert.equal(repaired.repairedEvents, 8);
+    assert.equal(repaired.repairedEvents, 10);
     assert.equal(repaired.backupPaths.length, 2);
     assert.ok(repaired.backupPaths.every((path) => readFileSync(path).length > 0));
 
@@ -91,7 +93,7 @@ test("legacy plain and multi-frame Zstandard logs mark every known Odai audit ev
     const zstdEvents = frames.slice(1).flatMap((frame) => zstdDecompressSync(
       compressed.subarray(frame.start, frame.end),
     ).toString("utf8").trim().split("\n").map(JSON.parse));
-    assert.deepEqual(zstdEvents.map((record) => record.ignorable), [true, undefined, true, true, true]);
+    assert.deepEqual(zstdEvents.map((record) => record.ignorable), [true, undefined, true, true, true, true, true]);
 
     const repeated = repairLegacySessionLogs({ dshHome: scratch, confirmDshStopped: true, processScanner: noDshProcesses });
     assert.equal(repeated.failures.length, 0);

@@ -182,7 +182,7 @@ The internal structure is organized by responsibility, not by mandatory stages:
 | `support.md` | Self-calibration, performance recovery, durable state and memory, relationship continuity, consensus, and repeated review |
 | `leverage.md` | Capability escalation and delegation, external capability discovery, net-benefit decisions, installation, creation, composition, and agent collaboration |
 
-Domain depth is inferred from the task instead of selected as a package. Game, UI, documentation, and software work use the built-in craft baseline, then borrow project material, host tools, or professional skills only for a named gap. Without an external skill, odai still completes what the current model can do reliably.
+Domain depth is inferred from the task instead of selected as a package. Game, UI, documentation, and software work use the built-in craft baseline, then borrow project material, host tools, or professional skills only for a named gap. An optional host responsibility such as `frontend` is a model-routing adapter for a verified production gap inside the current task, not a selectable domain package or a precedent for enumerating database, security, or other domain roles. Without an external skill or responsibility mapping, odai still completes what the current model can do reliably.
 
 Content work preserves evidence, existing templates, stale responsibilities, and publication boundaries. Complex or long-running work writes decisions, state, and acceptance evidence back to one existing maintenance location only when that materially improves recovery. Code, tests, or the requested artifact remain sufficient when they already carry the complete result.
 

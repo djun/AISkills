@@ -14,11 +14,11 @@ process.on("uncaughtException", (error) => {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv.slice(2));
-const supportedRoles = new Set(["controller", "planner", "executor", "reviewer"]);
+const supportedRoles = new Set(["controller", "researcher", "planner", "executor", "reviewer", "frontend"]);
 
 if (args.help) {
   console.log(`Usage:
-  node .codex/odai-run-role.mjs --role <controller|planner|executor|reviewer> \\
+  node .codex/odai-run-role.mjs --role <controller|researcher|planner|executor|reviewer|frontend> \\
     [--input FILE] [--output FILE] [--evidence FILE] [--cwd PATH] [--manifest FILE] \\
     [--codex-bin FILE] [--sandbox MODE] [--session-id ID] [--planner-may-complete-direct] \\
     [--route-card | --closeout-ids A1,A2]
@@ -48,7 +48,7 @@ const started = Date.now();
 mkdirSync(path.dirname(outputFile), { recursive: true });
 
 try {
-  const readOnly = args.routeCard || args.role === "reviewer" || (args.role === "planner" && !args.plannerMayCompleteDirect);
+  const readOnly = args.routeCard || args.role === "researcher" || args.role === "reviewer" || (args.role === "planner" && !args.plannerMayCompleteDirect);
   const closeoutIds = parseCloseoutIds(args.closeoutIds);
   if (args.routeCard && closeoutIds.length > 0) fail("--route-card 与 --closeout-ids 不能同时使用");
   const schemaFile = args.routeCard
