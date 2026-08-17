@@ -70,16 +70,21 @@ Researcher 的运行时触发只判断任务是否匹配，不感知 provider �
 
 ### C04 researcher 证据压缩
 
-同一 canonical C04 使用原生 DSH source-plugin 路径。Researcher 实际 child route 为 OpenAI Luna/xhigh/`maxTokens: 500`，后续 controller route 为 OpenAI Sol/xhigh/`maxTokens: 500`；packet 从 3 个文件取得逐字来源，digest 为 `74a19c49820f3b24e11b42db73b03ba34b4683bab4ef7602a67cce7b14295283`。C01 与 C05 的负向样本均跳过 researcher，说明普通直接查询与复杂性本身不会触发。
+同一 canonical C04 使用原生 DSH source-plugin 路径，现有 4 份独立正式 researcher 样本。新增 3 轮都使用全新 fixture、runner session 和独立 Sol/high judge；Researcher 实际 child route 为 OpenAI Luna/xhigh/`maxTokens: 500`，后续 controller route 为 OpenAI Sol/xhigh/`maxTokens: 500`。4 轮 packet 都从 3 个文件取得逐字来源，digest 分别为 `74a19c49820f3b24e11b42db73b03ba34b4683bab4ef7602a67cce7b14295283`、`da0565669459ffb9fac6a232087588c8fd6eac935a54512e5e82cb61c4d62d12`、`3ec54f18f6d2d980298ba7c34c409b5daa64a4ff3beb5b1e1ee23e477f21068a`、`71c3c435208e935e9ae92b94be22b3118c2c4d21c831966449f05e551f5f1898`。C01 与 C05 的负向样本均跳过 researcher，说明普通直接查询与复杂性本身不会触发。
 
-按 [OpenAI Standard short-context 价格](https://developers.openai.com/api/docs/pricing)计算：Sol 每百万 input/cached/output 为 `$5.00/$0.50/$30.00`，Luna 为 `$0.20/$0.02/$1.20`。下表费用使用实际 provider usage，不使用请求 ceiling 估算。
+按 [OpenAI Standard short-context 价格](https://developers.openai.com/api/docs/pricing)计算：Sol 每百万 input/cached/output 为 `$5.00/$0.50/$30.00`，Luna 为 `$0.20/$0.02/$1.20`。下表费用只使用 runner 的实际 provider usage，不使用请求 ceiling 估算；新增 3 轮 judge 只报告 CLI 可见总 token，不把缺少 input/cached/output 分项的值冒充账单。
 
-| Treatment | 实际责任与模型 | 分数 | input / cached / output | 墙钟 | 实际 usage 成本 |
-|---|---|---:|---:|---:|---:|
-| 纯 Sol 基线 | Sol controller | **4/4** | 24,030 / 101,376 / 2,289 | 未记录 | `$0.239508` |
-| Researcher 路径 | Luna researcher + Sol controller | **4/4** | 43,101 / 119,296 / 3,910 | 约 87.6s | **`$0.154871`** |
+| 样本 | 实际责任与模型 | 分数 | input / cached / output | 墙钟 | runner 实际 usage 成本 | 独立 judge token |
+|---|---|---:|---:|---:|---:|---:|
+| 纯 Sol 基线 | Sol controller | **4/4** | 24,030 / 101,376 / 2,289 | 未记录 | `$0.239508` | 未记录 |
+| Researcher 初始样本 | Luna researcher + Sol controller | **4/4** | 43,101 / 119,296 / 3,910 | 约 87.6s | `$0.154871` | 未记录 |
+| Researcher 复跑 1 | Luna researcher + Sol controller | **4/4** | 41,895 / 68,608 / 4,445 | 约 98.5s | `$0.183011` | 27,458 |
+| Researcher 复跑 2 | Luna researcher + Sol controller | **4/4** | 44,962 / 155,136 / 3,314 | 约 86.0s | `$0.203505` | 27,467 |
+| Researcher 复跑 3 | Luna researcher + Sol controller | **4/4** | 55,841 / 65,536 / 3,880 | 约 88.2s | `$0.224032` | 27,700 |
 
-Researcher 路径中 Luna 部分为 24,457 / 87,552 / 2,714，约 `$0.009899`；Sol 后续为 18,644 / 31,744 / 1,196，约 `$0.144972`。相对纯 Sol 单样本节省约 `$0.084637`，即 `35.34%`。它增加了总处理 token 与一次顺序 child 延迟，只因本样本 Luna 三类单价均为 Sol 的 4% 才降低现金成本；provider 也实际超过了请求的 `500` ceiling，因此不宣称固定降幅、固定延迟或硬 token 上限。
+3 次复跑均通过 `odai-canary-isolation/v1` 的 runner/judge 双隔离，机械确认恰好一个 Luna child、Sol controller 实际 route header、3 源 packet、只读 `diff/status=0`，独立裁判均为高置信 `4/4` 且无严重违例。4 份 researcher 样本合计 usage 为 185,799 / 408,576 / 15,549，平均墙钟约 90.1s，runner 成本合计 `$0.765420`、均值 `$0.191355`；相对单份纯 Sol 基线，观察到的单轮降幅为 `6.46%–35.34%`，均值低 `20.11%`。但纯 Sol 基线仍只有一份，固定 C04 的 `n=4` 只支持 researcher 路由与质量稳定性，不建立通用或统计稳定的降本结论。新增 judge 合计报告 82,625 token，但 Codex CLI 未提供其 input/cached/output 分项，因此不能精确核算 judge 账单。
+
+Researcher 增加总处理 token 与一次顺序 child 延迟；现金成本只因这些样本中 Luna 三类单价均为 Sol 的 4% 而降低。4 轮 provider 都实际超过了请求的 `500` ceiling，因此不宣称固定降幅、固定延迟或硬 token 上限。
 
 ### C08 frontend 同 turn 升级
 
@@ -174,7 +179,7 @@ executor 分流真实发生且没有降低质量，但相对单 Sol 多用 59.4%
 ## 结论与限制
 
 1. 单一充分 controller 仍是普通任务默认；路由只补真实且已配置的责任缺口。
-2. Researcher 只在窄 C04 多源决定阻断中证明保持 4/4 并降低该样本现金成本；C01/C05 正确跳过，不建立通用调查流水线。
+2. Researcher 在固定 C04 的 4 份独立样本中均保持 4/4，并在这些 runner 上低于单份 Sol 基线成本；基线仍为 `n=1`，C01/C05 正确跳过，因此不建立通用调查流水线或稳定降本结论。
 3. 同 turn auto 在 C04 中移除了双 session 处理链，并保持 4/4；它不证明所有任务都更便宜或更稳定。
 4. execute 已在 Plugin 与 Agent 两个分发面证明真实 child 换模，但当前样本没有证明普遍质量或资源净收益。
 5. observe 的价值是诊断、证据协议和 fail-closed，不是独立判断的替代品；frontend 同样只在明确专业缺口和显式映射下升级。
