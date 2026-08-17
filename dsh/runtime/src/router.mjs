@@ -88,8 +88,8 @@ const ROUTE_CARD_REFERENCE_PATTERNS = [
   /\b(?:(?:this|that|the|above|previous)\s+(?:plan|proposal|route card|implementation|change)|(?:it|that))\b/iu,
 ];
 const NEW_TASK_PATTERNS = [
-  /(?:另一个|另一项|另一件|另外(?:一个|一项|一件)?|新(?:的)?(?:问题|任务|需求|工作))/iu,
-  /\b(?:another|a new|new task|new issue|different task|separate task)\b/iu,
+  /(?:另一个|另一项|另一件|另外(?:一个|一项|一件)|新(?:的)?(?:问题|任务|需求|工作))/iu,
+  /\b(?:another|(?:a )?new|different|separate)\s+(?:task|issue|problem|request|change|project)\b/iu,
 ];
 
 const FRONTEND_SCOPE_PATTERNS = [
