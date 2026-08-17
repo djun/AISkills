@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,21 +28,14 @@ const compatibilityPath = [
 if (!compatibilityPath) throw new Error("cannot locate the Odai session compatibility module");
 
 const { repairLegacySessionLogs } = await import(pathToFileURL(compatibilityPath).href);
-const { JsonlSessionPersistence } = await import(pathToFileURL(resolve(
-  dshRoot,
-  "node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
-)).href);
+const requireFromDsh = createRequire(resolve(dshRoot, "package.json"));
+const importDshPackage = async (name) => await import(pathToFileURL(requireFromDsh.resolve(name)).href);
+const { JsonlSessionPersistence } = await importDshPackage("@deepseek-ai/dsh-session-persistence-jsonl");
 const {
   PersistenceCoordinator,
   SessionFormatUnsupportedError,
-} = await import(pathToFileURL(resolve(
-  dshRoot,
-  "node_modules/@deepseek-ai/dsh-session-persistence/lib/index.js",
-)).href);
-const { resolveSessionPreset } = await import(pathToFileURL(resolve(
-  dshRoot,
-  "node_modules/@deepseek-ai/dsh-agent-presets/lib/index.js",
-)).href);
+} = await importDshPackage("@deepseek-ai/dsh-session-persistence");
+const { resolveSessionPreset } = await importDshPackage("@deepseek-ai/dsh-agent-presets");
 
 const scratch = mkdtempSync(resolve(tmpdir(), "odai-dsh-session-compat-"));
 const sessionRoot = resolve(scratch, "sessions");
@@ -176,15 +170,18 @@ function encodeLogFrame(events) {
 
 function findDshPackageRoot(command) {
   const locator = process.platform === "win32" ? "where" : "which";
-  const located = execFileSync(locator, [command], { encoding: "utf8" })
-    .trim()
-    .split(/\r?\n/u)
-    .filter(Boolean);
+  const located = existsSync(command)
+    ? [resolve(command)]
+    : execFileSync(locator, [command], { encoding: "utf8" })
+      .trim()
+      .split(/\r?\n/u)
+      .filter(Boolean);
   const candidates = new Set();
   for (const path of located) {
     const commandDir = dirname(realpathSync(path));
     candidates.add(commandDir);
     candidates.add(resolve(commandDir, "node_modules/@deepseek-ai/dsh"));
+    candidates.add(resolve(commandDir, "../@deepseek-ai/dsh"));
   }
   for (const candidate of candidates) {
     let current = candidate;

@@ -1,6 +1,6 @@
 {
   "name": "odai-dsh-agent",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "完整继承 DSH 标准模式 全部能力的 Odai Agent preset。主要用于治理、规划、测试、验证 等，可当成默认总控使用。",
   "license": "MIT",
   "repository": {
@@ -49,7 +49,7 @@
     "yaml": "^2.8.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "0.1.0-rc.6"
+    "@deepseek-ai/dsh": "0.1.0-rc.6 || 0.1.0-rc.7"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {

@@ -25,6 +25,7 @@
 - 不把没测试、没调用、没审查、没验证的事情说成已经做过
 - 按需组合专项技能和领域知识，而不是每一轮都塞满所有规则
 - 复用宿主或项目已有记忆，只固化有来源、范围与失效条件的长期信息
+- 对持续低落、自残或轻生倾向提前关怀和及时介入，不诊断、不贴标签、不因“还没有计划”而忽略，也不造成二次伤害
 
 ## odai 之道
 
@@ -87,13 +88,15 @@ dsh plugin --profile web add odai-dsh-plugin
 npx odai-dsh-agent install
 ```
 
-Plugin 安装命令要求 `pnpm` 已在 `PATH` 中；Agent 安装器当前严格要求 `dsh@0.1.0-rc.6`。两个包都已经包含 canonical Odai skill 与共享 DSH runtime，既有安装继续默认使用各自包内的 bundled skill。Agent 完整保留所固定 DSH Standard preset 的全部能力，再以 scoped 扩展叠加 Odai。Plugin 无需另装 skill 或 Agent；Agent 也无需另装 skill 或 Plugin。需要 profile-wide 行为就选 Plugin，需要可选择的专用 preset 就选 Agent。两者同时安装通常是重复的，只适合刻意组合这两种作用域。现有 provider-neutral `odai-cli` 继续作为独立产品。
+Plugin 安装命令要求 `pnpm` 已在 `PATH` 中；Agent 安装器当前严格支持 `dsh@0.1.0-rc.6` 与 `dsh@0.1.0-rc.7`。两个包都已经包含 canonical Odai skill 与共享 DSH runtime，既有安装继续默认使用各自包内的 bundled skill。Agent 完整保留所固定 DSH Standard preset 的全部能力，再以 scoped 扩展叠加 Odai。Plugin 无需另装 skill 或 Agent；Agent 也无需另装 skill 或 Plugin。需要 profile-wide 行为就选 Plugin，需要可选择的专用 preset 就选 Agent。两者同时安装通常是重复的，只适合刻意组合这两种作用域。现有 provider-neutral `odai-cli` 继续作为独立产品。
 
 两个 DSH 包都默认使用**软精简**输出。用户可以显式切换到正常模式，或启用可选的**经济模式**：它在软精简基础上增加可调的 provider 输出 ceiling；用户只说“经济模式”而未给其他值时默认使用 `500`。该 ceiling 不会影响子代理、compaction、checkpoint 或内部上下文预算，provider 仍可能超过或忽略它。完整三档契约见 [`dsh/README.md`](dsh/README.md#install-and-use)。
 
 完整、独立安装的 Odai skill 可以比两个 DSH 包更快更新，但不会自行改变默认来源。只有用户明确要求，Odai 才会把 skill source 切换为 `auto` 或 `user`：`auto` 可以选择兼容的项目 `.dsh` / `.agents` bundle 与较新的用户安装，`user` 则忽略项目根；部署显式路径始终优先。Plugin 与 Agent 刻意共存时按 agent / turn 共用同一份快照，prompt 治理与路由 role contract 不会选到不同 bundle。
 
-两个 DSH 包都不会自行选择 planner、executor 或 reviewer 模型。用户只需自然地告诉 Odai，例如“规划用 provider/model，推理档 high”，模型就会为 Plugin 和 Agent 共用的机制持久化这项明确选择。真实任务需要某项尚未配置的职责时，Odai 会说明缺少哪一项并询问模型，而不会声称该路线已经运行。
+两个 DSH 包都不会自行选择 planner、executor 或 reviewer 模型。用户只需自然地告诉 Odai，例如“规划用 provider/model，推理档 high”，模型就会为 Plugin 和 Agent 共用的机制持久化这项明确选择。之后正常交任务即可：职责词不是口令，runtime 从任务状态和证据缺口选择 direct、inline、same-turn 或 child；当前 controller 与 planner 同模型时不会重复调用，原任务已授权实施时规划会自动续接执行。真实任务需要某项尚未配置的职责时，Odai 会说明缺少哪一项并询问模型，而不会声称该路线已经运行。持久映射在 provider I/O 前正式校验；确定性坏映射备份后精确清理，额度、鉴权或网络故障只影响当次 fallback。
+
+DSH 的心理与人身安全连续性不进入通用 semantic memory。只有用户明确要求，controller-only 工具才会把用户原文中的照护偏好、希望留意的信号、有效支持方式或自写安全计划保存到独立本地记录；用户可查看、导出、更正、逐条删除或物理清空，记录默认保留到用户执行删除。新会话只把它当历史照护偏好，不当成当前风险、诊断或隐藏评分，child agent 也拿不到这份记录。
 
 包边界、来源优先级、自然语言配置与隔离环境真实安装共存验证见 [`dsh/README.md`](dsh/README.md)。
 
@@ -175,6 +178,7 @@ odai 的完整能力不只是入口文本，而是“内核 + 内置基本工艺
 | 层级 | 职责 |
 | --- | --- |
 | 根内核 | 总纲、自适应推进、最小底线与加载地图 |
+| `human-safety.md` | 人身与心理危机的早期识别、自然干预、二次伤害防止与授权安全连续性 |
 | `dao.md` | 事的所有权、事实校准、授权、参考只读与高影响边界 |
 | `craft.md` | 轻量规划、实施、设计、UI / 实时交互、文档与审查 |
 | `planning.md` | 可执行工程计划、需求覆盖、工作包依赖、持久交接与恢复顺序 |

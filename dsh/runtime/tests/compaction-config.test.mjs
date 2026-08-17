@@ -227,8 +227,8 @@ test("compaction model store is atomic, repairable, locked, resettable, and chil
     assert.deepEqual(readCompactionModelStore(configPath).target, clearedReasoning.target);
 
     const release = acquireOwnedStoreLock(configPath, "Odai compaction model configuration");
-    assert.throws(
-      () => tool.execute({ action: "set", provider: "openai", model: "other" }, execution),
+    await assert.rejects(
+      tool.execute({ action: "set", provider: "openai", model: "other" }, execution),
       /is being updated/u,
     );
     release();

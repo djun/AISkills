@@ -22,6 +22,11 @@ const PLANNER_PATTERNS = [
   /(?:independently decide|independent decision)/iu,
 ];
 
+const PLANNER_META_PATTERNS = [
+  /(?:你|是否|有没有|有没).{0,12}(?:规划|计划)(?:了|过|吗|没有)/iu,
+  /(?:did you|have you).{0,24}\bplan(?:ned|ning)?\b/iu,
+];
+
 const REVIEWER_PATTERNS = [
   /独立(?:审查|复核|评审)/iu,
   /(?:代码|安全|变更)(?:审查|复核|评审)/iu,
@@ -78,6 +83,56 @@ const LOW_RISK_TRANSFORM_PATTERNS = [
 const EXPLICIT_EXECUTION_CONTINUATION_PATTERNS = [
   /(?:继续|接着|就按|按(?:照)?(?:(?:这个|该|上述|上面|前面|刚才)的?)?(?:方案|计划|卡片))/iu,
   /\b(?:continue|proceed|go ahead|follow the plan)\b/iu,
+];
+const IMPLEMENTATION_AUTHORIZATION_PATTERNS = [
+  /(?:做(?:完|好|掉|这个|这项|这次|一个)|实现|修复|完成|落地|开发|添加|新增|替换|删除|执行|全都做好)/iu,
+  /(?:请|麻烦|直接|开始|继续)(?:帮我)?(?:处理|修改|更新)|帮我(?:处理|修改|更新)|需要(?:处理|修改|更新)|可以(?:帮我)?(?:处理|修改|更新)|^(?:处理|修改|更新)(?:一下|这个|该|文件|代码|配置|依赖|问题|功能|实现|文档|测试)/iu,
+  /\b(?:do it|implement|fix|complete|build|add|replace|remove|execute|ship)\b/iu,
+  /^(?:please\s+)?(?:(?:change|modify)\b|update\b(?!\s+(?:me|us|them|everyone|the team)\b))|\b(?:please|can you|could you|would you|go ahead and|start to|continue to)\s+(?:(?:change|modify)\b|update\b(?!\s+(?:me|us|them|everyone|the team)\b))|\bi (?:need|want) you to\s+(?:(?:change|modify)\b|update\b(?!\s+(?:me|us|them|everyone|the team)\b))/iu,
+];
+const PLAN_ONLY_PATTERNS = [
+  /(?:只|仅).{0,16}(?:规划|计划|分析|评估|建议|方案|审查|复核|评审|检查)/iu,
+  /(?:先|帮我)(?:规划|计划|分析|评估)(?:一下)?[^。！？\n]{0,40}(?:$|[。！？])/iu,
+  /^\s*(?:请)?(?:规划|计划|分析|评估|建议|审查|复核|评审|检查)/iu,
+  /^\s*(?:请)?(?:列一下|列出|整理(?:一份)?|给我(?:一份)?)[^。！？\n]{0,64}(?:地方|清单|列表|说明|建议|方案|示例|影响|步骤)(?:$|[。！？])/iu,
+  /\b(?:review|audit|inspect)\s+only\b/iu,
+  /\b(?:just|only)\s+(?:plan|analy[sz]e|assess|evaluate|review|audit|inspect|recommend|explain|describe|outline|list)\b/iu,
+  /^\s*(?:please\s+)?(?:plan|analy[sz]e|assess|evaluate|review|audit|inspect|recommend|explain|describe|outline|list)\b/iu,
+];
+const PLAN_THEN_IMPLEMENT_PATTERNS = [
+  /(?:规划|计划|分析|评估|建议|审查|复核|评审|检查)[^。！？\n]{0,48}(?:然后|再|之后|接着|并(?:且)?)[^。！？\n]{0,24}(?:实现|修复|完成|落地|开发|添加|新增|修改|更新(?![^。！？\n]{0,8}(?:我|我们|团队|进展|结果|情况|发现|消息|状态))|替换|删除|执行)/iu,
+  /(?:列一下|列出|整理(?:一份)?|给我(?:一份)?)[^。！？\n]{0,64}(?:然后|再|之后|接着|并(?:且)?)[^。！？\n]{0,24}(?:实现|修复|完成|落地|开发|添加|新增|修改|更新|替换|删除|执行)/iu,
+  /\b(?:plan|analy[sz]e|assess|evaluate|review|audit|inspect|recommend|explain|describe|outline|list)\b[^.!?\n]{0,64}\b(?:then|and(?: then)?|after that)\b[^.!?\n]{0,24}\b(?:implement|fix|complete|build|add|change|update(?!\s+(?:me|us|them|everyone|the team)\b)|modify|replace|remove|execute|ship)\b/iu,
+];
+const STATUS_UPDATE_PATTERNS = [
+  /(?:更新|同步)[^。！？\n]{0,24}(?:进展|结果|情况|发现|消息|状态)/iu,
+  /\bupdate\b[^.!?\n]{1,48}\b(?:on|about|regarding)\b/iu,
+  /\bupdate\b[^.!?\n]{1,48}\bwith\s+(?:the\s+)?(?:findings|progress|results|status|details|news|outcome)\b/iu,
+];
+const UNAMBIGUOUS_DELIVERY_PATTERNS = [
+  /(?:^|[，；。]|然后|再|之后|接着|并(?:且)?|请|帮我)(?:做(?:完|好|掉)|实现|修复|完成|落地|开发|添加|新增|修改|替换|删除|执行)/iu,
+  /更新(?:代码|项目|依赖|包|清单|文档|测试|配置|文件|运行时|服务|应用|界面|数据库|架构)/iu,
+  /\b(?:do it|implement|execute|ship)\b/iu,
+  /(?:^|\b(?:then|and|to|please)\s+)\b(?:fix|complete|build|add|change|modify|replace|remove)\b/iu,
+  /\bupdate\s+(?:the\s+)?(?:code|project|dependencies?|packages?|manifest|docs?|documentation|tests?|config(?:uration)?|files?|runtime|services?|app(?:lication)?|ui|interface|schema|database|architecture)\b/iu,
+];
+const NON_IMPLEMENTATION_QUERY_PATTERNS = [
+  /(?:有什么|有何|哪些|是什么|为何|为什么|怎么样|怎么看|发生了什么|有变化吗|影响(?:是|有)?什么)[^。！？\n]*[？?]?$/iu,
+  /^\s*(?:what|why|how)\b[^.!?\n]*[?]\s*$/iu,
+  /\b(?:what changed|what changes|what impact|which changes|difference between)\b[^.!?\n]*[?]?$/iu,
+];
+const NO_IMPLEMENTATION_PATTERNS = [
+  /(?:不要|别|请勿|禁止|无需|不用|不需要|不能)[^。！？\n]{0,28}(?:改|修改|编辑|写入|实现|执行|落地|动文件|动代码)/iu,
+  /\b(?:do not|don't|never|without)\b[^.!?\n]{0,48}\b(?:implement|modify|edit|change|write|execute|apply|make changes?)\b/iu,
+  /\b(?:plan|analyze|assess|evaluate|recommend)(?: only)?\b[^.!?]{0,30}\b(?:do not|don't|without) (?:implementing|changes?)\b/iu,
+];
+const GLOBAL_NO_EDIT_PATTERNS = [
+  /(?:不要|别|请勿|禁止)[^，；。！？\n]{0,12}(?:改|修改|编辑|写入)[^，；。！？\n]{0,12}(?:任何|全部|所有|整个)[^，；。！？\n]{0,12}(?:文件|代码|内容|实现|东西)/iu,
+  /\b(?:do not|don't|never)\b[^,;.!?\n]{0,12}\b(?:modify|edit|change|write)\b[^,;.!?\n]{0,16}\b(?:anything|any (?:files?|code|changes?)|all (?:files?|code|changes?)|the (?:whole|entire) codebase)\b/iu,
+];
+const SCOPED_NO_EDIT_WITH_EXECUTION_PATTERNS = [
+  /(?:不要|别|请勿)[^，；。！？\n]{0,12}(?:改|修改|编辑|写入)(?![^，；。！？\n]{0,12}(?:任何|全部|所有|整个))[^，；。！？\n]{1,28}[，；。](?![^，；。！？\n]{0,20}(?:不要|别|请勿|禁止|无需|不用|不需要|不能))[ \t]*[^，；。！？\n]{0,20}(?:实现|修复|修改|更新|执行|落地)/iu,
+  /\b(?:do not|don't|never)\b[^,;.!?\n]{0,12}\b(?:modify|edit|change|write)\b(?![^,;.!?\n]{0,16}\b(?:anything|any (?:files?|code|changes?)|all (?:files?|code|changes?)|the (?:whole|entire) codebase)\b)[^,;.!?\n]{1,36}[,;.](?![^,;.!?\n]{0,24}\b(?:do not|don't|never|no need to|without|skip)\b)\s*[^,;.!?\n]{0,24}\b(?:implement|fix|change|update|execute|apply)\b/iu,
 ];
 const EXECUTION_ACTION_PATTERNS = [
   /(?:开始|执行|实施|落实|动手)/iu,
@@ -148,6 +203,29 @@ function isExecutionContinuation(text) {
   if (matchesAny(text, EXPLICIT_EXECUTION_CONTINUATION_PATTERNS)) return true;
   return matchesAny(text, EXECUTION_ACTION_PATTERNS)
     && matchesAny(text, ROUTE_CARD_REFERENCE_PATTERNS);
+}
+
+export function classifyImplementationAuthorization(text) {
+  const explicit = stripQuotedMaterial(String(text ?? "")).trim();
+  if (!explicit) return Object.freeze({ status: "unknown" });
+  if (matchesAny(explicit, GLOBAL_NO_EDIT_PATTERNS)) return Object.freeze({ status: "plan-only" });
+  if (matchesAny(explicit, SCOPED_NO_EDIT_WITH_EXECUTION_PATTERNS)) return Object.freeze({ status: "authorized" });
+  if (matchesAny(explicit, NO_IMPLEMENTATION_PATTERNS)) return Object.freeze({ status: "plan-only" });
+  if (matchesAny(explicit, STATUS_UPDATE_PATTERNS)
+    && !matchesAny(explicit, UNAMBIGUOUS_DELIVERY_PATTERNS)
+    && !matchesAny(explicit, CONCRETE_CHANGE_PATTERNS)) {
+    return Object.freeze({ status: matchesAny(explicit, PLAN_ONLY_PATTERNS) ? "plan-only" : "unknown" });
+  }
+  if (isExecutionContinuation(explicit) || matchesAny(explicit, PLAN_THEN_IMPLEMENT_PATTERNS)) {
+    return Object.freeze({ status: "authorized" });
+  }
+  if (matchesAny(explicit, PLAN_ONLY_PATTERNS)) return Object.freeze({ status: "plan-only" });
+  if (matchesAny(explicit, NON_IMPLEMENTATION_QUERY_PATTERNS)) return Object.freeze({ status: "unknown" });
+  if (matchesAny(explicit, IMPLEMENTATION_AUTHORIZATION_PATTERNS)
+    || matchesAny(explicit, CONCRETE_CHANGE_PATTERNS)) {
+    return Object.freeze({ status: "authorized" });
+  }
+  return Object.freeze({ status: "unknown" });
 }
 
 function hasContextualPlannerGap(text) {
@@ -247,22 +325,15 @@ function route(role, reasonCode, reason, signals, action = role === "controller"
 export function decideResearchPrefetch(input = {}) {
   const text = typeof input.text === "string" ? input.text.trim() : "";
   const explicitIntentText = stripQuotedMaterial(text);
-  if (!explicitIntentText || isLowRiskTransform(explicitIntentText)) {
-    return route("controller", "RESEARCHER_PREFETCH_NOT_NEEDED", "No separable multi-source evidence compression gap was found.", ["no-research-prefetch"]);
+  const proposal = input.proposal?.responsibility === "researcher" ? input.proposal : undefined;
+  if (!proposal || !explicitIntentText || isLowRiskTransform(explicitIntentText)) {
+    return route("controller", "RESEARCHER_PREFETCH_NOT_NEEDED", "No evidence-grounded multi-source compression gap was proposed.", ["no-research-prefetch"]);
   }
-  if (!hasContextualPlannerGap(explicitIntentText)) {
-    return route("controller", "RESEARCHER_PREFETCH_NOT_NEEDED", "No separable multi-source evidence compression gap was found.", ["no-research-prefetch"]);
-  }
-  const signals = [
-    "decision-blocking-causal-claim",
-    "high-impact-change",
-    "bounded-evidence-compression",
-  ];
   return route(
     "researcher",
     RESEARCHER_EVIDENCE_REASON,
-    "A bounded read-only pass over multiple decisive sources can reduce downstream context while preserving provenance.",
-    signals,
+    proposal.gap,
+    ["evidence-grounded-responsibility-gap", `state:${proposal.stateDigest}`],
   );
 }
 
@@ -274,7 +345,9 @@ export function decideResearchPrefetch(input = {}) {
 export function decideRoute(input = {}) {
   const text = typeof input.text === "string" ? input.text.trim() : "";
   const explicitIntentText = stripQuotedMaterial(text);
+  const proposal = input.proposal;
   const signals = [];
+  const considerations = [];
   const riskPresent = matchesAny(text, RISK_PATTERNS);
   const unverifiedCausalClaim = matchesAny(text, UNVERIFIED_CAUSAL_PATTERNS);
   const concreteChangeRequest = matchesAny(text, CONCRETE_CHANGE_PATTERNS);
@@ -290,40 +363,82 @@ export function decideRoute(input = {}) {
   if (urgencyPressure) signals.push("urgency-pressure");
   if (irreversibleAction) signals.push("irreversible-action");
 
+  const executionAuthorizedByState = proposal?.responsibility === "executor"
+    && input.routeCard?.authorization?.status === "authorized";
   if (input.routeCard?.frozen === true
     && input.routeCard?.observableBenefit === true
-    && isExecutionContinuation(explicitIntentText)) {
-    signals.push("route-card-frozen", "observable-net-benefit", "explicit-execution-continuation");
+    && (isExecutionContinuation(explicitIntentText) || executionAuthorizedByState)) {
+    signals.push(
+      "route-card-frozen",
+      "observable-net-benefit",
+      ...(executionAuthorizedByState ? ["evidence-grounded-responsibility-gap", `state:${proposal.stateDigest}`] : ["explicit-execution-continuation"]),
+    );
     return route(
       "controller",
       EXECUTOR_ROUTE_CARD_REASON,
-      "A frozen route card exists, executor separation has an observable net benefit, and the user explicitly continued implementation.",
+      executionAuthorizedByState
+        ? proposal.gap
+        : "A frozen route card exists, executor separation has an observable net benefit, and the user explicitly continued implementation.",
       signals,
       "upgrade",
       "executor",
     );
   }
 
-  if (matchesAny(explicitIntentText, REVIEWER_PATTERNS)) {
-    signals.push("explicit-independent-review-gap");
+  if (proposal?.responsibility === "user") {
+    signals.push("user-decision-gap", `state:${proposal.stateDigest}`);
     return route(
-      "reviewer",
-      "REVIEWER_EXPLICIT_ACCEPTANCE_GAP",
-      "The request explicitly asks for an independent review or challenge.",
+      "controller",
+      "USER_DECISION_REQUIRED",
+      proposal.gap,
       signals,
     );
   }
+  if (proposal?.responsibility === "reviewer") {
+    signals.push("evidence-grounded-responsibility-gap", `state:${proposal.stateDigest}`);
+    return route("reviewer", "REVIEWER_EVIDENCE_STATE_GAP", proposal.gap, signals);
+  }
+  if (proposal?.responsibility === "planner") {
+    signals.push("evidence-grounded-responsibility-gap", `state:${proposal.stateDigest}`);
+    return route("controller", "PLANNER_EVIDENCE_STATE_GAP", proposal.gap, signals, "upgrade", "planner");
+  }
+  if (proposal?.responsibility === "frontend") {
+    signals.push("evidence-grounded-responsibility-gap", `state:${proposal.stateDigest}`);
+    return route("controller", "FRONTEND_EVIDENCE_STATE_GAP", proposal.gap, signals, "upgrade", "frontend");
+  }
+
+  if (matchesAny(explicitIntentText, REVIEWER_PATTERNS)) {
+    signals.push("review-language-present");
+    considerations.push(Object.freeze({
+      role: "reviewer",
+      match: "lexical",
+      action: "skip",
+      reasonCode: "REVIEWER_GAP_NOT_PROVEN",
+      signals: Object.freeze(["review-language-present"]),
+      unmet: Object.freeze(["current-evidence-package", "acceptance-impact"]),
+    }));
+  }
 
   if (matchesAny(explicitIntentText, PLANNER_PATTERNS)) {
-    signals.push("explicit-independent-decision-gap");
-    return route(
-      "controller",
-      "PLANNER_EXPLICIT_DECISION_GAP",
-      "The request explicitly asks for a planning or architecture decision that needs the current controller context.",
-      signals,
-      "upgrade",
-      "planner",
-    );
+    signals.push("planning-language-present");
+    considerations.push(Object.freeze({
+      role: "planner",
+      match: "lexical",
+      action: "skip",
+      reasonCode: "PLANNER_GAP_NOT_PROVEN",
+      signals: Object.freeze(["planning-language-present"]),
+      unmet: Object.freeze(["evidence-grounded-decision-branch", "observable-capability-benefit"]),
+    }));
+  } else if (matchesAny(explicitIntentText, PLANNER_META_PATTERNS)) {
+    signals.push("planner-meta-question");
+    considerations.push(Object.freeze({
+      role: "planner",
+      match: "meta-question",
+      action: "skip",
+      reasonCode: "PLANNER_META_QUERY_NO_INDEPENDENT_GAP",
+      signals: Object.freeze(["planner-meta-question"]),
+      unmet: Object.freeze(["prior-task-state-with-unresolved-decision-branch"]),
+    }));
   }
 
   const contextualPlannerGap = riskPresent
@@ -358,14 +473,12 @@ export function decideRoute(input = {}) {
   const direct = route(
     "controller",
     "DIRECT_DEFAULT_NO_INDEPENDENT_GAP",
-    "No explicit independent decision, execution, or acceptance gap was found.",
+    "No evidence-grounded independent decision, execution, or acceptance gap was found.",
     signals,
   );
-  if (frontendSignals.length === 0) return direct;
-  const lowRiskTransform = isLowRiskTransform(explicitIntentText);
-  return Object.freeze({
-    ...direct,
-    considerations: Object.freeze([Object.freeze({
+  if (frontendSignals.length > 0) {
+    const lowRiskTransform = isLowRiskTransform(explicitIntentText);
+    considerations.push(Object.freeze({
       role: "frontend",
       match: "partial",
       action: "skip",
@@ -382,8 +495,11 @@ export function decideRoute(input = {}) {
             ...(frontend.delivery ? [] : ["delivery-request"]),
             ...(frontend.specialistDepth ? [] : ["specialist-or-substantial-scope"]),
           ]),
-    })]),
-  });
+    }));
+  }
+  return considerations.length === 0
+    ? direct
+    : Object.freeze({ ...direct, considerations: Object.freeze(considerations) });
 }
 
 export function extractLatestUserText(messages) {

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "odai",
-  "skillVersion": "0.2.1",
+  "skillVersion": "0.3.0",
   "runtimeContract": 3,
   "requiredFiles": [
     "SKILL.md",
@@ -20,6 +20,7 @@
     "assets/task-state.md",
     "references/craft.md",
     "references/dao.md",
+    "references/human-safety.md",
     "references/leverage.md",
     "references/planning.md",
     "references/support.md",

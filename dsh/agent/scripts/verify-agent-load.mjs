@@ -1,5 +1,6 @@
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -8,7 +9,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 import { spawnDsh } from "../src/dsh-version.mjs";
-import { installAgentPreset, SUPPORTED_DSH_VERSION } from "../src/installer.mjs";
+import {
+  installAgentPreset,
+  renderAgentCompositionForDsh,
+  SUPPORTED_DSH_VERSIONS,
+} from "../src/installer.mjs";
 
 const agentRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(agentRoot, "../..");
@@ -16,8 +21,9 @@ const dsh = process.env.DSH_BIN ?? "dsh";
 const dshRoot = process.env.DSH_PACKAGE_ROOT
   ? resolve(process.env.DSH_PACKAGE_ROOT)
   : findDshPackageRoot(dsh);
-const scopeModule = resolve(dshRoot, "node_modules/@deepseek-ai/dsh-scope/lib/index.js");
-await verifyPinnedComposition();
+const requireFromDsh = createRequire(resolve(dshRoot, "package.json"));
+const scopeModule = requireFromDsh.resolve("@deepseek-ai/dsh-scope");
+const targetDshVersion = await verifyPinnedComposition();
 const scratch = await mkdtemp(resolve(tmpdir(), "odai-agent-scope-"));
 const home = resolve(scratch, "home");
 const workspace = resolve(scratch, "workspace");
@@ -30,15 +36,18 @@ const yaml = (value) => JSON.stringify(value);
 
 function findDshPackageRoot(command) {
   const locator = process.platform === "win32" ? "where" : "which";
-  const located = execFileSync(locator, [command], { encoding: "utf8" })
-    .trim()
-    .split(/\r?\n/u)
-    .filter(Boolean);
+  const located = existsSync(command)
+    ? [resolve(command)]
+    : execFileSync(locator, [command], { encoding: "utf8" })
+      .trim()
+      .split(/\r?\n/u)
+      .filter(Boolean);
   const candidates = new Set();
   for (const path of located) {
     const commandDir = dirname(realpathSync(path));
     candidates.add(commandDir);
     candidates.add(resolve(commandDir, "node_modules/@deepseek-ai/dsh"));
+    candidates.add(resolve(commandDir, "../@deepseek-ai/dsh"));
   }
   for (const candidate of candidates) {
     let current = candidate;
@@ -59,8 +68,8 @@ function findDshPackageRoot(command) {
 
 async function verifyPinnedComposition() {
   const dshMetadata = JSON.parse(await readFile(resolve(dshRoot, "package.json"), "utf8"));
-  if (dshMetadata.version !== SUPPORTED_DSH_VERSION) {
-    throw new Error(`agent preset expects DSH ${SUPPORTED_DSH_VERSION}, found ${dshMetadata.version}`);
+  if (!SUPPORTED_DSH_VERSIONS.includes(dshMetadata.version)) {
+    throw new Error(`agent preset expects one of ${SUPPORTED_DSH_VERSIONS.join(", ")}, found ${dshMetadata.version}`);
   }
 
   const standard = (await readFile(resolve(dshRoot, "config/agent-presets/standard/agent.cordis.yml"), "utf8"))
@@ -85,12 +94,14 @@ async function verifyPinnedComposition() {
       "You are Odai, a coding agent. Your working directory is {{cwd}}.",
     )
     .trimEnd()}\n\n${odaiSuffix}`;
-  const actual = (await readFile(resolve(agentRoot, "preset/odai/agent.cordis.yml"), "utf8"))
-    .replace(/\r\n/gu, "\n")
-    .trimEnd();
+  const actual = renderAgentCompositionForDsh(
+    await readFile(resolve(agentRoot, "preset/odai/agent.cordis.yml"), "utf8"),
+    dshMetadata.version,
+  ).trimEnd();
   if (actual !== expected) {
-    throw new Error("Odai Agent composition drifted from the pinned DSH standard preset");
+    throw new Error(`Odai Agent composition drifted from the DSH ${dshMetadata.version} standard preset`);
   }
+  return dshMetadata.version;
 }
 
 async function freePort() {
@@ -173,9 +184,9 @@ if (existsSync(developmentRuntime) && existsSync(developmentSkill)) {
   || !existsSync(resolve(sourceRoot, "skills/odai/SKILL.md"))) {
   throw new Error("Odai Agent verification requires either repository sources or packaged runtime and skill files");
 }
-await installAgentPreset({ dshHome: home, sourceRoot });
+await installAgentPreset({ dshHome: home, sourceRoot, dshVersion: targetDshVersion });
 
-const probePlugin = `import { existsSync, readFileSync, writeFileSync } from "node:fs";\nimport { bindScopeParent } from ${JSON.stringify(pathToFileURL(scopeModule).href)};\n\nexport const name = "odai-agent-scope-probe";\nexport const inject = ["systemPrompt", "tools"];\n\nexport function apply(ctx, config) {\n  const results = {};\n  let writing = Promise.resolve();\n\n  ctx.on("agent/created", ({ agent }) => {\n    writing = writing.then(async () => {\n      const preset = agent.session?.header?.agentPreset;\n      if (preset !== "standard" && preset !== "odai") return;\n\n      const assembly = await ctx.systemPrompt.assemble({ scope: agent });\n      const canonicalSections = assembly.sections.filter((section) => section.name === "odai:canonical-governance");\n      const writePath = preset === "odai" ? config.odaiWritePath : config.standardWritePath;\n      const childSession = new Proxy(agent.session, {\n        get(target, property) {\n          if (property === "header") {\n            return { ...target.header, origin: "subagent", delegationDepth: 1 };\n          }\n          return Reflect.get(target, property, target);\n        },\n      });\n      const child = { id: agent.id, session: childSession };\n      bindScopeParent(child, agent);\n      const toolResult = await ctx.tools.execute({\n        callId: \`scope-probe-\${preset}\`,\n        name: "write",\n        arguments: { file_path: writePath, content: \`\${preset} child write reached body\\n\` },\n        agent: child,\n        signal: new AbortController().signal,\n      });\n\n      let routingConfigured;\n      if (preset === "odai") {\n        const routingResult = await ctx.tools.execute({\n          callId: "scope-probe-odai-routing-config",\n          name: "odai_routing_config",\n          arguments: { action: "set", responsibility: "executor", provider: "probe-provider", model: "probe-executor", reasoningEffort: "high" },\n          agent,\n          signal: new AbortController().signal,\n        });\n        if (routingResult.isError) throw new Error(\`odai routing config tool failed: \${routingResult.error?.message}\`);\n        const stored = JSON.parse(readFileSync(config.routingConfigPath, "utf8"));\n        routingConfigured = stored.roles?.executor?.provider === "probe-provider"\n          && stored.roles?.executor?.model === "probe-executor";\n      }\n\n      results[preset] = {\n        canonicalSectionCount: canonicalSections.length,\n        toolIsError: toolResult.isError === true,\n        toolError: toolResult.isError === true ? toolResult.error?.message : undefined,\n        writeReachedBody: existsSync(writePath),\n        ...(routingConfigured === undefined ? {} : { routingConfigured }),\n      };\n      if (results.standard && results.odai) {\n        writeFileSync(config.markerPath, JSON.stringify(results, null, 2) + "\\n", "utf8");\n      }\n    }).catch((error) => {\n      writeFileSync(config.markerPath, JSON.stringify({ probeError: error?.stack ?? String(error) }, null, 2) + "\\n", "utf8");\n    });\n  }, { global: true });\n}\n`;
+const probePlugin = `import { existsSync, writeFileSync } from "node:fs";\nimport { bindScopeParent } from ${JSON.stringify(pathToFileURL(scopeModule).href)};\n\nexport const name = "odai-agent-scope-probe";\nexport const inject = ["systemPrompt", "tools"];\n\nexport function apply(ctx, config) {\n  const results = {};\n  let writing = Promise.resolve();\n\n  ctx.on("agent/created", ({ agent }) => {\n    writing = writing.then(async () => {\n      const preset = agent.session?.header?.agentPreset;\n      if (preset !== "standard" && preset !== "odai") return;\n\n      const assembly = await ctx.systemPrompt.assemble({ scope: agent });\n      const canonicalSections = assembly.sections.filter((section) => section.name === "odai:canonical-governance");\n      const writePath = preset === "odai" ? config.odaiWritePath : config.standardWritePath;\n      const childSession = new Proxy(agent.session, {\n        get(target, property) {\n          if (property === "header") {\n            return { ...target.header, origin: "subagent", delegationDepth: 1 };\n          }\n          return Reflect.get(target, property, target);\n        },\n      });\n      const child = { id: agent.id, session: childSession };\n      bindScopeParent(child, agent);\n      const toolResult = await ctx.tools.execute({\n        callId: \`scope-probe-\${preset}\`,\n        name: "write",\n        arguments: { file_path: writePath, content: \`\${preset} child write reached body\\n\` },\n        agent: child,\n        signal: new AbortController().signal,\n      });\n\n      let routingProtected;\n      if (preset === "odai") {\n        const routingResult = await ctx.tools.execute({\n          callId: "scope-probe-odai-routing-config",\n          name: "odai_routing_config",\n          arguments: { action: "set", responsibility: "executor", provider: "probe-provider", model: "probe-executor", reasoningEffort: "high" },\n          agent,\n          signal: new AbortController().signal,\n        });\n        routingProtected = routingResult.isError === true\n          && /NO_ADAPTER/u.test(routingResult.error?.message ?? "")\n          && !existsSync(config.routingConfigPath);\n      }\n\n      results[preset] = {\n        canonicalSectionCount: canonicalSections.length,\n        toolIsError: toolResult.isError === true,\n        toolError: toolResult.isError === true ? toolResult.error?.message : undefined,\n        writeReachedBody: existsSync(writePath),\n        ...(routingProtected === undefined ? {} : { routingProtected }),\n      };\n      if (results.standard && results.odai) {\n        writeFileSync(config.markerPath, JSON.stringify(results, null, 2) + "\\n", "utf8");\n      }\n    }).catch((error) => {\n      writeFileSync(config.markerPath, JSON.stringify({ probeError: error?.stack ?? String(error) }, null, 2) + "\\n", "utf8");\n    });\n  }, { global: true });\n}\n`;
 await writeFile(probePluginPath, probePlugin, "utf8");
 await writeFile(patchPath, [
   "- insert:",
@@ -234,8 +245,8 @@ try {
     || !results.odai?.toolError?.startsWith("ODAI_SUBAGENT_BOUNDARY:")) {
     throw new Error(`odai child write was not denied by odai guard: ${JSON.stringify(results)}`);
   }
-  if (results.odai?.routingConfigured !== true) {
-    throw new Error(`odai natural routing tool did not persist through DSH: ${JSON.stringify(results)}`);
+  if (results.odai?.routingProtected !== true) {
+    throw new Error(`odai routing tool did not reject an unavailable route without mutation: ${JSON.stringify(results)}`);
   }
   process.stdout.write(`${JSON.stringify({ scratch, roster: ids, results }, null, 2)}\n`);
 } finally {

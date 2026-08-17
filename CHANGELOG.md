@@ -2,6 +2,14 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-18 — DSH 0.2.0 状态路由、正式回退与人身安全
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.0`，DSH 基线升为 `0.1.0-rc.7` 并继续精确兼容 `0.1.0-rc.6`，内置 canonical skill 升为 `0.3.0`，runtime contract 保持 `3`。Agent composition 以 rc.7 Standard preset 为 source，并在安装 rc.6 时确定性还原两项 disabled provider 的 `enableRunInBackground: false` 契约；人身与心理危机成为最高优先级保护：持续或加重的可观察信号触发低负担关怀，任何可信自残或轻生倾向都不因“没有计划”而忽略；全程不诊断、不贴标签、不说教、不提供方法或隐匿指导，并防止二次伤害。
+- 新增独立 `$DSH_HOME/odai/human-safety-continuity.json` 与 controller-only `odai_human_safety_continuity`。只有当前 open-turn 认证的直接用户明确要求，才能保存、查看、导出、更正、删除或物理清空用户原文中的照护偏好、希望留意的信号、有效支持与自写安全计划；它不进入 semantic memory、不自动记录当前状态、不生成风险分、不向 child 暴露，也不把历史偏好当成当前风险证据。
+- 路由从角色词触发收敛为 task-state gap：职责词仅作候选信号，结构化缺口带证据引用与内容摘要去重，可在后续 step 自动重评。direct、inline、same-turn 与 child 混排保留；controller 与 planner 同模型时 inline 复用当前调用。原任务已授权实施且 planner 冻结同一任务后自动续接 executor；route card 先 claim，只有匹配的 applied request receipt 才 consume，失败、错配或无请求均 release；plan-only、新任务、扩围或未知授权不能自动执行。
+- provider/model/reasoning 映射在持久化和实际使用前都通过 DSH 非生成式 resolver 校验。确定性坏映射按 exact-match CAS 备份清理；鉴权、额度、限流、服务端、超时与传输故障保留配置，只对当前调用回退。Frontend 坏映射在生成前明确转为本地 controller fallback，不能声称专用责任已运行。
+- compaction 目标流先完整缓冲：失败前产生的部分摘要全部丢弃，再以未污染的原始继承请求重试一次；只有完整终态才能替换历史。确定性坏 target 备份清理，暂态故障保留。Reviewer 证据包增加 currentness：成功测试与 diff 必须晚于最后一次实质写入，较晚失败会使旧成功失效。
+
 ## 2026-08-17 — DSH 0.1.1 实施阶段路由重评
 
 - 发布 `odai-dsh-agent@0.1.1` 与 `odai-dsh-plugin@0.1.1`，两包继续作为同一发布单元保持版本同步；内置 canonical skill 升为 `0.2.1`，runtime contract 保持 `3`。

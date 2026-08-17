@@ -22,7 +22,16 @@ export const MANIFEST_FILE = ".odai-agent.json";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultSourceRoot = resolve(packageRoot, "preset/odai");
 const packageMetadata = JSON.parse(await readFile(resolve(packageRoot, "package.json"), "utf8"));
-export const SUPPORTED_DSH_VERSION = packageMetadata.peerDependencies["@deepseek-ai/dsh"];
+const DSH_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
+export const SUPPORTED_DSH_VERSIONS = Object.freeze(
+  packageMetadata.peerDependencies["@deepseek-ai/dsh"]
+    .split(/\s*\|\|\s*/u)
+    .filter(Boolean),
+);
+if (SUPPORTED_DSH_VERSIONS.length === 0 || SUPPORTED_DSH_VERSIONS.some((version) => !DSH_VERSION_PATTERN.test(version))) {
+  throw new Error("odai-dsh-agent peer dependency must list exact supported DSH versions");
+}
+export const SUPPORTED_DSH_VERSION = SUPPORTED_DSH_VERSIONS.at(-1);
 const requiredFiles = Object.freeze([
   "agent.cordis.yml",
   "preset.yml",
@@ -37,6 +46,43 @@ const requiredFiles = Object.freeze([
   "skills/odai/SKILL.md",
   "skills/odai/manifest.json",
 ]);
+
+function replaceCompositionContract(composition, before, after, label) {
+  const first = composition.indexOf(before);
+  if (first < 0 || composition.indexOf(before, first + before.length) >= 0) {
+    throw new Error(`Odai Agent composition does not contain exactly one rc.7 ${label} contract`);
+  }
+  return `${composition.slice(0, first)}${after}${composition.slice(first + before.length)}`;
+}
+
+export function renderAgentCompositionForDsh(composition, dshVersion = SUPPORTED_DSH_VERSION) {
+  if (typeof composition !== "string" || composition.trim() === "") {
+    throw new TypeError("agent composition must be a non-empty string");
+  }
+  if (!SUPPORTED_DSH_VERSIONS.includes(dshVersion)) {
+    throw new Error(`unsupported DSH version ${dshVersion || "<empty>"}; expected one of ${SUPPORTED_DSH_VERSIONS.join(", ")}`);
+  }
+  let rendered = composition.replace(/\r\n/gu, "\n");
+  if (dshVersion === "0.1.0-rc.7") return rendered;
+  rendered = replaceCompositionContract(
+    rendered,
+    "    # Production dsh does not install these optional providers. An opting-in\n    # Profile mounts each provider once on the host plane; copy this preset,\n    # then remove `disabled` from the matching tool row.",
+    "    # Product providers are host-plane singletons. Copy this preset, then\n    # remove `disabled` from either ordinary tool row to expose that product\n    # only to agents composed from the copy.",
+    "optional-provider comment",
+  );
+  rendered = replaceCompositionContract(
+    rendered,
+    "        provider: codex\n        toolName: subagent_codex\n        backgroundMode: one-shot",
+    "        provider: codex\n        toolName: subagent_codex\n        enableRunInBackground: false",
+    "Codex provider",
+  );
+  return replaceCompositionContract(
+    rendered,
+    "        provider: claude-code\n        toolName: subagent_claude_code\n        backgroundMode: one-shot",
+    "        provider: claude-code\n        toolName: subagent_claude_code\n        enableRunInBackground: false",
+    "Claude Code provider",
+  );
+}
 
 export function resolveDshHome(configured, env = process.env) {
   const value = configured ?? env.DSH_HOME ?? resolve(homedir(), ".dsh");
@@ -61,6 +107,10 @@ export async function installAgentPreset(options = {}) {
   const presetId = assertPresetId(options.presetId ?? DEFAULT_PRESET_ID);
   const dshHome = resolveDshHome(options.dshHome);
   const sourceRoot = resolve(options.sourceRoot ?? defaultSourceRoot);
+  const dshVersion = options.dshVersion ?? SUPPORTED_DSH_VERSION;
+  if (!SUPPORTED_DSH_VERSIONS.includes(dshVersion)) {
+    throw new Error(`unsupported DSH version ${dshVersion || "<empty>"}; expected one of ${SUPPORTED_DSH_VERSIONS.join(", ")}`);
+  }
   const targetRoot = resolve(dshHome, ".agent-presets");
   const target = resolve(targetRoot, presetId);
   const current = await inspectTarget(target, presetId);
@@ -88,9 +138,9 @@ export async function installAgentPreset(options = {}) {
     await cp(sourceRoot, staging, { recursive: true, errorOnExist: true });
     await tightenTree(staging);
     const compositionPath = resolve(staging, "agent.cordis.yml");
-    const composition = await readFile(compositionPath, "utf8");
+    const composition = renderAgentCompositionForDsh(await readFile(compositionPath, "utf8"), dshVersion);
     let stampedComposition = `${composition.trimEnd()}\n# odai-dsh-agent generation ${packageMetadata.version}:${randomUUID()}\n`;
-    // DSH rc.6 keys standing generations by mtime and size, so size must change even on same-tick updates.
+    // Supported DSH releases key standing generations by mtime and size, so size must change even on same-tick updates.
     if (previousCompositionSize === Buffer.byteLength(stampedComposition)) {
       stampedComposition += "# odai-dsh-agent generation size bump\n";
     }
@@ -100,6 +150,7 @@ export async function installAgentPreset(options = {}) {
       schemaVersion: 1,
       package: packageMetadata.name,
       version: packageMetadata.version,
+      dshVersion,
       presetId,
       files,
     };
@@ -123,6 +174,7 @@ export async function installAgentPreset(options = {}) {
       presetId,
       target,
       version: packageMetadata.version,
+      dshVersion,
       trust: "user",
       security: "DSH user presets have the same privileges as shell access; install only reviewed preset code.",
       sessionCompatibility,
@@ -221,6 +273,7 @@ async function inspectTarget(target, presetId) {
     status: issues.length === 0 ? "installed" : "drifted",
     issues,
     version: typeof manifest?.version === "string" ? manifest.version : undefined,
+    dshVersion: typeof manifest?.dshVersion === "string" ? manifest.dshVersion : undefined,
   };
 }
 

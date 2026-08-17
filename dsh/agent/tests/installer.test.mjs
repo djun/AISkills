@@ -9,11 +9,27 @@ import { pathToFileURL } from "node:url";
 import {
   inspectAgentInstallation,
   installAgentPreset,
+  renderAgentCompositionForDsh,
   resolveDshHome,
+  SUPPORTED_DSH_VERSIONS,
   uninstallAgentPreset,
 } from "../src/installer.mjs";
 
 const noDshProcesses = () => [];
+
+test("Agent composition renders exact rc.6 and rc.7 Standard contracts", async () => {
+  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.6", "0.1.0-rc.7"]);
+  const source = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
+  const rc7 = renderAgentCompositionForDsh(source, "0.1.0-rc.7");
+  assert.match(rc7, /provider: codex[\s\S]*backgroundMode: one-shot/u);
+  assert.match(rc7, /provider: claude-code[\s\S]*backgroundMode: one-shot/u);
+  assert.doesNotMatch(rc7, /enableRunInBackground/u);
+  const rc6 = renderAgentCompositionForDsh(source, "0.1.0-rc.6");
+  assert.match(rc6, /provider: codex[\s\S]*enableRunInBackground: false/u);
+  assert.match(rc6, /provider: claude-code[\s\S]*enableRunInBackground: false/u);
+  assert.doesNotMatch(rc6, /backgroundMode: one-shot/u);
+  assert.throws(() => renderAgentCompositionForDsh(source, "0.1.0-rc.5"), /unsupported DSH version/u);
+});
 
 test("managed preset installs, updates, reports status, and uninstalls", async () => {
   const scratch = await mkdtemp(resolve(tmpdir(), "odai-agent-installer-"));
@@ -29,6 +45,8 @@ test("managed preset installs, updates, reports status, and uninstalls", async (
     await writeFile(memorySentinel, "user-owned semantic memory\n", "utf8");
     const installed = await installAgentPreset({ dshHome, sourceRoot });
     assert.equal(installed.operation, "installed");
+    assert.equal(installed.dshVersion, "0.1.0-rc.7");
+    assert.equal((await inspectAgentInstallation({ dshHome })).dshVersion, "0.1.0-rc.7");
     assert.equal(installed.trust, "user");
     assert.match(installed.security, /same privileges as shell access/u);
     assert.equal((await inspectAgentInstallation({ dshHome })).status, "installed");

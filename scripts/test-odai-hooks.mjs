@@ -78,10 +78,17 @@ assert.equal(passedStop.stdout, "");
 
 // Test 1: escaping the project root stays allowed by default, whatever the route.
 const externalDir = mkdtempSync(path.join(os.tmpdir(), "odai-external-"));
-symlinkSync(externalDir, path.join(project, "outside-link"));
+let symlinkAvailable = true;
+try {
+  symlinkSync(externalDir, path.join(project, "outside-link"));
+} catch (error) {
+  if (!["EPERM", "EACCES", "ENOTSUP"].includes(error?.code)) throw error;
+  symlinkAvailable = false;
+  console.warn(`symlink hook assertions unavailable in this environment (${error.code})`);
+}
 writePolicy({ version: 1, protectedPaths: [], blockUnresolvedWrites: false, checks: [] });
 for (const [label, target] of [
-  ["symlink", "outside-link/new-file.js"],
+  ...(symlinkAvailable ? [["symlink", "outside-link/new-file.js"]] : []),
   ["absolute", path.join(externalDir, "new-file.js")],
   ["parent traversal", "../escape.js"],
 ]) {
@@ -95,7 +102,7 @@ for (const [label, target] of [
 // Test 1b: with blockOutsideWrites on, every escape route is blocked alike.
 writePolicy({ version: 1, protectedPaths: [], blockOutsideWrites: true, checks: [] });
 for (const [label, target, pattern] of [
-  ["symlink", "outside-link/new-file.js", /经由符号链接指向项目根目录之外/],
+  ...(symlinkAvailable ? [["symlink", "outside-link/new-file.js", /经由符号链接指向项目根目录之外/]] : []),
   ["absolute", path.join(externalDir, "new-file.js"), /位于项目根目录之外/],
   ["parent traversal", "../escape.js", /位于项目根目录之外/],
 ]) {
@@ -113,6 +120,7 @@ assert.equal(
 writePolicy({ version: 1, protectedPaths: [], blockOutsideWrite: true, checks: [] });
 assert.match(runHook("pre-tool", "codex", editPayload("src/index.js")).stderr, /含未知字段/);
 
+if (symlinkAvailable) {
 // Test 2: write to an existing protected file through an internal symlink must be blocked
 mkdirSync(path.join(project, "examples", "reference"), { recursive: true });
 writeFileSync(path.join(project, "examples", "reference", "demo.js"), "// fixture\n", "utf8");
@@ -145,6 +153,7 @@ writePolicy({ version: 1, protectedPaths: ["examples/reference/**"], blockUnreso
 const inboundSymlinkProtected = runHook("pre-tool", "codex", editPayload(path.join(externalDir, "into-project", "demo.js")));
 assert.equal(inboundSymlinkProtected.status, 2, "protected file reached through an outside symlink must be blocked");
 assert.match(inboundSymlinkProtected.stderr, /命中项目只读路径/);
+}
 
 const generatedRoot = mkdtempSync(path.join(os.tmpdir(), "odai-hook-adapters-"));
 const build = run(process.execPath, [builder, "--host", "all", "--out", generatedRoot]);

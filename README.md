@@ -25,6 +25,7 @@ It helps an agent:
 - avoid claiming that something was tested, delegated, reviewed, or verified when it was not
 - combine specialist skills and domain guidance only when the task needs them, instead of stuffing every rule into every turn
 - reuse existing host or project memory, persisting only durable information with provenance, scope, and invalidation conditions
+- respond early and humanely to persistent low mood or self-harm/suicide inclination without diagnosing, labeling, waiting for a plan, or causing secondary harm
 
 ## The Dao of odai
 
@@ -87,13 +88,15 @@ dsh plugin --profile web add odai-dsh-plugin
 npx odai-dsh-agent install
 ```
 
-The Plugin command requires `pnpm` on `PATH`; the Agent installer currently requires `dsh@0.1.0-rc.6`. Each package already includes the canonical Odai skill and shared DSH runtime, and existing installations keep that bundled skill as the default. The Agent preserves every capability from the pinned DSH Standard preset and adds Odai as a scoped extension. Plugin needs neither a separate skill nor Agent; Agent needs neither a separate skill nor Plugin. Choose Plugin for profile-wide behavior or Agent for a selectable preset. Installing both is normally redundant and is only for a deliberate combination of those scopes. The existing provider-neutral `odai-cli` remains a separate product.
+The Plugin command requires `pnpm` on `PATH`; the Agent installer supports exactly `dsh@0.1.0-rc.6` and `dsh@0.1.0-rc.7`. Each package already includes the canonical Odai skill and shared DSH runtime, and existing installations keep that bundled skill as the default. The Agent preserves every capability from the pinned DSH Standard preset and adds Odai as a scoped extension. Plugin needs neither a separate skill nor Agent; Agent needs neither a separate skill nor Plugin. Choose Plugin for profile-wide behavior or Agent for a selectable preset. Installing both is normally redundant and is only for a deliberate combination of those scopes. The existing provider-neutral `odai-cli` remains a separate product.
 
 Both DSH packages default output to **soft concise**. Users can explicitly select normal output or the optional **economy mode**, which combines concise presentation with a user-adjustable provider output ceiling: it defaults to `500` when economy is requested without another value. The ceiling never changes child-agent, compaction, checkpoint, or internal context budgets and may be exceeded or ignored by the provider. See [`dsh/README.md`](dsh/README.md#install-and-use) for the complete three-mode contract.
 
 A complete independently installed Odai skill can update faster than either DSH package without changing the default. The user must explicitly ask Odai to switch the skill source to `auto` or `user`; `auto` can select compatible project `.dsh`/`.agents` bundles and newer user installs, while `user` ignores project roots. An explicit deployment path remains highest priority. Plugin and Agent deliberately installed together share one per-agent/per-turn snapshot, so prompt governance and routing role contracts cannot select different bundles.
 
-Neither DSH package chooses planner, executor, or reviewer models. Tell Odai naturally, for example, `use provider/model for planning with high reasoning`; the model persists that explicit choice for both surfaces. If a needed responsibility is still unconfigured, Odai names it and asks for the model instead of claiming that route ran.
+Neither DSH package chooses planner, executor, or reviewer models. Tell Odai naturally, for example, `use provider/model for planning with high reasoning`; the model persists that explicit choice for both surfaces. Later requests stay ordinary: role words are not commands, task state selects direct, inline, same-turn, or child dispatch; an identical planner/controller model is not called twice, and an already-authorized implementation continues automatically after planning. If a needed responsibility is still unconfigured, Odai names it and asks for the model instead of claiming that route ran. Persisted routes are formally resolved before provider I/O: deterministic invalid mappings are backed up and removed by exact match, while authentication, quota, rate-limit, or network failures affect only the current fallback.
+
+DSH human-safety continuity is separate from generic semantic memory. Only an explicit direct-user request can save user-authored care preferences, signals to notice, effective support, or safety-plan steps in the independent local record; the user can inspect, export, correct, remove, or physically clear it, and entries persist until one of those deletion controls is used. New sessions treat it as historical care preference, never as present-risk evidence, diagnosis, or a hidden score, and child agents never receive it.
 
 See [`dsh/README.md`](dsh/README.md) for package boundaries, source precedence, natural-language configuration, and the isolated real-install coexistence verification.
 
@@ -175,6 +178,7 @@ The internal structure is organized by responsibility, not by mandatory stages:
 | Layer | Purpose |
 | --- | --- |
 | Kernel | Core principle, adaptive progression, minimum boundaries, and loading map |
+| `human-safety.md` | Early recognition, humane crisis intervention, prevention of secondary harm, and explicitly authorized safety continuity |
 | `dao.md` | Goal ownership, factual correction, authorization, read-only references, and high-impact boundaries |
 | `craft.md` | Lightweight planning, implementation, design, UI and real-time interaction, writing, and review |
 | `planning.md` | Executable engineering plans, requirement coverage, work-package dependencies, durable handoffs, and recovery order |

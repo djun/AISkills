@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  copyFileSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -9,6 +10,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
+import { requireModelRoute, sameModelRoute } from "./model-route.mjs";
 import { acquireOwnedStoreLock } from "./store-lock.mjs";
 
 const STORE_SCHEMA_VERSION = 1;
@@ -201,6 +203,22 @@ function preserveInvalidStore(configPath) {
   }
 }
 
+export function invalidatePersistedCompactionTarget(configPath, expectedTarget) {
+  const releaseLock = acquireOwnedStoreLock(configPath, "Odai compaction model configuration");
+  try {
+    const current = readCompactionModelStore(configPath);
+    if (!sameModelRoute(current.target, expectedTarget)) {
+      return Object.freeze({ invalidated: false, reason: "target-changed-or-not-persisted" });
+    }
+    const backupPath = `${configPath}.invalidated-${Date.now()}-${randomUUID()}`;
+    copyFileSync(configPath, backupPath);
+    rmSync(configPath, { force: true });
+    return Object.freeze({ invalidated: true, backupPath, target: current.target });
+  } finally {
+    releaseLock();
+  }
+}
+
 function resultFor(configPath, action, selection, recoveredInvalidStore = false) {
   return {
     action,
@@ -215,6 +233,7 @@ function resultFor(configPath, action, selection, recoveredInvalidStore = false)
 
 export function createCompactionConfigTool(configPath, options = {}) {
   const onConfigured = typeof options.onConfigured === "function" ? options.onConfigured : () => {};
+  const resolveCallConfig = typeof options.resolveCallConfig === "function" ? options.resolveCallConfig : undefined;
   const isChild = typeof options.isChild === "function"
     ? options.isChild
     : (agent) => {
@@ -327,31 +346,43 @@ export function createCompactionConfigTool(configPath, options = {}) {
           })
         : undefined;
 
-      const releaseLock = acquireOwnedStoreLock(configPath, "Odai compaction model configuration");
-      try {
-        let recoveredInvalidStore = false;
+      const commit = (validationStatus) => {
+        const releaseLock = acquireOwnedStoreLock(configPath, "Odai compaction model configuration");
         try {
-          readCompactionModelStore(configPath);
-        } catch (error) {
-          if (!(error instanceof CompactionModelStoreValidationError)) {
-            throw new Error("Odai compaction model configuration could not be read safely; no changes were made", { cause: error });
+          let recoveredInvalidStore = false;
+          try {
+            readCompactionModelStore(configPath);
+          } catch (error) {
+            if (!(error instanceof CompactionModelStoreValidationError)) {
+              throw new Error("Odai compaction model configuration could not be read safely; no changes were made", { cause: error });
+            }
+            recoveredInvalidStore = preserveInvalidStore(configPath);
           }
-          recoveredInvalidStore = preserveInvalidStore(configPath);
+          if (args.action === "set") writeCompactionModelStore(configPath, proposed);
+          else rmSync(configPath, { force: true });
+          const selection = args.action === "set"
+            ? Object.freeze({ target: proposed, source: "persisted" })
+            : Object.freeze({ source: "inherit" });
+          onConfigured(execution.agent, {
+            action: args.action,
+            ...(selection.target === undefined ? {} : { target: selection.target }),
+            ...(validationStatus === "verified" ? { validationStatus } : {}),
+            ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
+          });
+          return resultFor(configPath, args.action, selection, recoveredInvalidStore);
+        } finally {
+          releaseLock();
         }
-        if (args.action === "set") writeCompactionModelStore(configPath, proposed);
-        else rmSync(configPath, { force: true });
-        const selection = args.action === "set"
-          ? Object.freeze({ target: proposed, source: "persisted" })
-          : Object.freeze({ source: "inherit" });
-        onConfigured(execution.agent, {
-          action: args.action,
-          ...(selection.target === undefined ? {} : { target: selection.target }),
-          ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
-        });
-        return Promise.resolve(resultFor(configPath, args.action, selection, recoveredInvalidStore));
-      } finally {
-        releaseLock();
+      };
+      if (args.action === "set") {
+        return requireModelRoute(
+          resolveCallConfig,
+          proposed,
+          execution.signal,
+          "compaction model route",
+        ).then((validation) => commit(validation.status));
       }
+      return Promise.resolve(commit());
     },
   };
 }

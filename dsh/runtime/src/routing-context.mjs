@@ -5,7 +5,13 @@ const DEFAULT_MAX_EVENTS = 80;
 const REQUIREMENT_PATTERNS = [/requirement/iu, /acceptance/iu, /需求/u, /要求/u, /目标/u, /验收/u];
 const ACCEPTANCE_PATTERNS = [/\bA\d+\b/u, /accept(?:ance)?/iu, /验收/u, /通过条件/u, /完成条件/u];
 const DIFF_OUTPUT_PATTERNS = [/diff --git/iu, /^---\s+a\/[^\n]+\n\+\+\+\s+b\//imu];
-const TEST_PATTERNS = [/\bnode --test\b/iu, /\bnpm (?:run )?test\b/iu, /\bpnpm (?:run )?test\b/iu, /\bpytest\b/iu, /\btest(?:s|ing)?\b/iu, /测试/u];
+const DIFF_COMMAND_PATTERNS = [/^\s*git(?:\.exe)?\s+diff(?:\s|$)/iu];
+const TEST_COMMAND_PATTERNS = [
+  /^\s*(?:&\s*)?(?:"[^"\r\n]*[\\/]node(?:\.exe)?"|[A-Za-z]:\\[^\s"\r\n]*[\\/]node(?:\.exe)?|\/[^\s"\r\n]*\/node|node(?:\.exe)?)\s+--test(?:\s|$)/iu,
+  /^\s*(?:npm|pnpm|yarn)(?:\.cmd)?(?:\s+--(?:prefix|dir)\s+(?:"[^"]+"|\S+))?\s+(?:run\s+)?test(?:\s|$)/iu,
+  /^\s*(?:pytest|vitest|jest|mocha)(?:\.cmd)?(?:\s|$)/iu,
+  /^\s*(?:go|cargo|dotnet)\s+test(?:\s|$)/iu,
+];
 const TEST_SUCCESS_PATTERNS = [
   /exit code:\s*0/iu,
   /(?:^|\n)[^\n]*(?:pass|passed)\s*[:=]?\s*[1-9]\d*/iu,
@@ -17,6 +23,20 @@ const TEST_FAILURE_PATTERNS = [
   /exit code:\s*[1-9]\d*/iu,
   /(?:^|\n)[^\n]*fail(?:ed)?\s*[:=]?\s*[1-9]\d*/iu,
   /\b(?:tests?|test suite) failed\b/iu,
+];
+const WRITE_TOOL_NAMES = new Set(["edit", "write", "apply_patch"]);
+const SHELL_TOOL_NAMES = new Set(["bash", "pwsh", "shell", "powershell"]);
+const SHELL_CONTROL_PATTERN = /[;&|<>]/u;
+const READ_ONLY_SHELL_COMMAND_PATTERNS = [
+  /^\s*git(?:\.exe)?\s+(?:status|log|show|rev-parse|ls-files|branch)(?:\s|$)/iu,
+  /^\s*(?:Get-[A-Za-z]+|Select-String|Test-Path)(?:\s|$)/iu,
+  /^\s*(?:rg|grep|find|ls|pwd|cat|head|tail|wc|where|which)(?:\.exe)?(?:\s|$)/iu,
+  /^\s*node(?:\.exe)?\s+--check(?:\s|$)/iu,
+];
+const WRITE_COMMAND_PATTERNS = [
+  /(?:^|\s)(?:git\s+apply|apply_patch|sed\s+-i|perl\s+-pi)(?:\s|$)/iu,
+  /(?:^|\s)(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item)(?:\s|$)/iu,
+  /(?:^|\s)(?:rm|mv|cp|mkdir|touch)(?:\s|$)/u,
 ];
 
 function textBlocks(value, depth = 0) {
@@ -41,20 +61,68 @@ function toolResultBlocks(value, depth = 0) {
   return own.concat(Object.values(value).flatMap((item) => toolResultBlocks(item, depth + 1)));
 }
 
-function successfulToolResult(data) {
+function nativeToolResult(data) {
   const blocks = toolResultBlocks(data);
-  if (data?.error || data?.isError === true || blocks.some((block) => block.isError === true)) return false;
-  return data?.isError === false || (blocks.length > 0 && blocks.every((block) => block.isError === false));
+  if (blocks.length !== 1) return undefined;
+  const block = blocks[0];
+  const source = data?.message?.source;
+  if (source?.kind !== "tool"
+    || typeof source.callId !== "string"
+    || !source.callId
+    || block.toolCallId !== source.callId
+    || typeof block.isError !== "boolean"
+    || !Array.isArray(block.content)) {
+    return undefined;
+  }
+  return Object.freeze({
+    callId: source.callId,
+    successful: block.isError === false && !data?.error,
+  });
 }
 
-function toolResultIdentity(data, blocks) {
-  const callId = data?.callId
-    ?? data?.message?.source?.callId
-    ?? blocks.find((block) => typeof block.toolCallId === "string")?.toolCallId;
-  return typeof callId === "string" && callId ? `tool-call:${callId}` : undefined;
+function commandFromCall(call) {
+  const args = call?.arguments;
+  if (typeof args === "string") return args;
+  if (!args || typeof args !== "object" || Array.isArray(args)) return "";
+  for (const field of ["command", "cmd", "script"]) {
+    if (typeof args[field] === "string") return args[field];
+  }
+  return "";
 }
 
-function eventEvidence(event, index) {
+function resultReferencesCall(event, call) {
+  return Number.isSafeInteger(call?.seq)
+    && Array.isArray(event?.sourceEventSeqs)
+    && event.sourceEventSeqs.length === 1
+    && event.sourceEventSeqs[0] === call.seq;
+}
+
+function nativeToolCalls(events, startIndex) {
+  const calls = new Map();
+  const duplicates = new Set();
+  for (let index = startIndex; index < events.length; index += 1) {
+    const event = events[index];
+    if (event?.type !== "tool/call") continue;
+    const callId = event.data?.callId;
+    const name = event.data?.name;
+    if (typeof callId !== "string" || !callId || typeof name !== "string" || !name || !Number.isSafeInteger(event.seq)) continue;
+    if (calls.has(callId)) {
+      calls.delete(callId);
+      duplicates.add(callId);
+      continue;
+    }
+    if (duplicates.has(callId)) continue;
+    calls.set(callId, Object.freeze({
+      index,
+      seq: event.seq,
+      name,
+      arguments: event.data?.arguments,
+    }));
+  }
+  return calls;
+}
+
+function eventEvidence(event, index, calls) {
   if (event?.type === "user/message") {
     const text = textBlocks(event.data).join("\n").trim();
     return text ? { index, source: "user", kinds: ["requirement"], label: "earlier user requirement", text } : undefined;
@@ -77,33 +145,51 @@ function eventEvidence(event, index) {
     };
   }
   if (event?.type === "tool/result") {
-    const text = textBlocks(event.data).join("\n").trim();
-    if (!text || !successfulToolResult(event.data)) return undefined;
-    const blocks = toolResultBlocks(event.data);
-    const tool = event.data?.tool ?? event.data?.name ?? event.data?.execution?.name ?? "unknown";
-    const identity = toolResultIdentity(event.data, blocks);
-    const kinds = ["tool"];
-    if (identity && matchesAny(text, DIFF_OUTPUT_PATTERNS)) kinds.push("diff");
-    if (identity
-      && matchesAny(text, TEST_PATTERNS)
-      && matchesAny(text, TEST_SUCCESS_PATTERNS)
-      && !matchesAny(text, TEST_FAILURE_PATTERNS)) kinds.push("test");
+    const result = nativeToolResult(event.data);
+    const call = result ? calls.get(result.callId) : undefined;
+    if (!call || call.index >= index || !resultReferencesCall(event, call)) return undefined;
+    const callId = result.callId;
+    const successful = result.successful;
+    const command = commandFromCall(call);
+    const simpleCommand = !SHELL_CONTROL_PATTERN.test(command);
+    const diffCommand = simpleCommand && matchesAny(command, DIFF_COMMAND_PATTERNS);
+    const testCommand = simpleCommand && matchesAny(command, TEST_COMMAND_PATTERNS);
+    const explicitWrite = WRITE_TOOL_NAMES.has(call.name) || matchesAny(command, WRITE_COMMAND_PATTERNS);
+    const unknownShellMutation = SHELL_TOOL_NAMES.has(call.name)
+      && !diffCommand
+      && !testCommand
+      && (SHELL_CONTROL_PATTERN.test(command) || !matchesAny(command, READ_ONLY_SHELL_COMMAND_PATTERNS));
+    const writeCommand = explicitWrite || unknownShellMutation;
+    if (!successful && !testCommand && !writeCommand) return undefined;
+    const output = textBlocks(event.data).join("\n").trim();
+    const kinds = successful ? ["tool"] : [];
+    if (successful && diffCommand && matchesAny(output, DIFF_OUTPUT_PATTERNS)) kinds.push("diff");
+    if (writeCommand) kinds.push("write");
+    if (testCommand) {
+      const testPassed = successful
+        && matchesAny(output, TEST_SUCCESS_PATTERNS)
+        && !matchesAny(output, TEST_FAILURE_PATTERNS);
+      kinds.push(testPassed ? "test" : "test-failed");
+    }
+    const identity = `tool-call:${callId}`;
+    const text = [command ? `command: ${command}` : "", output || "(no textual result)"].filter(Boolean).join("\n\n");
     return {
       index,
       source: "tool",
       kinds,
-      label: `tool ${tool}${identity ? ` (${identity})` : ""}`,
-      ...(identity ? { identity } : {}),
+      label: `tool ${call.name} (${identity})`,
+      identity,
       text,
     };
   }
   if (event?.type === "odai/tool-observed" && event.data?.isError === false) {
     const identity = typeof event.data.callId === "string" ? `tool-call:${event.data.callId}` : undefined;
+    const tool = event.data.tool ?? "unknown";
     return {
       index,
       source: "tool",
-      kinds: ["tool"],
-      label: `observed tool ${event.data.tool ?? "unknown"}${identity ? ` (${identity})` : ""}`,
+      kinds: ["tool", ...(WRITE_TOOL_NAMES.has(tool) ? ["write"] : [])],
+      label: `observed tool ${tool}${identity ? ` (${identity})` : ""}`,
       ...(identity ? { identity } : {}),
       text: JSON.stringify(event.data),
     };
@@ -121,13 +207,36 @@ function digestPacket(value) {
 }
 
 function coverageFor(currentTask, entries) {
-  const count = (kind) => entries.filter((entry) => entry.kinds.includes(kind)).length;
+  const matching = (kind) => entries.filter((entry) => entry.kinds.includes(kind));
+  const latestIndex = (kind) => matching(kind).reduce((latest, entry) => Math.max(latest, entry.index), -1);
+  const acceptanceCount = matching("acceptance").length;
+  const diffEntries = matching("diff");
+  const testEntries = matching("test");
+  const failedTestEntries = matching("test-failed");
+  const latestWriteIndex = latestIndex("write");
+  const latestDiffIndex = latestIndex("diff");
+  const latestTestIndex = latestIndex("test");
+  const latestFailedTestIndex = latestIndex("test-failed");
+  const currentEvidence = acceptanceCount > 0
+    && latestDiffIndex >= 0
+    && latestTestIndex >= 0
+    && latestDiffIndex > latestWriteIndex
+    && latestTestIndex > latestWriteIndex
+    && latestTestIndex > latestFailedTestIndex
+    && diffEntries.some((diff) => testEntries.some((testResult) => diff.identity !== testResult.identity));
   return Object.freeze({
-    requirements: Boolean(currentTask) || count("requirement") > 0,
-    acceptanceCount: count("acceptance"),
-    diffCount: count("diff"),
-    testCount: count("test"),
-    toolEvidenceCount: count("tool"),
+    requirements: Boolean(currentTask) || matching("requirement").length > 0,
+    acceptanceCount,
+    diffCount: diffEntries.length,
+    testCount: testEntries.length,
+    failedTestCount: failedTestEntries.length,
+    writeCount: matching("write").length,
+    toolEvidenceCount: matching("tool").length,
+    latestWriteIndex,
+    latestDiffIndex,
+    latestTestIndex,
+    latestFailedTestIndex,
+    currentEvidence,
   });
 }
 
@@ -141,12 +250,14 @@ export function buildRoleContextPacket(agent, role, taskText, options = {}) {
   const taskBudget = Math.max(128, Math.floor(maxChars / 2));
   const task = truncateText(String(taskText ?? "").trim(), taskBudget);
   const events = Array.isArray(agent?.session?.events) ? agent.session.events : [];
+  const startIndex = Math.max(0, events.length - maxEvents);
+  const calls = nativeToolCalls(events, startIndex);
   const selected = [];
   let evidenceChars = 0;
   let truncated = task.truncated || events.length > maxEvents;
 
-  for (let index = events.length - 1; index >= Math.max(0, events.length - maxEvents); index -= 1) {
-    const entry = eventEvidence(events[index], index);
+  for (let index = events.length - 1; index >= startIndex; index -= 1) {
+    const entry = eventEvidence(events[index], index, calls);
     if (!entry) continue;
     const remaining = maxChars - task.text.length - evidenceChars;
     if (remaining <= 0) { truncated = true; break; }
@@ -173,7 +284,8 @@ export function buildRoleContextPacket(agent, role, taskText, options = {}) {
     && coverage.acceptanceCount > 0
     && coverage.diffCount > 0
     && coverage.testCount > 0
-    && coverage.toolEvidenceCount > 0;
+    && coverage.toolEvidenceCount > 0
+    && coverage.currentEvidence;
   return Object.freeze({
     ...packetBody,
     digest,

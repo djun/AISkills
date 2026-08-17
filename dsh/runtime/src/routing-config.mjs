@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -10,6 +11,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+
+import { requireModelRoute, sameModelRoute } from "./model-route.mjs";
 
 export const CONFIGURABLE_ROLES = Object.freeze(["researcher", "planner", "executor", "reviewer", "frontend"]);
 export const ROUTING_CONFIG_PROMPT = [
@@ -173,6 +176,26 @@ function preserveInvalidRoutingStore(configPath) {
   renameSync(configPath, `${configPath}.invalid-${Date.now()}-${randomUUID()}`);
 }
 
+export function invalidatePersistedRoleRoute(configPath, role, expectedRoute) {
+  if (!CONFIGURABLE_ROLES.includes(role)) throw new TypeError(`unknown odai routing responsibility: ${role}`);
+  const releaseLock = acquireRoutingStoreLock(configPath);
+  try {
+    const current = readRoutingStore(configPath);
+    const persisted = current.roles[role];
+    if (!sameModelRoute(persisted, expectedRoute)) {
+      return Object.freeze({ invalidated: false, reason: "mapping-changed-or-not-persisted" });
+    }
+    const backupPath = `${configPath}.invalidated-${Date.now()}-${randomUUID()}`;
+    copyFileSync(configPath, backupPath);
+    const roles = { ...current.roles };
+    delete roles[role];
+    writeRoutingStore(configPath, roles);
+    return Object.freeze({ invalidated: true, backupPath, route: persisted });
+  } finally {
+    releaseLock();
+  }
+}
+
 function routeSchema(required) {
   return {
     type: "object",
@@ -204,6 +227,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
   const onConfigured = typeof options.onConfigured === "function" ? options.onConfigured : () => {};
   const configuredRoles = options.configuredRoles ?? {};
   const latestRouteFor = typeof options.latestRouteFor === "function" ? options.latestRouteFor : () => undefined;
+  const resolveCallConfig = typeof options.resolveCallConfig === "function" ? options.resolveCallConfig : undefined;
   return {
     name: "odai_routing_config",
     description: [
@@ -278,9 +302,9 @@ export function createRoutingConfigTool(configPath, options = {}) {
               turn: { type: "integer" },
               step: { type: "integer" },
               responsibility: { type: "string", enum: [...CONFIGURABLE_ROLES] },
-              status: { type: "string", enum: ["applied", "mismatch", "unverified"] },
+              status: { type: "string", enum: ["applied", "mismatch", "unverified", "fallback"] },
               taskStatus: { type: "string", enum: ["completed", "fallback"] },
-              routeMode: { type: "string", enum: ["same-turn", "child"] },
+              routeMode: { type: "string", enum: ["inline", "same-turn", "child"] },
               routeSource: { type: "string", enum: ["persisted-mapping", "deployment-config"] },
               fallbackUsed: { type: "boolean" },
               requestedRoute: routeSchema(true),
@@ -360,41 +384,53 @@ export function createRoutingConfigTool(configPath, options = {}) {
         ...(args.maxTokens === undefined ? {} : { maxTokens: args.maxTokens }),
       }, args.responsibility) : undefined;
 
-      const releaseLock = acquireRoutingStoreLock(configPath);
-      try {
-        let current;
-        let recoveredInvalidStore = false;
+      const commit = (validationStatus) => {
+        const releaseLock = acquireRoutingStoreLock(configPath);
         try {
-          current = readRoutingStore(configPath);
-        } catch (error) {
-          if (args.action !== "set") {
-            throw new Error("Odai routing configuration is invalid; ask the user to set a responsibility mapping to repair it automatically", { cause: error });
+          let current;
+          let recoveredInvalidStore = false;
+          try {
+            current = readRoutingStore(configPath);
+          } catch (error) {
+            if (args.action !== "set") {
+              throw new Error("Odai routing configuration is invalid; ask the user to set a responsibility mapping to repair it automatically", { cause: error });
+            }
+            preserveInvalidRoutingStore(configPath);
+            current = { roles: {} };
+            recoveredInvalidStore = true;
           }
-          preserveInvalidRoutingStore(configPath);
-          current = { roles: {} };
-          recoveredInvalidStore = true;
-        }
 
-        const roles = { ...current.roles };
-        if (args.action === "remove") delete roles[args.responsibility];
-        else roles[args.responsibility] = proposedRoute;
-        writeRoutingStore(configPath, roles);
-        onConfigured(execution.agent, {
-          action: args.action,
-          responsibility: args.responsibility,
-          route: roles[args.responsibility],
-          ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
-        });
-        return Promise.resolve(resultFor(
-          configPath,
-          args.action,
-          effectiveRoutingSnapshot(configPath, configuredRoles),
-          args.responsibility,
-          recoveredInvalidStore,
-        ));
-      } finally {
-        releaseLock();
+          const roles = { ...current.roles };
+          if (args.action === "remove") delete roles[args.responsibility];
+          else roles[args.responsibility] = proposedRoute;
+          writeRoutingStore(configPath, roles);
+          onConfigured(execution.agent, {
+            action: args.action,
+            responsibility: args.responsibility,
+            route: roles[args.responsibility],
+            ...(validationStatus === "verified" ? { validationStatus } : {}),
+            ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
+          });
+          return resultFor(
+            configPath,
+            args.action,
+            effectiveRoutingSnapshot(configPath, configuredRoles),
+            args.responsibility,
+            recoveredInvalidStore,
+          );
+        } finally {
+          releaseLock();
+        }
+      };
+      if (args.action === "set") {
+        return requireModelRoute(
+          resolveCallConfig,
+          proposedRoute,
+          execution.signal,
+          `${args.responsibility} responsibility route`,
+        ).then((validation) => commit(validation.status));
       }
+      return Promise.resolve(commit());
     },
   };
 }

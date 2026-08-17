@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  classifyImplementationAuthorization,
   decideResearchPrefetch,
   decideRoute,
   extractLatestUserText,
@@ -13,6 +14,61 @@ import {
   requiresFailClosedProtection,
 } from "../src/router.mjs";
 
+function gap(responsibility, overrides = {}) {
+  return {
+    responsibility,
+    gap: `${responsibility} can change the current result.`,
+    evidenceRefs: ["current-task", "project-evidence"],
+    expectedChange: "Resolve the affected decision or artifact.",
+    stateDigest: "a".repeat(64),
+    ...overrides,
+  };
+}
+
+test("implementation authorization distinguishes delivery, plan-only, and unknown requests", () => {
+  assert.equal(classifyImplementationAuthorization("把这个修复完成并跑测试").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("Please implement and verify the fix").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("只做规划，不要改文件").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("只做代码审查，不要改文件").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Review only; do not implement or make changes").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Review the code, then implement the required fixes").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("Review the code and implement the necessary fix").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("Review the code and update me on the findings").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Review the code and update the team on the findings").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Review the code and update stakeholders on the findings").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Review the code and update management about the findings").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Review the existing fix and update stakeholders on the findings").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Can you update customers on the findings?").status, "unknown");
+  assert.equal(classifyImplementationAuthorization("Review the code, implement the fix, and update stakeholders on the findings").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("审查代码并更新一下进展").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Review only the failing test, then implement the fix").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("只审查失败的测试，然后修复问题").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("Do not modify the existing tests; implement the production fix").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("Do not modify the lockfile; update the package manifest").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("不要修改测试，只修复生产代码").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("Do not modify tests; do not implement the fix").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Do not modify tests; no need to implement the fix").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("不要修改测试，同时无需执行修复").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Do not modify anything; implement the fix").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("只帮我分析一下这次更新的影响").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("帮我分析一下这次更新的影响").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("just analyze the update impact").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Analyze the update impact").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("列一下需要修改的地方").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("给我一份需要新增的接口清单").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("Explain what the fix would look like").status, "plan-only");
+  assert.equal(classifyImplementationAuthorization("列一下需要修改的地方，然后按清单修改代码").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("给我一份需要新增的接口清单，然后实现这些接口").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("Explain what the fix would look like, then implement it").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("这次更新有什么变化？").status, "unknown");
+  assert.equal(classifyImplementationAuthorization("What changed in this update?").status, "unknown");
+  assert.equal(classifyImplementationAuthorization("Can you update me on the impact of this change?").status, "unknown");
+  assert.equal(classifyImplementationAuthorization("帮我更新这个依赖").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("Please update the dependency").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("你做了吗？").status, "unknown");
+  assert.equal(classifyImplementationAuthorization("你觉得这个方向怎么样").status, "unknown");
+});
+
 test("direct is the default even when risk is present", () => {
   const decision = decideRoute({ text: "这是一次高风险生产迁移，请帮我实现" });
   assert.equal(decision.role, "controller");
@@ -20,16 +76,17 @@ test("direct is the default even when risk is present", () => {
   assert.deepEqual(decision.signals, ["risk-present", "irreversible-action", "no-independent-gap"]);
 });
 
-test("research prefetch is narrow and independent from the primary route", () => {
+test("research prefetch requires an evidence-grounded source gap and stays independent from the primary route", () => {
   const causal = "checkout 老超时，我看就是支付方不稳定。把客户端超时降到 3 秒、重试次数提到 3，先止血。";
-  const decision = decideResearchPrefetch({ text: causal });
+  assert.equal(decideResearchPrefetch({ text: causal }).action, "direct");
+  const proposal = gap("researcher", { gap: "Two repository sources are required to test the causal claim." });
+  const decision = decideResearchPrefetch({ text: causal, proposal });
   assert.equal(decision.role, "researcher");
   assert.equal(decision.action, "delegate");
   assert.equal(decision.reasonCode, "RESEARCHER_MULTI_SOURCE_DECISION_EVIDENCE");
   assert.deepEqual(decision.signals, [
-    "decision-blocking-causal-claim",
-    "high-impact-change",
-    "bounded-evidence-compression",
+    "evidence-grounded-responsibility-gap",
+    `state:${proposal.stateDigest}`,
   ]);
   assert.equal(decideRoute({ text: causal }).targetRole, "planner");
 
@@ -44,13 +101,31 @@ test("research prefetch is narrow and independent from the primary route", () =>
   }
 });
 
-test("explicit planning keeps the current turn and upgrades its responsibility", () => {
-  const decision = decideRoute({ text: "请独立规划一下这次架构选型，再给我建议" });
+test("planning language is only a candidate until task state proves a planner gap", () => {
+  const lexical = decideRoute({ text: "请独立规划一下这次架构选型，再给我建议" });
+  assert.equal(lexical.action, "direct");
+  assert.equal(lexical.considerations[0].reasonCode, "PLANNER_GAP_NOT_PROVEN");
+
+  const decision = decideRoute({
+    text: "比较当前兼容路线后完成修复",
+    proposal: gap("planner", { gap: "Two public contract routes remain unresolved." }),
+  });
   assert.equal(decision.role, "controller");
   assert.equal(decision.action, "upgrade");
   assert.equal(decision.targetRole, "planner");
-  assert.equal(decision.reasonCode, "PLANNER_EXPLICIT_DECISION_GAP");
-  assert.equal(decideRoute({ text: "请替我独立决定是否删除生产数据" }).targetRole, "planner");
+  assert.equal(decision.reasonCode, "PLANNER_EVIDENCE_STATE_GAP");
+});
+
+test("planner meta questions trigger state explanation rather than becoming a role password", () => {
+  const direct = decideRoute({ text: "你规划了吗？还是你觉得不用规划？" });
+  assert.equal(direct.action, "direct");
+  assert.equal(direct.considerations[0].reasonCode, "PLANNER_META_QUERY_NO_INDEPENDENT_GAP");
+  const routed = decideRoute({
+    text: "你规划了吗？还是你觉得不用规划？",
+    proposal: gap("planner", { gap: "The prior task still has two unresolved contract routes." }),
+  });
+  assert.equal(routed.targetRole, "planner");
+  assert.equal(routed.reasonCode, "PLANNER_EVIDENCE_STATE_GAP");
 });
 
 test("quoted role language does not create an independent gap", () => {
@@ -65,10 +140,17 @@ test("quoted role language does not create an independent gap", () => {
   }
 });
 
-test("explicit review gap routes to reviewer before planner", () => {
-  const decision = decideRoute({ text: "请独立审查这个架构方案并 challenge the plan" });
+test("review language is only a candidate while current acceptance evidence can route reviewer", () => {
+  const lexical = decideRoute({ text: "请独立审查这个架构方案并 challenge the plan" });
+  assert.equal(lexical.action, "direct");
+  assert.equal(lexical.considerations[0].reasonCode, "REVIEWER_GAP_NOT_PROVEN");
+
+  const decision = decideRoute({
+    text: "实现和测试已经完成",
+    proposal: gap("reviewer", { gap: "Independent acceptance can change A1." }),
+  });
   assert.equal(decision.role, "reviewer");
-  assert.equal(decision.reasonCode, "REVIEWER_EXPLICIT_ACCEPTANCE_GAP");
+  assert.equal(decision.reasonCode, "REVIEWER_EVIDENCE_STATE_GAP");
 });
 
 test("unverified causal claim plus concrete high-impact change upgrades the controller", () => {
@@ -125,14 +207,17 @@ test("high-impact observe and route failure notices require a read-only decision
   assert.match(failure, /provider unavailable/u);
   assert.doesNotMatch(failure, /continue directly/u);
 
-  const explicitHighImpact = decideRoute({ text: "请独立规划这次生产发布，审批已经完成，按方案上线。" });
-  assert.equal(explicitHighImpact.reasonCode, "PLANNER_EXPLICIT_DECISION_GAP");
-  assert.equal(requiresFailClosedProtection(explicitHighImpact), true);
-  assert.doesNotMatch(renderRouteFailureNotice(explicitHighImpact, "provider unavailable"), /continue directly/u);
+  const stateBackedHighImpact = decideRoute({
+    text: "这是生产发布，审批已经完成，按方案上线。",
+    proposal: gap("planner", { gap: "The release protection path is unresolved." }),
+  });
+  assert.equal(stateBackedHighImpact.reasonCode, "PLANNER_EVIDENCE_STATE_GAP");
+  assert.equal(requiresFailClosedProtection(stateBackedHighImpact), true);
+  assert.doesNotMatch(renderRouteFailureNotice(stateBackedHighImpact, "provider unavailable"), /continue directly/u);
 
-  const explicit = decideRoute({ text: "请独立规划一下架构方案" });
-  assert.equal(requiresFailClosedProtection(explicit), false);
-  assert.match(renderRouteFailureNotice(explicit, "provider unavailable"), /continue directly/u);
+  const lexicalOnly = decideRoute({ text: "请独立规划一下架构方案" });
+  assert.equal(requiresFailClosedProtection(lexicalOnly), false);
+  assert.match(renderRouteFailureNotice(lexicalOnly, "provider unavailable"), /continue directly/u);
 });
 
 test("every missing responsibility asks for a natural-language model choice", () => {
@@ -178,7 +263,7 @@ test("contextual signals do not delegate unless the complete planner gap exists"
   }
 });
 
-test("executor requires a frozen card, observable benefit, and explicit continuation", () => {
+test("executor requires a frozen card and observable benefit plus user continuation or authorized task state", () => {
   assert.equal(decideRoute({
     text: "请执行这个方案",
     routeCard: { frozen: true, observableBenefit: false },
@@ -211,6 +296,17 @@ test("executor requires a frozen card, observable benefit, and explicit continua
       routeCard: { frozen: true, observableBenefit: true },
     }).targetRole, "executor", text);
   }
+
+  assert.equal(decideRoute({
+    text: "修复并验证当前问题",
+    routeCard: { frozen: true, observableBenefit: true, authorization: { status: "authorized" } },
+    proposal: gap("executor", { gap: "The original task already authorizes bounded implementation." }),
+  }).targetRole, "executor");
+  assert.equal(decideRoute({
+    text: "只给我规划，不要实施",
+    routeCard: { frozen: true, observableBenefit: true, authorization: { status: "plan-only" } },
+    proposal: gap("executor", { gap: "An executor could implement the plan." }),
+  }).action, "direct");
 
   const decision = decideRoute({
     text: "继续执行这个方案",

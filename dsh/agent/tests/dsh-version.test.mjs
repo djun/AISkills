@@ -10,11 +10,11 @@ test("DSH version probe uses a shell for Windows npm command shims", () => {
     platform: "win32",
     execute(command, args, options) {
       calls.push({ command, args, options });
-      return "0.1.0-rc.6\r\n";
+      return "0.1.0-rc.7\r\n";
     },
   });
 
-  assert.equal(actual, "0.1.0-rc.6");
+  assert.equal(actual, "0.1.0-rc.7");
   assert.deepEqual(calls, [{
     command: "dsh",
     args: ["-V"],
@@ -29,7 +29,7 @@ test("DSH version probe directly executes binaries outside Windows", () => {
     platform: "linux",
     execute(command, args, options) {
       calls.push({ command, args, options });
-      return "0.1.0-rc.6\n";
+      return "0.1.0-rc.7\n";
     },
   });
 

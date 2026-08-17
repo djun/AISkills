@@ -48,7 +48,7 @@ test("research packet validates, freezes, hashes, and renders provenance", () =>
   assert.match(rendered, /retrieval index, not authority, planning, acceptance, or permission to act/u);
 });
 
-test("research packet verifies source existence, boundaries, line numbers, and exact excerpts", () => {
+test("research packet verifies source existence, boundaries, line numbers, and exact excerpts", (t) => {
   const root = mkdtempSync(resolve(tmpdir(), "odai-research-packet-"));
   const outside = mkdtempSync(resolve(tmpdir(), "odai-research-outside-"));
   try {
@@ -83,14 +83,19 @@ test("research packet verifies source existence, boundaries, line numbers, and e
       ] }))), root),
       /does not match/u,
     );
-    symlinkSync(resolve(outside, "secret.md"), resolve(root, "config/escaped.md"));
-    assert.throws(
-      () => verifyResearchPacketSources(parseResearchPacket(JSON.stringify(packet({ facts: [
-        { ...packet().facts[0], source: { path: "config/escaped.md", line: 1 } },
-        packet().facts[1],
-      ] }))), root),
-      /outside the project root/u,
-    );
+    try {
+      symlinkSync(resolve(outside, "secret.md"), resolve(root, "config/escaped.md"));
+      assert.throws(
+        () => verifyResearchPacketSources(parseResearchPacket(JSON.stringify(packet({ facts: [
+          { ...packet().facts[0], source: { path: "config/escaped.md", line: 1 } },
+          packet().facts[1],
+        ] }))), root),
+        /outside the project root/u,
+      );
+    } catch (error) {
+      if (!["EPERM", "EACCES", "ENOTSUP"].includes(error?.code)) throw error;
+      t.diagnostic(`symlink escape assertion unavailable in this environment (${error.code})`);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });

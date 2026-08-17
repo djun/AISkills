@@ -30,6 +30,19 @@ import {
   resolveMemoryStorePath,
 } from "../src/semantic-memory-store.mjs";
 
+function symlinkOrSkip(t, target, path, type) {
+  try {
+    symlinkSync(target, path, type);
+    return true;
+  } catch (error) {
+    if (["EPERM", "EACCES", "ENOTSUP"].includes(error?.code)) {
+      t.skip(`symbolic links are unavailable in this environment (${error.code})`);
+      return false;
+    }
+    throw error;
+  }
+}
+
 function directMessage(id, text) {
   return {
     id,
@@ -86,11 +99,16 @@ test("automatic discovery admits durable direct statements and rejects unsafe lo
     "这个项目以后默认使用 api_key=supersecret123456。",
     "我以后默认使用 me@example.com 联系。",
     "我的病历以后统一放在项目目录。",
+    "以后我心累时，你默认先听我说。",
+    "Going forward, remember that I feel depressed and want very short replies.",
   ];
   for (const value of negatives) {
     assert.deepEqual(discoverAutomaticMemoryCandidates(value), [], value);
   }
   assert.equal(containsSensitiveMemory("password=hunter2-secret"), true);
+  assert.equal(containsSensitiveMemory("以后我心累时先听我说"), true);
+  assert.equal(containsSensitiveMemory("I feel suicidal"), true);
+  assert.equal(containsSensitiveMemory("以后默认先倾听、回复简短、不要说教"), false);
   assert.match(MEMORY_PROMPT, /no hidden provider, model, embedding, subagent, or compaction call/u);
   assert.match(MEMORY_PROMPT, /current direct human message.*always take precedence/iu);
 });
@@ -130,7 +148,7 @@ test("only the authenticated direct-human message in the current open turn is el
   }), undefined);
 });
 
-test("memory store is strict, local, atomic, and rejects symlink substitution", () => {
+test("memory store is strict, local, atomic, and rejects symlink substitution", (t) => {
   const root = mkdtempSync(resolve(tmpdir(), "odai-memory-store-"));
   try {
     const storePath = resolveMemoryStorePath(undefined, { DSH_HOME: root });
@@ -150,7 +168,7 @@ test("memory store is strict, local, atomic, and rejects symlink substitution", 
 
     const target = resolve(root, "target.json");
     writeFileSync(target, `${JSON.stringify({ schemaVersion: 1, settings: {}, entries: [] })}\n`);
-    symlinkSync(target, storePath);
+    if (!symlinkOrSkip(t, target, storePath)) return;
     assert.throws(() => readMemoryStore(storePath), /must not be a symbolic link/u);
     rmSync(storePath);
     rmSync(resolve(root, "odai", "memory"), { recursive: true });
@@ -182,8 +200,14 @@ test("automatic capture deduplicates dual runtimes and retrieves only active sco
     const global = agentFor({ id: "session-global", cwd: projectA, text: "所有项目今后默认使用 UTC 保存时间。" });
     capture(storePath, global);
     assert.equal(readMemoryStore(storePath).entries.length, 2);
-    assert.equal(statSync(storePath).mode & 0o777, 0o600);
-    assert.equal(statSync(resolve(storePath, "..")).mode & 0o777, 0o700);
+    const storeStat = statSync(storePath);
+    const directoryStat = statSync(resolve(storePath, ".."));
+    assert.equal(storeStat.isFile(), true);
+    assert.equal(directoryStat.isDirectory(), true);
+    if (process.platform !== "win32") {
+      assert.equal(storeStat.mode & 0o777, 0o600);
+      assert.equal(directoryStat.mode & 0o777, 0o700);
+    }
 
     const sameProject = retrieveSemanticMemories({
       storePath,
@@ -209,14 +233,14 @@ test("automatic capture deduplicates dual runtimes and retrieves only active sco
   }
 });
 
-test("retrieval is deterministic, bounded, and canonicalizes project aliases", () => {
+test("retrieval is deterministic, bounded, and canonicalizes project aliases", (t) => {
   const root = mkdtempSync(resolve(tmpdir(), "odai-memory-retrieval-"));
   try {
     const storePath = resolveMemoryStorePath(undefined, { DSH_HOME: root });
     const project = resolve(root, "project");
     const alias = resolve(root, "project-alias");
     mkdirSync(project);
-    symlinkSync(project, alias, "dir");
+    if (!symlinkOrSkip(t, project, alias, "dir")) return;
     for (let index = 0; index < 8; index += 1) {
       capture(storePath, agentFor({
         id: `retrieval-${index}`,

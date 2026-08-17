@@ -795,38 +795,46 @@ test("runtime bundle snapshots survive on-disk package replacement within a proc
   }
 });
 
-test("store symlinks and semantically broken pointer history fail closed", async () => {
+test("store symlinks and semantically broken pointer history fail closed", async (t) => {
   const scratch = scratchRoot("store-safety");
   try {
     const root = resolve(scratch, "skill-evolution");
     const outside = resolve(scratch, "outside");
     mkdirSync(root, { recursive: true });
     mkdirSync(outside, { recursive: true });
-    symlinkSync(outside, resolve(root, "generations"), "dir");
+    let symlinkAvailable = true;
+    try {
+      symlinkSync(outside, resolve(root, "generations"), "dir");
+    } catch (error) {
+      if (!["EPERM", "EACCES", "ENOTSUP"].includes(error?.code)) throw error;
+      symlinkAvailable = false;
+      t.diagnostic(`skill-evolution symlink assertion unavailable in this environment (${error.code})`);
+    }
     const current = upstreamSelection();
     const tool = createSkillEvolutionTool(root, { currentSelectionFor: () => current });
     const owner = execution().agent;
-    const inspected = await tool.execute({ action: "inspect", path: "references/support.md" }, { agent: owner });
-    const oldString = inspected.content.split(/\r?\n/u)[0];
-    const proposalArgs = {
-      action: "propose",
-      objective: "must not cross a store symlink",
-      expectedBundleDigest: current.bundle.digest,
-      changes: [{
-        path: "references/support.md",
-        expectedSha256: inspected.sha256,
-        replacements: [{ oldString, newString: `${oldString}\nSYMLINK_ESCAPE` }],
-      }],
-    };
-    const prepared = await tool.execute(proposalArgs, { agent: owner });
-    authorize(owner, prepared.proposalPhrase);
-    assert.throws(
-      () => tool.execute(proposalArgs, { agent: owner }),
-      /generations directory must be a regular directory/u,
-    );
-    assert.deepEqual(readFileNames(outside), []);
-
-    rmSync(resolve(root, "generations"), { force: true });
+    if (symlinkAvailable) {
+      const inspected = await tool.execute({ action: "inspect", path: "references/support.md" }, { agent: owner });
+      const oldString = inspected.content.split(/\r?\n/u)[0];
+      const proposalArgs = {
+        action: "propose",
+        objective: "must not cross a store symlink",
+        expectedBundleDigest: current.bundle.digest,
+        changes: [{
+          path: "references/support.md",
+          expectedSha256: inspected.sha256,
+          replacements: [{ oldString, newString: `${oldString}\nSYMLINK_ESCAPE` }],
+        }],
+      };
+      const prepared = await tool.execute(proposalArgs, { agent: owner });
+      authorize(owner, prepared.proposalPhrase);
+      assert.throws(
+        () => tool.execute(proposalArgs, { agent: owner }),
+        /generations directory must be a regular directory/u,
+      );
+      assert.deepEqual(readFileNames(outside), []);
+      rmSync(resolve(root, "generations"), { force: true });
+    }
     const first = "1".repeat(64);
     const second = "2".repeat(64);
     writeFileSync(resolve(root, "state.json"), `${JSON.stringify({

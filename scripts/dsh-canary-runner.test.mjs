@@ -284,7 +284,7 @@ test("DSH canary runner isolates Plugin and Agent routing surfaces", async () =>
     assert.equal(source.hasGlobalPlugin, false);
     assert.equal(source.hasAgent, false);
     assert.match(source.patch, /odai-governance-canary-source/u);
-    assert.match(source.patch, new RegExp(`name: ${JSON.stringify(sourcePlugin)}`, "u"));
+    assert.equal(source.patch.includes(`name: ${JSON.stringify(sourcePlugin)}`), true);
     assert.match(source.patch, /researcher:[\s\S]*provider: "openai"[\s\S]*model: "gpt-5\.6-luna"[\s\S]*reasoningEffort: "xhigh"[\s\S]*maxTokens: 500/u);
     assert.match(source.patch, /frontend:[\s\S]*provider: "kimi-coding"[\s\S]*model: "k3"[\s\S]*maxTokens: 4096/u);
     assert.deepEqual(source.outputPolicy, {

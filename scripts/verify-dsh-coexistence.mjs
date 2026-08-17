@@ -16,7 +16,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { installAgentPreset } from "../dsh/agent/src/installer.mjs";
-import { spawnDsh } from "../dsh/agent/src/dsh-version.mjs";
+import { readDshVersion, spawnDsh } from "../dsh/agent/src/dsh-version.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = resolve(repoRoot, "dsh/plugin");
@@ -25,6 +25,7 @@ const runtimeRoot = resolve(repoRoot, "dsh/runtime/src");
 const canonicalSkillRoot = resolve(repoRoot, "skills/odai");
 const sharedStateModule = resolve(runtimeRoot, "skill-selection-state.mjs");
 const dsh = process.env.DSH_BIN ?? (process.platform === "win32" ? "dsh.cmd" : "dsh");
+const targetDshVersion = readDshVersion({ dsh });
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const scratch = await mkdtemp(resolve(tmpdir(), "odai-dsh-coexistence-"));
 const home = resolve(scratch, "home");
@@ -164,7 +165,7 @@ async function prepareAgent() {
     cp(runtimeRoot, resolve(sourcePreset, "runtime"), { recursive: true }),
     cp(canonicalSkillRoot, resolve(sourcePreset, "skills/odai"), { recursive: true }),
   ]);
-  await installAgentPreset({ dshHome: home, sourceRoot: sourcePreset });
+  await installAgentPreset({ dshHome: home, sourceRoot: sourcePreset, dshVersion: targetDshVersion });
 }
 
 async function installPlugin() {

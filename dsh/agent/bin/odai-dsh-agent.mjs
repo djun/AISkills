@@ -4,7 +4,7 @@ import { readDshVersion } from "../src/dsh-version.mjs";
 import {
   inspectAgentInstallation,
   installAgentPreset,
-  SUPPORTED_DSH_VERSION,
+  SUPPORTED_DSH_VERSIONS,
   uninstallAgentPreset,
 } from "../src/installer.mjs";
 
@@ -27,9 +27,10 @@ try {
   if (args.help) {
     process.stdout.write(HELP);
   } else if (args.command === "install") {
-    assertDshVersion();
+    const dshVersion = assertDshVersion();
     print(await installAgentPreset({
       dshHome: args.dshHome,
+      dshVersion,
       confirmDshStopped: args.yes,
     }), args.json);
   } else if (args.command === "status") {
@@ -55,11 +56,12 @@ function assertDshVersion() {
   try {
     actual = readDshVersion({ dsh });
   } catch (error) {
-    throw new Error(`cannot run ${dsh} -V; install DSH ${SUPPORTED_DSH_VERSION} before installing the preset`);
+    throw new Error(`cannot run ${dsh} -V; install one of ${SUPPORTED_DSH_VERSIONS.join(", ")} before installing the preset`);
   }
-  if (actual !== SUPPORTED_DSH_VERSION) {
-    throw new Error(`unsupported DSH version ${actual || "<empty>"}; expected ${SUPPORTED_DSH_VERSION}`);
+  if (!SUPPORTED_DSH_VERSIONS.includes(actual)) {
+    throw new Error(`unsupported DSH version ${actual || "<empty>"}; expected one of ${SUPPORTED_DSH_VERSIONS.join(", ")}`);
   }
+  return actual;
 }
 
 function parseArgs(argv) {

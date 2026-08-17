@@ -106,9 +106,9 @@ function assemblyFor(ctx) {
 }
 
 test("bundle manifest validates complete content and full SemVer precedence", () => {
-  assert.equal(bundled.manifest.skillVersion, "0.2.1");
+  assert.equal(bundled.manifest.skillVersion, "0.3.0");
   assert.equal(bundled.manifest.runtimeContract, 3);
-  assert.equal(bundled.manifest.requiredFiles.length, 27);
+  assert.equal(bundled.manifest.requiredFiles.length, 28);
   assert.match(bundled.roleContracts.researcher, /来源账本只是检索索引/u);
   assert.match(bundled.referenceContracts.craft, /通用制作工艺/u);
   const leverage = readFileSync(resolve(canonicalRoot, "references/leverage.md"), "utf8");
@@ -122,7 +122,7 @@ test("bundle manifest validates complete content and full SemVer precedence", ()
 
   const scratch = fixtureRoot("bundle-conflict");
   try {
-    const conflicting = loadSkillBundle(installBundle(resolve(scratch, "odai"), "0.2.1", "CONFLICT"), {
+    const conflicting = loadSkillBundle(installBundle(resolve(scratch, "odai"), bundled.manifest.skillVersion, "CONFLICT"), {
       source: "user-dsh",
     });
     const selection = chooseSkillBundle({ mode: "auto", bundled, candidate: conflicting });
@@ -199,7 +199,7 @@ test("invalid and conflicting candidates continue to the next compatible source"
     mkdirSync(resolve(project, ".git"), { recursive: true });
     installBundle(resolve(project, ".dsh/skills/odai"), "0.5.0", "BROKEN_PROJECT");
     rmSync(resolve(project, ".dsh/skills/odai/assets/routing-roles/reviewer.md"));
-    installBundle(resolve(dshHome, "skills/odai"), "0.2.1", "SAME_VERSION_CONFLICT");
+    installBundle(resolve(dshHome, "skills/odai"), bundled.manifest.skillVersion, "SAME_VERSION_CONFLICT");
     installBundle(resolve(agentsHome, "skills/odai"), "0.4.0", "USER_AGENTS");
 
     const selection = await resolveSkillSelection({
@@ -394,7 +394,21 @@ test("runtime injects one project snapshot into both prompt and routed role cont
     });
     const agent = {
       phase: { turn: 1 },
-      session: { header: { cwd: project }, events: [] },
+      session: {
+        header: { cwd: project },
+        events: [{
+          type: "odai/responsibility-gap",
+          data: {
+            turn: 1,
+            step: 0,
+            responsibility: "planner",
+            gap: "Two architecture routes can change the implementation contract.",
+            evidenceRefs: ["current-task", "project-contract"],
+            expectedChange: "Select the compatible route before implementation.",
+            stateDigest: "b".repeat(64),
+          },
+        }],
+      },
     };
     const signal = new AbortController().signal;
     const assemble = ctx.captured.handlers.get("system-prompt/assemble");

@@ -35,8 +35,12 @@ test.after(() => {
 
 function fakeContext(extra = {}) {
   const captured = { handlers: new Map(), handlerOptions: new Map(), sections: [], guards: [], tools: [], logs: [] };
+  const llm = extra.llm ?? {
+    async resolveCallConfig(config) { return { config }; },
+  };
   return {
     ...extra,
+    llm,
     captured,
     systemPrompt: {
       section(value) {
@@ -74,6 +78,55 @@ function userMessage(text) {
     role: "user",
     content: [{ type: "text", text }],
     source: { kind: "user" },
+  };
+}
+
+function nativeToolEvents(callId, command, output, options = {}) {
+  const callSeq = options.callSeq ?? 100;
+  const isError = options.isError === true;
+  return [
+    {
+      type: "tool/call",
+      seq: callSeq,
+      data: { turn: 1, step: 1, callId, name: options.name ?? "pwsh", arguments: { command } },
+    },
+    {
+      type: "tool/result",
+      seq: callSeq + 1,
+      sourceEventSeqs: [callSeq],
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          role: "user",
+          source: { kind: "tool", callId },
+          content: [{
+            type: "tool-result",
+            toolCallId: callId,
+            content: [{ type: "text", text: output }],
+            isError,
+          }],
+        },
+        ...(isError ? { error: { code: "COMMAND_FAILED" } } : {}),
+      },
+    },
+  ];
+}
+
+function responsibilityGapEvent(responsibility, overrides = {}) {
+  const marker = ({ researcher: "a", planner: "b", executor: "c", reviewer: "d", frontend: "e", user: "f" })[responsibility];
+  return {
+    type: "odai/responsibility-gap",
+    data: {
+      turn: 1,
+      step: 0,
+      responsibility,
+      gap: `${responsibility} can change the current result.`,
+      evidenceRefs: ["current-task", "project-evidence"],
+      expectedChange: "Resolve the affected decision or artifact.",
+      stateDigest: marker.repeat(64),
+      ...overrides,
+    },
   };
 }
 
@@ -442,6 +495,92 @@ test("managed compaction target overrides only summaries and restores inheritanc
   assert.equal(fallback.reasoningEffort, "xhigh");
   assert.equal(fallback.messages.length, 1);
   assert.equal(ctx.captured.logs.some((message) => /compaction model configuration is invalid/iu.test(message)), true);
+});
+
+test("configured compaction discards partial failure output and retries once on the inherited route", async () => {
+  const configPath = resolve(testDshHome, "compaction-runtime-fallback", "compaction.json");
+  mkdirSync(resolve(configPath, ".."), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify({
+    schemaVersion: 1,
+    target: { provider: "openai", model: "summary-model", reasoningEffort: "high" },
+  })}\n`, "utf8");
+  const fallbackCalls = [];
+  const llm = {
+    async resolveCallConfig(config) { return { config }; },
+    stream(options) {
+      fallbackCalls.push({ ...options });
+      return (async function* fallbackStream() {
+        yield { type: "text", text: "complete inherited summary" };
+        yield { type: "finish", reason: { kind: "stop" } };
+      })();
+    },
+  };
+  const ctx = fakeContext({ llm });
+  apply(ctx, { skillPath, compaction: { configPath } });
+  const options = {
+    purpose: "compaction",
+    provider: "openai",
+    model: "controller-model",
+    reasoningEffort: "max",
+    messages: [{ role: "user", content: [{ type: "text", text: "history" }] }],
+  };
+  const configuredSeen = [];
+  const stream = ctx.captured.handlers.get("llm/stream")(options, () => (async function* targetStream() {
+    configuredSeen.push({ provider: options.provider, model: options.model, reasoningEffort: options.reasoningEffort });
+    yield { type: "text", text: "partial target output that must be discarded" };
+    yield { type: "finish", reason: { kind: "error", failure: { code: "RATE_LIMIT", message: "busy" } } };
+  })());
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+
+  assert.deepEqual(configuredSeen, [{ provider: "openai", model: "summary-model", reasoningEffort: "high" }]);
+  assert.deepEqual(chunks.map((chunk) => chunk.text).filter(Boolean), ["complete inherited summary"]);
+  assert.equal(fallbackCalls.length, 1);
+  assert.equal(fallbackCalls[0].model, "controller-model");
+  assert.equal(fallbackCalls[0].reasoningEffort, "max");
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")).target, {
+    provider: "openai",
+    model: "summary-model",
+    reasoningEffort: "high",
+  });
+});
+
+test("deterministic compaction route failure backs up and removes only the matching target", async () => {
+  const configPath = resolve(testDshHome, "compaction-runtime-invalid", "compaction.json");
+  mkdirSync(resolve(configPath, ".."), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify({
+    schemaVersion: 1,
+    target: { provider: "openai", model: "removed-summary-model" },
+  })}\n`, "utf8");
+  const llm = {
+    async resolveCallConfig(config) {
+      if (config.model === "removed-summary-model") {
+        const error = new Error("unknown model removed-summary-model");
+        error.code = "UNKNOWN_MODEL";
+        throw error;
+      }
+      return { config };
+    },
+  };
+  const ctx = fakeContext({ llm });
+  apply(ctx, { skillPath, compaction: { configPath } });
+  const options = {
+    purpose: "compaction",
+    provider: "openai",
+    model: "controller-model",
+    messages: [{ role: "user", content: [{ type: "text", text: "history" }] }],
+  };
+  const stream = ctx.captured.handlers.get("llm/stream")(options, () => (async function* inheritedStream() {
+    yield { type: "text", text: "inherited summary" };
+    yield { type: "finish", reason: { kind: "stop" } };
+  })());
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+
+  assert.deepEqual(chunks.map((chunk) => chunk.text).filter(Boolean), ["inherited summary"]);
+  const entries = readdirSync(resolve(configPath, ".."));
+  assert.equal(entries.includes("compaction.json"), false);
+  assert.equal(entries.some((entry) => entry.startsWith("compaction.json.invalidated-")), true);
 });
 
 test("routing off ignores stale protection evidence while memory remains available", async () => {
@@ -1050,33 +1189,41 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "observe" } });
 
-  assert.equal(ctx.captured.sections.length, 7);
+  assert.equal(ctx.captured.sections.length, 9);
   assert.match(ctx.captured.sections[0].text, /odai canonical governance/u);
   assert.match(ctx.captured.sections[0].text, /already loaded by this runtime; do not call the skill tool/u);
   assert.match(ctx.captured.sections[1].text, /naturally asks to inspect, set, change, or remove/u);
   assert.match(ctx.captured.sections[1].text, /Never infer, recommend as chosen, or silently select/u);
-  assert.match(ctx.captured.sections[2].text, /frozen route cards/u);
-  assert.match(ctx.captured.sections[2].text, /canonical executor reassessment proves observable net benefit/u);
-  assert.doesNotMatch(ctx.captured.sections[2].text, /earlier direct-routing choice expires/u);
-  assert.doesNotMatch(ctx.captured.sections[2].text, /task size alone never justifies delegation/u);
-  assert.match(ctx.captured.sections[3].text, /explicitly asks to inspect, set, or reset that source/u);
-  assert.equal(ctx.captured.sections[4].text, "");
-  assert.match(ctx.captured.sections[5].text, /compaction model configuration/u);
-  assert.match(ctx.captured.sections[5].text, /Never infer or silently choose/u);
-  assert.match(ctx.captured.sections[5].text, /controller, researcher, planner, executor, reviewer, frontend/u);
-  assert.match(ctx.captured.sections[6].text, /long-term semantic memory/u);
-  assert.match(ctx.captured.sections[6].text, /no hidden provider, model, embedding, subagent, or compaction call/u);
+  assert.match(ctx.captured.sections[2].text, /user-controlled human-safety continuity/iu);
+  assert.match(ctx.captured.sections[2].text, /Never infer or automatically save a current mood/u);
+  assert.match(ctx.captured.sections[3].text, /Users describe goals, constraints, materials, and acceptance/u);
+  assert.match(ctx.captured.sections[4].text, /frozen route cards/u);
+  assert.match(ctx.captured.sections[4].text, /canonical executor reassessment proves observable net benefit/u);
+  assert.doesNotMatch(ctx.captured.sections[4].text, /earlier direct-routing choice expires/u);
+  assert.doesNotMatch(ctx.captured.sections[4].text, /task size alone never justifies delegation/u);
+  assert.match(ctx.captured.sections[5].text, /explicitly asks to inspect, set, or reset that source/u);
+  assert.equal(ctx.captured.sections[6].text, "");
+  assert.match(ctx.captured.sections[7].text, /compaction model configuration/u);
+  assert.match(ctx.captured.sections[7].text, /Never infer or silently choose/u);
+  assert.match(ctx.captured.sections[7].text, /controller, researcher, planner, executor, reviewer, frontend/u);
+  assert.match(ctx.captured.sections[8].text, /long-term semantic memory/u);
+  assert.match(ctx.captured.sections[8].text, /no hidden provider, model, embedding, subagent, or compaction call/u);
   assert.equal(ctx.captured.tools[0].name, "odai_routing_config");
-  assert.equal(ctx.captured.tools[1].name, "odai_route_card");
-  assert.equal(ctx.captured.tools[2].name, "odai_skill_source_config");
-  assert.equal(ctx.captured.tools[3].name, "odai_skill_evolution");
-  assert.match(ctx.captured.tools[3].description, /current open turn's latest genuine user message/u);
-  assert.equal("evidence" in ctx.captured.tools[3].parameters.properties, false);
+  assert.equal(ctx.captured.tools[1].name, "odai_human_safety");
+  assert.match(ctx.captured.tools[1].description, /Invoke proactively/iu);
+  assert.equal(ctx.captured.tools[2].name, "odai_responsibility_gap");
+  assert.equal(ctx.captured.tools[3].name, "odai_route_card");
+  assert.equal(ctx.captured.tools[4].name, "odai_skill_source_config");
+  assert.equal(ctx.captured.tools[5].name, "odai_skill_evolution");
+  assert.match(ctx.captured.tools[5].description, /current open turn's latest genuine user message/u);
+  assert.equal("evidence" in ctx.captured.tools[5].parameters.properties, false);
   assert.equal(ctx.captured.sections.some((section) => section.name === "odai:skill-evolution"), false);
-  assert.equal(ctx.captured.tools[4].name, "odai_output_config");
-  assert.equal(ctx.captured.tools[5].name, "odai_compaction_config");
-  assert.equal(ctx.captured.tools[6].name, "odai_memory");
-  assert.match(ctx.captured.tools[6].description, /without requiring the user to say remember/u);
+  assert.equal(ctx.captured.tools[6].name, "odai_output_config");
+  assert.equal(ctx.captured.tools[7].name, "odai_compaction_config");
+  assert.equal(ctx.captured.tools[8].name, "odai_memory");
+  assert.match(ctx.captured.tools[8].description, /without requiring the user to say remember/u);
+  assert.equal(ctx.captured.tools[9].name, "odai_human_safety_continuity");
+  assert.match(ctx.captured.tools[9].description, /independent cross-session human-safety continuity/u);
   assert.ok(ctx.captured.handlers.has("system-prompt/assemble"));
   assert.equal(ctx.captured.guards.length, 1);
   assert.ok(ctx.captured.handlers.has("tools/result"));
@@ -1094,6 +1241,8 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
       },
     },
   };
+  const safety = await ctx.captured.tools[1].execute({}, { agent });
+  assert.match(safety.contract, /任何可信的自残或轻生倾向/u);
   const signal = new AbortController().signal;
   const handler = ctx.captured.handlers.get("agent/pre-step");
   const result = await handler({ agent, turn: 1, step: 1, signal }, async () => ({
@@ -1107,19 +1256,16 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
   assert.match(result.messages[1].content[0].text, /target responsibility: planner/u);
   assert.match(result.messages[1].content[0].text, /concrete evidence-gathering steps and explicit decision criteria/u);
   assert.match(result.messages[1].content[0].text, /do not implement, persist, or publish/u);
-  assert.deepEqual(events.slice(0, 4).map((event) => event.type), [
-    "odai/research-decided",
-    "odai/research-result",
+  assert.deepEqual(events.slice(0, 2).map((event) => event.type), [
     "odai/route-decided",
     "odai/route-protection",
   ]);
-  assert.equal(events[1].data.stopReason, "observe-mode");
-  assert.equal(events[2].data.role, "controller");
-  assert.equal(events[2].data.action, "upgrade");
-  assert.equal(events[2].data.targetRole, "planner");
-  assert.equal(events[2].data.reasonCode, "PLANNER_UNVERIFIED_HIGH_IMPACT_CHANGE");
-  assert.equal(events[3].data.mode, "read-only");
-  assert.equal(events[3].data.source, "observe");
+  assert.equal(events[0].data.role, "controller");
+  assert.equal(events[0].data.action, "upgrade");
+  assert.equal(events[0].data.targetRole, "planner");
+  assert.equal(events[0].data.reasonCode, "PLANNER_UNVERIFIED_HIGH_IMPACT_CHANGE");
+  assert.equal(events[1].data.mode, "read-only");
+  assert.equal(events[1].data.source, "observe");
 
   const guard = ctx.captured.guards[0];
   assert.match(guard({ callId: "write-1", agent, name: "write" }), /^ODAI_HIGH_IMPACT_ROUTE_BLOCKED:/u);
@@ -1131,6 +1277,60 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
     messages: [userMessage("把普通按钮文案改得更清楚")],
   }));
   assert.equal(guard({ callId: "write-2", agent, name: "write" }), undefined);
+});
+
+test("explicit safety continuity persists across controller sessions without reaching child prompts", async () => {
+  const firstCtx = fakeContext();
+  apply(firstCtx, { skillPath });
+  const value = "心烦时先听我说，再帮我把事情缩小一步";
+  const events = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "user/message", seq: 2, data: userMessage(`请跨会话保存这条照护偏好：${value}。`) },
+  ];
+  const firstAgent = {
+    session: {
+      header: {},
+      events,
+      append(type, data) { events.push({ type, seq: events.length + 1, data }); },
+    },
+  };
+  const firstTool = firstCtx.captured.tools.find((tool) => tool.name === "odai_human_safety_continuity");
+  await firstTool.execute({ action: "add", category: "care-preference", value }, { agent: firstAgent });
+
+  const nextCtx = fakeContext();
+  apply(nextCtx, { skillPath });
+  const controllerEvents = [];
+  const controllerAgent = {
+    session: {
+      header: {},
+      events: controllerEvents,
+      append(type, data) { controllerEvents.push({ type, seq: controllerEvents.length + 1, data }); },
+    },
+  };
+  const assembled = await nextCtx.captured.handlers.get("system-prompt/assemble")(
+    {},
+    { agent: controllerAgent, signal: new AbortController().signal },
+    async () => ({ sections: nextCtx.captured.sections }),
+  );
+  const continuity = assembled.sections.find((section) => section.name === "odai:human-safety-continuity").text;
+  assert.match(continuity, new RegExp(value, "u"));
+  assert.match(continuity, /not evidence of the user's current state/u);
+
+  const childAgent = { session: { header: { origin: "subagent", delegationDepth: 1 }, events: [], append() {} } };
+  const childAssembled = await nextCtx.captured.handlers.get("system-prompt/assemble")(
+    {},
+    { agent: childAgent, signal: new AbortController().signal },
+    async () => ({ sections: nextCtx.captured.sections }),
+  );
+  const childContinuity = childAssembled.sections.find((section) => section.name === "odai:human-safety-continuity").text;
+  assert.doesNotMatch(childContinuity, new RegExp(value, "u"));
+
+  controllerAgent.session.events.push(
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "user/message", seq: 2, data: userMessage("请彻底清空全部安全照护档案") },
+  );
+  await nextCtx.captured.tools.find((tool) => tool.name === "odai_human_safety_continuity")
+    .execute({ action: "clear" }, { agent: controllerAgent });
 });
 
 test("global and preset runtime instances deduplicate durable evidence and routing", async () => {
@@ -1222,7 +1422,7 @@ test("global and preset execute routing starts exactly one subagent", async () =
   apply(globalCtx, { skillPath, routing });
   apply(presetCtx, { skillPath, routing });
 
-  const events = [];
+  const events = [responsibilityGapEvent("planner")];
   const agent = {
     session: {
       header: {},
@@ -1303,16 +1503,13 @@ test("default auto reports an unconfigured planner only when the gap is needed",
   }));
 
   assert.deepEqual(events.map((event) => event.type), [
-    "odai/research-decided",
-    "odai/research-result",
     "odai/route-decided",
     "odai/route-config-missing",
     "odai/route-protection",
   ]);
-  assert.equal(events[1].data.stopReason, "route-config-missing");
-  assert.equal(events[3].data.role, "planner");
-  assert.equal(events[3].data.status, "unconfigured");
-  assert.equal(events[4].data.source, "route-config-missing");
+  assert.equal(events[1].data.role, "planner");
+  assert.equal(events[1].data.status, "unconfigured");
+  assert.equal(events[2].data.source, "route-config-missing");
   assert.match(result.messages[1].content[0].text, /required responsibility: planner/u);
   assert.match(result.messages[1].content[0].text, /natural language/u);
   assert.match(result.messages[1].content[0].text, /odai_routing_config/u);
@@ -1383,7 +1580,7 @@ test("an invalid user routing store keeps governance loaded and repairs through 
   });
 
   writeFileSync(`${configPath}.lock`, "other-process\n", "utf8");
-  assert.throws(() => tool.execute({
+  await assert.rejects(tool.execute({
     action: "set",
     responsibility: "reviewer",
     provider: "provider-b",
@@ -1395,7 +1592,7 @@ test("an invalid user routing store keeps governance loaded and repairs through 
 test("execute mode loads without subagents and reports an unconfigured reviewer on demand", async () => {
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "execute" } });
-  const events = [];
+  const events = [responsibilityGapEvent("reviewer")];
   const agent = {
     session: {
       header: {},
@@ -1415,8 +1612,13 @@ test("execute mode loads without subagents and reports an unconfigured reviewer 
     messages: [userMessage("请独立审查这个架构方案")],
   }));
 
-  assert.deepEqual(events.map((event) => event.type), ["odai/route-decided", "odai/route-config-missing"]);
-  assert.equal(events[1].data.role, "reviewer");
+  assert.deepEqual(events.map((event) => event.type), [
+    "odai/responsibility-gap",
+    "odai/route-decided",
+    "odai/responsibility-gap-consumed",
+    "odai/route-config-missing",
+  ]);
+  assert.equal(events[3].data.role, "reviewer");
   assert.equal(events.some((event) => event.type === "odai/route-protection"), false);
   assert.match(result.messages[1].content[0].text, /required responsibility: reviewer/u);
 });
@@ -1462,22 +1664,19 @@ test("configured auto mode upgrades the current controller turn without a child"
   assert.match(result.messages[1].content[0].text, /no child was started/u);
   assert.match(result.messages[1].content[0].text, /requested controller route: openai\/gpt-5\.6-sol \(reasoning: high\)/u);
   assert.deepEqual(events.map((event) => event.type), [
-    "odai/research-decided",
-    "odai/research-result",
     "odai/route-decided",
     "odai/route-context",
     "odai/route-protection",
     "odai/route-upgrade",
   ]);
-  assert.equal(events[1].data.stopReason, "route-config-missing");
-  assert.equal(events[2].data.role, "controller");
-  assert.equal(events[2].data.action, "upgrade");
-  assert.equal(events[2].data.targetRole, "planner");
-  assert.equal(events[3].data.mode, "same-turn");
-  assert.match(events[3].data.digest, /^[a-f0-9]{64}$/u);
-  assert.equal(events[4].data.source, "same-turn-planner");
-  assert.equal(events[5].data.status, "requested");
-  assert.deepEqual(events[5].data.requestedRoute, {
+  assert.equal(events[0].data.role, "controller");
+  assert.equal(events[0].data.action, "upgrade");
+  assert.equal(events[0].data.targetRole, "planner");
+  assert.equal(events[1].data.mode, "same-turn");
+  assert.match(events[1].data.digest, /^[a-f0-9]{64}$/u);
+  assert.equal(events[2].data.source, "same-turn-planner");
+  assert.equal(events[3].data.status, "requested");
+  assert.deepEqual(events[3].data.requestedRoute, {
     provider: "openai",
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
@@ -1514,7 +1713,217 @@ test("configured auto mode upgrades the current controller turn without a child"
   assert.deepEqual(await request({ agent, turn: 2, step: 1 }, async () => inherited), inherited);
 });
 
-test("a consumed frozen route card makes executor auto routing reachable exactly once", async () => {
+test("a planner mapping identical to the controller stays inline without a duplicate model call", async () => {
+  let routeResolutions = 0;
+  const ctx = fakeContext({
+    llm: {
+      async resolveCallConfig(config) {
+        routeResolutions += 1;
+        return { config };
+      },
+    },
+  });
+  apply(ctx, {
+    skillPath,
+    routing: { roles: { planner: { provider: "openai", model: "gpt-5.6-sol", reasoningEffort: "xhigh" } } },
+  });
+  const events = [];
+  let actualHeader;
+  const agent = {
+    session: {
+      header: {},
+      events,
+      requestHeader() { return actualHeader; },
+      append(type, data) { events.push({ type, data }); },
+    },
+  };
+  const signal = new AbortController().signal;
+  await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 1, step: 1, signal }, async () => ({
+    kind: "enter",
+    messages: [userMessage("checkout 老超时，我看就是支付方不稳定。把客户端超时降到 3 秒、重试次数提到 3，先止血。")],
+  }));
+  const controller = { provider: "openai", model: "gpt-5.6-sol", reasoningEffort: "xhigh" };
+  const request = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1, signal },
+    async () => controller,
+  );
+  assert.deepEqual(request, controller);
+  assert.equal(routeResolutions, 1);
+  actualHeader = { config: request };
+  ctx.captured.handlers.get("session/event")(agent.session, { type: "request/header", data: { header: actualHeader } });
+  const receipt = events.find((event) => event.type === "odai/route-applied").data;
+  assert.equal(receipt.routeMode, "inline");
+  assert.equal(receipt.status, "applied");
+});
+
+test("same-turn deterministic route validation removes the exact persisted mapping and restores the controller", async () => {
+  const configPath = resolve(testDshHome, "runtime-route-invalid", "routing.json");
+  mkdirSync(resolve(configPath, ".."), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify({
+    schemaVersion: 1,
+    roles: { planner: { provider: "openai", model: "removed-planner" } },
+  })}\n`, "utf8");
+  const llm = {
+    async resolveCallConfig(config) {
+      if (config.model === "removed-planner") {
+        const error = new Error("unknown model removed-planner");
+        error.code = "UNKNOWN_MODEL";
+        throw error;
+      }
+      return { config };
+    },
+  };
+  const ctx = fakeContext({ llm });
+  apply(ctx, { skillPath, routing: { configPath } });
+  const events = [responsibilityGapEvent("planner")];
+  const agent = { session: { header: {}, events, append(type, data) { events.push({ type, data }); } } };
+  const signal = new AbortController().signal;
+  await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 1, step: 1, signal }, async () => ({
+    kind: "enter",
+    messages: [userMessage("比较当前兼容路线后完成修复")],
+  }));
+  const base = { provider: "openai", model: "controller-model", reasoningEffort: "high" };
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1, signal },
+    async () => base,
+  ), base);
+  assert.equal(events.find((event) => event.type === "odai/route-health").data.status, "invalid");
+  assert.equal(events.find((event) => event.type === "odai/route-fallback").data.fallbackUsed, true);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).roles.planner, undefined);
+  assert.equal(readdirSync(resolve(configPath, "..")).some((entry) => entry.startsWith("routing.json.invalidated-")), true);
+});
+
+test("transient same-turn route validation falls back without deleting the persisted mapping", async () => {
+  const configPath = resolve(testDshHome, "runtime-route-transient", "routing.json");
+  mkdirSync(resolve(configPath, ".."), { recursive: true });
+  const target = { provider: "openai", model: "busy-planner" };
+  writeFileSync(configPath, `${JSON.stringify({ schemaVersion: 1, roles: { planner: target } })}\n`, "utf8");
+  const llm = {
+    async resolveCallConfig(config) {
+      if (config.model === "busy-planner") {
+        const error = new Error("quota exhausted for this request");
+        error.code = "QUOTA_EXCEEDED";
+        throw error;
+      }
+      return { config };
+    },
+  };
+  const ctx = fakeContext({ llm });
+  apply(ctx, { skillPath, routing: { configPath } });
+  const events = [responsibilityGapEvent("planner")];
+  const agent = { session: { header: {}, events, append(type, data) { events.push({ type, data }); } } };
+  const signal = new AbortController().signal;
+  await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 1, step: 1, signal }, async () => ({
+    kind: "enter",
+    messages: [userMessage("比较当前兼容路线后完成修复")],
+  }));
+  const base = { provider: "openai", model: "controller-model" };
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1, signal },
+    async () => base,
+  ), base);
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")).roles.planner, target);
+  assert.equal(readdirSync(resolve(configPath, "..")).some((entry) => entry.startsWith("routing.json.invalidated-")), false);
+  assert.equal(events.find((event) => event.type === "odai/route-health").data.status, "unhealthy");
+});
+
+test("a provider failure after route preflight retries the original controller once and preserves recoverable config", async () => {
+  const configPath = resolve(testDshHome, "runtime-route-provider-failure", "routing.json");
+  mkdirSync(resolve(configPath, ".."), { recursive: true });
+  const target = { provider: "openai", model: "planner-model" };
+  writeFileSync(configPath, `${JSON.stringify({ schemaVersion: 1, roles: { planner: target } })}\n`, "utf8");
+  const ctx = fakeContext();
+  apply(ctx, { skillPath, routing: { configPath } });
+  const events = [responsibilityGapEvent("planner")];
+  const agent = { session: { header: {}, events, append(type, data) { events.push({ type, data }); } } };
+  const signal = new AbortController().signal;
+  await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 1, step: 1, signal }, async () => ({
+    kind: "enter",
+    messages: [userMessage("比较当前兼容路线后完成修复")],
+  }));
+  const base = { provider: "base", model: "controller-model" };
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1, signal },
+    async () => base,
+  ), target);
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request-error")({
+    agent,
+    turn: 1,
+    step: 1,
+    provider: "openai",
+    failure: { code: "RATE_LIMIT", message: "busy" },
+    signal,
+  }, async () => ({ kind: "failed" })), { kind: "retry" });
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1, signal },
+    async () => base,
+  ), base);
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")).roles.planner, target);
+  assert.equal(events.filter((event) => event.type === "odai/route-fallback").length, 1);
+});
+
+test("an authorized planner card and executor gap continue automatically without another user prompt", async () => {
+  const ctx = fakeContext();
+  apply(ctx, {
+    skillPath,
+    routing: { roles: { executor: { provider: "openai", model: "executor-model", reasoningEffort: "high" } } },
+  });
+  const original = userMessage("请修复并验证当前路由问题");
+  const events = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "user/message", seq: 2, data: original },
+    { type: "step/start", seq: 3, data: { step: 1 } },
+  ];
+  let actualHeader;
+  const agent = {
+    phase: { turn: 1, step: 1 },
+    session: {
+      header: {},
+      events,
+      requestHeader() { return actualHeader; },
+      append(type, data) { events.push({ type, seq: events.length + 1, data }); },
+    },
+  };
+  const routeCardTool = ctx.captured.tools.find((tool) => tool.name === "odai_route_card");
+  const frozen = await routeCardTool.execute({
+    action: "freeze",
+    observableBenefit: true,
+    target: "Implement the bounded routing fix",
+    evidence: ["planner verified the bounded target"],
+    scope: ["dsh/runtime only"],
+    accept: ["A1: focused runtime tests pass"],
+    stop: "Stop if the public DSH contract changes",
+  }, { agent });
+  assert.equal(frozen.card.authorization.status, "authorized");
+  assert.equal(frozen.card.authorization.userMessageId, original.id);
+
+  const gapTool = ctx.captured.tools.find((tool) => tool.name === "odai_responsibility_gap");
+  await gapTool.execute({
+    responsibility: "executor",
+    gap: "The authorized bounded implementation is frozen and ready.",
+    evidenceRefs: [`route-card:${frozen.card.id}`, `user-message:${original.id}`],
+    expectedChange: "Implement the frozen scope and run its acceptance checks.",
+  }, { agent });
+
+  agent.phase.step = 2;
+  const signal = new AbortController().signal;
+  const routed = await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 1, step: 2, signal },
+    async () => ({ kind: "enter", messages: [original] }),
+  );
+  assert.match(routed.messages[1].content[0].text, /target responsibility: executor/u);
+  assert.equal(events.filter((event) => event.type === "odai/route-card-claimed").length, 1);
+  const executorRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 2, signal },
+    async () => ({ provider: "base", model: "controller" }),
+  );
+  assert.deepEqual(executorRequest, { provider: "openai", model: "executor-model", reasoningEffort: "high" });
+  actualHeader = { config: executorRequest };
+  ctx.captured.handlers.get("session/event")(agent.session, { type: "request/header", data: { header: actualHeader } });
+  assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 1);
+});
+
+test("a frozen route card is claimed before executor routing and consumed only by an applied receipt", async () => {
   let starts = 0;
   const ctx = fakeContext({
     subagents: {
@@ -1568,7 +1977,8 @@ test("a consumed frozen route card makes executor auto routing reachable exactly
   assert.equal(starts, 0);
   assert.match(result.messages[1].content[0].text, /target responsibility: executor/u);
   assert.match(result.messages[1].content[0].text, new RegExp(frozen.card.id, "u"));
-  assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 1);
+  assert.equal(events.filter((event) => event.type === "odai/route-card-claimed").length, 1);
+  assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 0);
   const executorRequest = await ctx.captured.handlers.get("agent/request")(
     { agent, turn: 2, step: 1 },
     async () => ({ provider: "base", model: "controller", reasoningEffort: "max" }),
@@ -1586,6 +1996,7 @@ test("a consumed frozen route card makes executor auto routing reachable exactly
   const executorReceipt = events.find((event) => event.type === "odai/route-applied").data;
   assert.equal(executorReceipt.status, "applied");
   assert.equal(executorReceipt.responsibility, "executor");
+  assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 1);
   assert.equal((await routeCard.execute({ action: "clear", cardId: frozen.card.id }, { agent })).status, "absent");
 
   await ctx.captured.handlers.get("agent/pre-step")(
@@ -1596,6 +2007,70 @@ test("a consumed frozen route card makes executor auto routing reachable exactly
     { agent, turn: 3, step: 1 },
     async () => ({ provider: "base", model: "controller", reasoningEffort: "max" }),
   ), { provider: "base", model: "controller", reasoningEffort: "max" });
+});
+
+test("an executor provider failure after an applied receipt releases the route card for retry", async () => {
+  const ctx = fakeContext();
+  apply(ctx, {
+    skillPath,
+    routing: { roles: { executor: { provider: "openai", model: "executor-model", reasoningEffort: "high" } } },
+  });
+  const events = [];
+  let actualHeader;
+  const agent = {
+    session: {
+      header: {},
+      events,
+      requestHeader() { return actualHeader; },
+      append(type, data) { events.push({ type, data }); },
+    },
+  };
+  const routeCard = ctx.captured.tools.find((tool) => tool.name === "odai_route_card");
+  const frozen = await routeCard.execute({
+    action: "freeze",
+    observableBenefit: true,
+    target: "Implement the bounded retry change",
+    evidence: ["planner verified the target"],
+    scope: ["dsh/runtime only"],
+    accept: ["A1: focused tests pass"],
+    stop: "Stop if the provider contract changes",
+  }, { agent });
+
+  const signal = new AbortController().signal;
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 2, step: 1, signal },
+    async () => ({ kind: "enter", messages: [userMessage("继续执行这个方案")] }),
+  );
+  assert.throws(() => routeCard.execute({
+    action: "freeze",
+    observableBenefit: true,
+    target: "Do not replace the in-flight card",
+    evidence: ["a separate target appeared"],
+    scope: ["another file"],
+    accept: ["A2: another check passes"],
+    stop: "Stop while the first card is claimed",
+  }, { agent }), /already active or claimed/u);
+  const executorRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 2, step: 1, signal },
+    async () => ({ provider: "base", model: "controller" }),
+  );
+  actualHeader = { config: executorRequest };
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "request/header",
+    data: { header: actualHeader },
+  });
+  assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 1);
+
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request-error")({
+    agent,
+    turn: 2,
+    step: 1,
+    provider: "openai",
+    failure: { code: "RATE_LIMIT", message: "busy" },
+    signal,
+  }, async () => ({ kind: "failed" })), { kind: "retry" });
+  assert.equal(events.filter((event) => event.type === "odai/route-card-claim-released").length, 1);
+  assert.equal((await routeCard.execute({ action: "clear", cardId: frozen.card.id }, { agent })).status, "cleared");
 });
 
 test("reviewer starts a child only from a complete hash-addressed evidence packet", async () => {
@@ -1626,10 +2101,11 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
     routing: { roles: { reviewer: { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "max" } } },
   });
   const events = [
+    responsibilityGapEvent("reviewer"),
     { type: "user/message", data: userMessage("实现请求：保持默认行为并修复路由。") },
     { type: "assistant/message", data: { content: [{ type: "text", text: "验收条件 A1：目标测试通过；A2：只修改目标模块。" }] } },
-    { type: "tool/result", data: { callId: "diff-1", tool: "bash", isError: false, command: "git diff -- dsh/runtime/src/router.mjs", result: "diff --git a/router.mjs b/router.mjs\n+bounded change" } },
-    { type: "tool/result", data: { callId: "test-1", tool: "bash", isError: false, command: "node --test dsh/runtime/tests/router.test.mjs", result: "tests 14 pass 14 fail 0 exit code: 0" } },
+    ...nativeToolEvents("diff-1", "git diff -- dsh/runtime/src/router.mjs", "diff --git a/router.mjs b/router.mjs\n+bounded change", { callSeq: 101 }),
+    ...nativeToolEvents("test-1", "node --test dsh/runtime/tests/router.test.mjs", "tests 14 pass 14 fail 0 exit code: 0", { callSeq: 111 }),
   ];
   const agent = { session: { header: {}, events, append(type, data) { events.push({ type, data }); } } };
   const result = await ctx.captured.handlers.get("agent/pre-step")(
@@ -1690,10 +2166,11 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
     },
   });
   const mismatchEvents = [
+    responsibilityGapEvent("reviewer"),
     { type: "user/message", data: userMessage("实现请求：保持默认行为并修复路由。") },
     { type: "assistant/message", data: { content: [{ type: "text", text: "验收条件 A1：目标测试通过；A2：只修改目标模块。" }] } },
-    { type: "tool/result", data: { callId: "diff-mismatch", tool: "bash", isError: false, result: "diff --git a/router.mjs b/router.mjs\n+bounded change" } },
-    { type: "tool/result", data: { callId: "test-mismatch", tool: "bash", isError: false, result: "tests 14 pass 14 fail 0 exit code: 0" } },
+    ...nativeToolEvents("diff-mismatch", "git diff -- dsh/runtime/src/router.mjs", "diff --git a/router.mjs b/router.mjs\n+bounded change", { callSeq: 121 }),
+    ...nativeToolEvents("test-mismatch", "node --test dsh/runtime/tests/router.test.mjs", "tests 14 pass 14 fail 0 exit code: 0", { callSeq: 131 }),
   ];
   const mismatchAgent = {
     session: {
@@ -1722,7 +2199,7 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
     skillPath,
     routing: { roles: { reviewer: { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "max" } } },
   });
-  const fallbackEvents = [];
+  const fallbackEvents = [responsibilityGapEvent("reviewer")];
   let fallbackHeader;
   const fallbackAgent = {
     session: {
@@ -1770,7 +2247,7 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
       roles: { reviewer: { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "max" } },
     },
   });
-  const executeEvents = [];
+  const executeEvents = [responsibilityGapEvent("reviewer")];
   const executeAgent = {
     session: {
       header: {},
@@ -1793,10 +2270,11 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
     routing: { roles: { reviewer: { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "max" } } },
   });
   const failedEvents = [
+    responsibilityGapEvent("reviewer"),
     { type: "user/message", data: userMessage("实现请求：保持默认行为并修复路由。") },
     { type: "assistant/message", data: { content: [{ type: "text", text: "验收条件 A1：目标测试通过。" }] } },
-    { type: "tool/result", data: { callId: "diff-2", tool: "bash", isError: false, result: "diff --git a/router.mjs b/router.mjs\n+bounded change" } },
-    { type: "tool/result", data: { callId: "test-2", tool: "bash", isError: false, result: "tests 14 pass 13 fail 1 exit code: 1" } },
+    ...nativeToolEvents("diff-2", "git diff -- dsh/runtime/src/router.mjs", "diff --git a/router.mjs b/router.mjs\n+bounded change", { callSeq: 141 }),
+    ...nativeToolEvents("test-2", "node --test dsh/runtime/tests/router.test.mjs", "tests 14 pass 13 fail 1 exit code: 1", { callSeq: 151, isError: true }),
   ];
   const failedAgent = { session: { header: {}, events: failedEvents, append(type, data) { failedEvents.push({ type, data }); } } };
   await failedCtx.captured.handlers.get("agent/pre-step")(
@@ -1806,6 +2284,49 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
   assert.equal(failedStarts, 0);
   assert.equal(failedEvents.find((event) => event.type === "odai/route-context").data.sufficient, false);
   assert.equal(failedEvents.find((event) => event.type === "odai/route-upgrade").data.independent, false);
+});
+
+test("an unavailable frontend mapping falls back locally with an explicit non-receipt notice", async () => {
+  const configPath = resolve(testDshHome, "frontend-local-fallback", "routing.json");
+  mkdirSync(resolve(configPath, ".."), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify({
+    schemaVersion: 1,
+    roles: { frontend: { provider: "frontend-provider", model: "removed-frontend" } },
+  })}\n`, "utf8");
+  let resolutions = 0;
+  const ctx = fakeContext({
+    llm: {
+      async resolveCallConfig(config) {
+        resolutions += 1;
+        if (config.model === "removed-frontend") {
+          const error = new Error("unknown model removed-frontend");
+          error.code = "UNKNOWN_MODEL";
+          throw error;
+        }
+        return { config };
+      },
+    },
+  });
+  apply(ctx, { skillPath, routing: { configPath } });
+  const events = [];
+  const agent = { session: { header: {}, events, append(type, data) { events.push({ type, data }); } } };
+  const signal = new AbortController().signal;
+  const result = await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 1, step: 1, signal }, async () => ({
+    kind: "enter",
+    messages: [userMessage("整体改版这个运维仪表盘，覆盖移动端、多状态和 Playwright 浏览器验收。")],
+  }));
+  assert.equal(resolutions, 1);
+  assert.match(result.messages[1].content[0].text, /Continue locally as the current controller/u);
+  assert.match(result.messages[1].content[0].text, /Do not claim the configured frontend responsibility ran/u);
+  assert.match(result.messages[1].content[0].text, /Canonical craft reference/u);
+  assert.equal(events.some((event) => event.type === "odai/route-upgrade"), false);
+  assert.equal(events.find((event) => event.type === "odai/route-result").data.status, "fallback");
+  const base = { provider: "base", model: "controller" };
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1, signal },
+    async () => base,
+  ), base);
+  assert.equal(JSON.parse(readFileSync(configPath, "utf8")).roles.frontend, undefined);
 });
 
 test("frontend incident upgrades in place, verifies its actual route, and overrides the global ceiling", async () => {
@@ -2100,7 +2621,7 @@ test("auto mode upgrades an implicit continuation of earlier high-impact context
   });
 });
 
-test("configured auto mode keeps an explicit planner gap in the current turn", async () => {
+test("configured auto mode keeps an evidence-grounded planner gap in the current turn", async () => {
   let starts = 0;
   let startRequest;
   const ctx = fakeContext({
@@ -2148,7 +2669,7 @@ test("configured auto mode keeps an explicit planner gap in the current turn", a
     },
   });
 
-  const events = [];
+  const events = [responsibilityGapEvent("planner")];
   const agent = {
     session: {
       header: {},
@@ -2174,13 +2695,15 @@ test("configured auto mode keeps an explicit planner gap in the current turn", a
   assert.match(result.messages[1].content[0].text, /no child was started/u);
   assert.match(result.messages[1].content[0].text, /planner responsibility contract/u);
   assert.deepEqual(events.map((event) => event.type), [
+    "odai/responsibility-gap",
     "odai/route-decided",
+    "odai/responsibility-gap-consumed",
     "odai/route-context",
     "odai/route-protection",
     "odai/route-upgrade",
   ]);
-  assert.equal(events[0].data.action, "upgrade");
-  assert.equal(events[3].data.status, "requested");
+  assert.equal(events[1].data.action, "upgrade");
+  assert.equal(events[5].data.status, "requested");
   assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
     { agent, turn: 1, step: 1 },
     async () => ({ provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" }),
@@ -2223,7 +2746,7 @@ test("configured researcher compresses evidence before planner without replacing
       },
     },
   });
-  const events = [];
+  const events = [responsibilityGapEvent("researcher")];
   const agent = {
     session: {
       header: { cwd: researchProjectRoot },
@@ -2296,7 +2819,7 @@ test("configured researcher compresses evidence before planner without replacing
       },
     },
   });
-  const mismatchEvents = [];
+  const mismatchEvents = [responsibilityGapEvent("researcher")];
   const mismatchAgent = {
     session: {
       header: { cwd: researchProjectRoot },
@@ -2328,7 +2851,7 @@ test("configured researcher compresses evidence before planner without replacing
       },
     },
   });
-  const missingEvents = [];
+  const missingEvents = [responsibilityGapEvent("researcher")];
   const missingAgent = {
     session: {
       header: { cwd: researchProjectRoot },
@@ -2393,7 +2916,7 @@ test("invalid researcher output is discarded before the planner sees it", async 
       },
     },
   });
-  const events = [];
+  const events = [responsibilityGapEvent("researcher")];
   const agent = { session: { header: { cwd: researchProjectRoot }, events, append(type, data) { events.push({ type, data }); } } };
   const result = await ctx.captured.handlers.get("agent/pre-step")({
     agent,
@@ -2451,19 +2974,16 @@ test("high-impact execute routing fails closed when the planner is unavailable",
     messages: [userMessage("checkout 老超时，我看就是支付方不稳定。把客户端超时降到 3 秒、重试次数提到 3，先止血。")],
   }));
 
-  assert.deepEqual(events.slice(0, 6).map((event) => event.type), [
-    "odai/research-decided",
-    "odai/research-result",
+  assert.deepEqual(events.slice(0, 4).map((event) => event.type), [
     "odai/route-decided",
     "odai/route-context",
     "odai/route-result",
     "odai/route-protection",
   ]);
-  assert.equal(events[1].data.stopReason, "route-config-missing");
-  assert.equal(events[3].data.mode, "bounded-packet");
-  assert.equal(events[4].data.status, "fallback");
-  assert.equal(events[5].data.source, "route-failure");
-  assert.equal(events[5].data.failure, "provider unavailable");
+  assert.equal(events[1].data.mode, "bounded-packet");
+  assert.equal(events[2].data.status, "fallback");
+  assert.equal(events[3].data.source, "route-failure");
+  assert.equal(events[3].data.failure, "provider unavailable");
   assert.match(result.messages[1].content[0].text, /High-impact fail-closed protection is active/u);
   assert.doesNotMatch(result.messages[1].content[0].text, /continue directly/u);
 
@@ -2472,7 +2992,7 @@ test("high-impact execute routing fails closed when the planner is unavailable",
   assert.equal(guard({ callId: "read-failed-route", agent, name: "read" }), undefined);
 });
 
-test("ordinary planner route failure still permits controller fallback", async () => {
+test("ordinary state-backed planner route failure still permits controller fallback", async () => {
   const ctx = fakeContext({
     subagents: {
       async start() {
@@ -2489,7 +3009,7 @@ test("ordinary planner route failure still permits controller fallback", async (
     },
   });
 
-  const events = [];
+  const events = [responsibilityGapEvent("planner")];
   const agent = {
     session: {
       header: {},

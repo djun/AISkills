@@ -4,8 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  classifyImplementationAuthorization,
   decideResearchPrefetch,
   decideRoute,
+  extractLatestUserText,
   extractRoutingText,
   renderDelegationPrompt,
   renderMissingRouteConfigNotice,
@@ -25,6 +27,7 @@ import {
   ROUTING_CONFIG_PROMPT,
   createRoutingConfigTool,
   effectiveRoutingSnapshot,
+  invalidatePersistedRoleRoute,
   resolveRoleRoute,
   resolveRoutingConfigPath,
 } from "./routing-config.mjs";
@@ -42,10 +45,23 @@ import {
   applyCompactionTarget,
   createCompactionConfigTool,
   effectiveCompactionTarget,
+  invalidatePersistedCompactionTarget,
   resolveCompactionConfigPath,
 } from "./compaction-config.mjs";
 import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
-import { ROUTE_CARD_PROMPT, activeRouteCard, createRouteCardTool } from "./route-card.mjs";
+import { classifyModelRouteFailure, probeModelRoute } from "./model-route.mjs";
+import { RESPONSIBILITY_GAP_PROMPT, createResponsibilityGapTool } from "./responsibility-gap.mjs";
+import { HUMAN_SAFETY_REFERENCE_PATH, createHumanSafetyTool } from "./human-safety.mjs";
+import {
+  HUMAN_SAFETY_CONTINUITY_PROMPT,
+  createHumanSafetyContinuityTool,
+  renderHumanSafetyContinuitySection,
+} from "./human-safety-continuity.mjs";
+import {
+  readHumanSafetyContinuityStore,
+  resolveHumanSafetyContinuityStorePath,
+} from "./human-safety-continuity-store.mjs";
+import { ROUTE_CARD_PROMPT, activeRouteCard, createRouteCardTool, unsettledRouteCard } from "./route-card.mjs";
 import { buildRoleContextPacket, renderRoleContextPacket } from "./routing-context.mjs";
 import {
   parseResearchPacket,
@@ -63,6 +79,7 @@ import {
   ODAI_RUNTIME_CONTRACT,
   SKILL_SOURCE_MODES,
   loadSkillBundle,
+  readSkillBundleFile,
 } from "./skill-bundle.mjs";
 import { resolveSkillSelection } from "./skill-selector.mjs";
 import {
@@ -93,7 +110,7 @@ import {
 } from "./semantic-memory-store.mjs";
 
 export const name = "odai-dsh-runtime";
-export const inject = ["systemPrompt", "tools", "subagents", "sessions"];
+export const inject = ["systemPrompt", "tools", "subagents", "sessions", "llm"];
 
 const PLUGIN_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ROUTING_MODES = new Set(["off", "observe", "auto", "execute"]);
@@ -315,6 +332,22 @@ function roleAgentOptions(roleRoute) {
   };
 }
 
+function sameRequestModelRoute(left, right) {
+  return Boolean(left && right
+    && left.provider === right.provider
+    && left.model === right.model
+    && left.reasoningEffort === right.reasoningEffort);
+}
+
+function currentAgentStep(agent) {
+  const events = agent?.session?.events;
+  if (!Array.isArray(events)) return undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === "step/start" && Number.isSafeInteger(events[index].data?.step)) return events[index].data.step;
+  }
+  return undefined;
+}
+
 function routeFromConfig(config) {
   if (typeof config?.provider !== "string" || typeof config?.model !== "string") return undefined;
   return Object.freeze({
@@ -491,6 +524,21 @@ function latestRouteReceipt(events) {
     const event = events[index];
     const data = event?.data;
     if (!data?.routeSource || !Number.isSafeInteger(data.turn) || !Number.isSafeInteger(data.step)) continue;
+    if (event.type === "odai/route-fallback") {
+      return Object.freeze({
+        turn: data.turn,
+        step: data.step,
+        responsibility: data.responsibility,
+        status: "fallback",
+        taskStatus: "fallback",
+        routeMode: data.routeMode,
+        routeSource: data.routeSource,
+        fallbackUsed: true,
+        requestedRoute: data.requestedRoute,
+        ...(data.fallbackRoute ? { actualRoute: data.fallbackRoute } : {}),
+        ...(data.error ? { error: data.error } : {}),
+      });
+    }
     if (event.type === "odai/route-applied") {
       return Object.freeze({
         turn: data.turn,
@@ -545,6 +593,7 @@ function routedRoleOf(agent) {
 export function apply(ctx, rawConfig) {
   const config = resolveConfig(rawConfig);
   const logger = loggerFor(ctx);
+  const humanSafetyContinuityStorePath = resolveHumanSafetyContinuityStorePath();
   const evidence = createSessionEvidence({
     root: resolveSessionEvidenceRoot(config.routing.configPath),
     logger,
@@ -565,14 +614,139 @@ export function apply(ctx, rawConfig) {
       return Object.freeze({ source: "inherit", status: "fallback", reasonCode: "compaction-config-invalid" });
     }
   };
+  const compactionFallbackRequests = new WeakSet();
   ctx.on("llm/stream", (options, next) => {
-    if (options?.purpose === "compaction") {
-      const selection = selectCompactionTarget();
+    if (options?.purpose !== "compaction" || compactionFallbackRequests.has(options)) return next();
+    const selection = selectCompactionTarget();
+    const downstream = next();
+    const streamLike = downstream && typeof downstream[Symbol.asyncIterator] === "function";
+    if (!selection.target || !streamLike) {
       applyCompactionTarget(options, selection.target, ctx.sessions);
       applyCompactionStateProtocol(options, selection.target);
       inheritCompactionReasoning(options, ctx.sessions, config.compaction.cacheRetention);
+      return downstream;
     }
-    return next();
+
+    const original = Object.freeze({ ...options, messages: options.messages });
+    const session = options.sessionId === undefined ? undefined : ctx.sessions?.get?.(options.sessionId);
+    const record = (data) => {
+      if (session) appendEvent({ session }, "odai/compaction-route", data);
+    };
+    const restoreOriginal = () => {
+      for (const key of Object.keys(options)) {
+        if (!Object.hasOwn(original, key)) delete options[key];
+      }
+      Object.assign(options, original);
+    };
+    return (async function* configuredCompactionRoute() {
+      const validation = await probeModelRoute(
+        (candidate, signal) => ctx.llm.resolveCallConfig(candidate, signal),
+        selection.target,
+        options.signal,
+      );
+      if (validation.status === "rejected") {
+        let invalidation = { invalidated: false };
+        if (validation.failure.kind === "deterministic" && selection.source === "persisted") {
+          try {
+            invalidation = invalidatePersistedCompactionTarget(config.compaction.configPath, selection.target);
+          } catch (error) {
+            invalidation = { invalidated: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        }
+        record({
+          status: "fallback",
+          requestedRoute: selection.target,
+          fallbackRoute: routeFromConfig(original),
+          fallbackUsed: true,
+          failureKind: validation.failure.kind,
+          errorCode: validation.failure.code,
+          error: validation.failure.message,
+          invalidated: invalidation.invalidated,
+          ...(invalidation.backupPath ? { backupPath: invalidation.backupPath } : {}),
+          ...(invalidation.error ? { cleanupError: invalidation.error } : {}),
+        });
+        inheritCompactionReasoning(options, ctx.sessions, config.compaction.cacheRetention);
+        for await (const chunk of downstream) yield chunk;
+        return;
+      }
+
+      applyCompactionTarget(options, selection.target, ctx.sessions);
+      applyCompactionStateProtocol(options, selection.target);
+      inheritCompactionReasoning(options, ctx.sessions, config.compaction.cacheRetention);
+      const buffered = [];
+      let terminalFailure;
+      for await (const chunk of downstream) {
+        buffered.push(chunk);
+        if (chunk?.type === "finish" && ["error", "aborted"].includes(chunk.reason?.kind)) {
+          terminalFailure = chunk.reason.failure;
+        }
+      }
+      if (!terminalFailure) {
+        record({
+          status: "applied",
+          requestedRoute: selection.target,
+          effectiveRoute: routeFromConfig(options),
+          fallbackUsed: false,
+        });
+        for (const chunk of buffered) yield chunk;
+        return;
+      }
+
+      const failure = classifyModelRouteFailure(terminalFailure);
+      if (failure.kind === "cancelled" || options.signal?.aborted) {
+        record({
+          status: "failed",
+          requestedRoute: selection.target,
+          fallbackUsed: false,
+          failureKind: failure.kind,
+          errorCode: failure.code,
+          error: failure.message,
+        });
+        for (const chunk of buffered) yield chunk;
+        return;
+      }
+
+      if (sameRequestModelRoute(original, options)) {
+        record({
+          status: "failed",
+          requestedRoute: selection.target,
+          effectiveRoute: routeFromConfig(options),
+          fallbackUsed: false,
+          failureKind: failure.kind,
+          errorCode: failure.code,
+          error: failure.message,
+          stopReason: "configured-and-inherited-routes-match",
+        });
+        for (const chunk of buffered) yield chunk;
+        return;
+      }
+
+      let invalidation = { invalidated: false };
+      if (failure.kind === "deterministic" && selection.source === "persisted") {
+        try {
+          invalidation = invalidatePersistedCompactionTarget(config.compaction.configPath, selection.target);
+        } catch (error) {
+          invalidation = { invalidated: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      restoreOriginal();
+      const fallbackOptions = { ...original, messages: original.messages };
+      inheritCompactionReasoning(fallbackOptions, ctx.sessions, config.compaction.cacheRetention);
+      compactionFallbackRequests.add(fallbackOptions);
+      record({
+        status: "fallback",
+        requestedRoute: selection.target,
+        fallbackRoute: routeFromConfig(fallbackOptions),
+        fallbackUsed: true,
+        failureKind: failure.kind,
+        errorCode: failure.code,
+        error: failure.message,
+        invalidated: invalidation.invalidated,
+        ...(invalidation.backupPath ? { backupPath: invalidation.backupPath } : {}),
+        ...(invalidation.error ? { cleanupError: invalidation.error } : {}),
+      });
+      for await (const chunk of ctx.llm.stream(fallbackOptions)) yield chunk;
+    })();
   });
   const skillPath = resolveSkillPath(config.skillPath);
   const explicitSkillPath = config.skillPath !== undefined
@@ -602,6 +776,16 @@ export function apply(ctx, rawConfig) {
     name: "odai:routing-configuration",
     order: -19,
     text: ROUTING_CONFIG_PROMPT,
+  });
+  ctx.systemPrompt.section({
+    name: "odai:human-safety-continuity",
+    order: -18.875,
+    text: HUMAN_SAFETY_CONTINUITY_PROMPT,
+  });
+  ctx.systemPrompt.section({
+    name: "odai:responsibility-gap",
+    order: -18.75,
+    text: RESPONSIBILITY_GAP_PROMPT,
   });
   ctx.systemPrompt.section({
     name: "odai:route-card",
@@ -748,9 +932,21 @@ export function apply(ctx, rawConfig) {
       logger.warn(`Odai skill source ${selection.mode} fell back to bundled governance (${selection.reasonCode})`);
     }
     const outputPrompt = renderOutputPolicyPrompt(outputSelection.policy);
-    const routingPrompt = isSubagentSession(agent)
+    const childSession = isSubagentSession(agent);
+    const routingPrompt = childSession
       ? ROUTING_CONFIG_PROMPT
       : `${ROUTING_CONFIG_PROMPT}\n\n${renderEffectiveRoutingContext(routingSnapshotFor(agent, turn))}`;
+    let continuityRecordPrompt;
+    if (!childSession) {
+      try {
+        continuityRecordPrompt = renderHumanSafetyContinuitySection(
+          readHumanSafetyContinuityStore(humanSafetyContinuityStorePath),
+        );
+      } catch (error) {
+        logger.warn(`Odai human-safety continuity is unavailable for this turn: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const continuityPrompt = [HUMAN_SAFETY_CONTINUITY_PROMPT, continuityRecordPrompt].filter(Boolean).join("\n\n");
     if (outputPrompt && !hasSessionEvent(agent, "odai/output-policy-selected", (data) => data?.turn === turn)) {
       appendEvent(agent, "odai/output-policy-selected", {
         ...(turn === undefined ? {} : { turn }),
@@ -763,6 +959,7 @@ export function apply(ctx, rawConfig) {
       sections: downstream.sections.map((section) => {
         if (section.name === "odai:canonical-governance") return { ...section, text: canonicalPrompt(selection) };
         if (section.name === "odai:routing-configuration") return { ...section, text: routingPrompt };
+        if (section.name === "odai:human-safety-continuity") return { ...section, text: continuityPrompt };
         if (section.name === "odai:controller-output-policy") return { ...section, text: outputPrompt };
         return section;
       }),
@@ -779,6 +976,53 @@ export function apply(ctx, rawConfig) {
       route: state.snapshot.roles[role],
       source: state.snapshot.sources[role],
     };
+  };
+  const pendingResponsibilityGap = (agent, turn, step) => {
+    const consumed = new Set();
+    const events = evidence.events(agent);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.data?.turn !== turn) continue;
+      if (event.type === "odai/responsibility-gap-consumed") {
+        consumed.add(event.data.stateDigest);
+        continue;
+      }
+      if (event.type !== "odai/responsibility-gap"
+        || !Number.isSafeInteger(event.data?.step)
+        || event.data.step >= step
+        || consumed.has(event.data.stateDigest)) continue;
+      return event.data;
+    }
+    return undefined;
+  };
+  const invalidateFailedRoleRoute = (agent, role, route, source, failure, position = {}) => {
+    let invalidation = Object.freeze({ invalidated: false, reason: "not-deterministic-or-not-persisted" });
+    if (failure.kind === "deterministic" && source === "persisted-mapping") {
+      try {
+        invalidation = invalidatePersistedRoleRoute(config.routing.configPath, role, route);
+      } catch (error) {
+        invalidation = Object.freeze({
+          invalidated: false,
+          reason: "cleanup-failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    appendEvent(agent, "odai/route-health", {
+      ...position,
+      responsibility: role,
+      routeSource: source,
+      requestedRoute: route,
+      status: failure.kind === "deterministic" ? "invalid" : "unhealthy",
+      failureKind: failure.kind,
+      errorCode: failure.code,
+      error: failure.message,
+      invalidated: invalidation.invalidated,
+      ...(invalidation.backupPath ? { backupPath: invalidation.backupPath } : {}),
+      ...(invalidation.reason ? { cleanupReason: invalidation.reason } : {}),
+      ...(invalidation.error ? { cleanupError: invalidation.error } : {}),
+    });
+    return invalidation;
   };
   const onDenied = (execution, reason) => {
     appendEvent(execution.agent, "odai/governance-denied", {
@@ -801,6 +1045,9 @@ export function apply(ctx, rawConfig) {
   });
   ctx.tools.register(createRoutingConfigTool(config.routing.configPath, {
     configuredRoles: config.routing.roles,
+    resolveCallConfig(route, signal) {
+      return ctx.llm.resolveCallConfig(route, signal);
+    },
     latestRouteFor(agent) {
       return latestRouteReceipt(evidence.events(agent));
     },
@@ -808,9 +1055,39 @@ export function apply(ctx, rawConfig) {
       appendEvent(agent, "odai/routing-configured", data);
     },
   }));
+  ctx.tools.register(createHumanSafetyTool({
+    isChild: isSubagent,
+    contractFor(agent) {
+      const bundle = sharedSkillSelection(agent)?.bundle ?? bundled;
+      return readSkillBundleFile(bundle, HUMAN_SAFETY_REFERENCE_PATH).toString("utf8");
+    },
+  }));
+  ctx.tools.register(createResponsibilityGapTool({
+    isChild: isSubagent,
+    onProposed(agent, proposal) {
+      const turn = currentAgentTurn(agent);
+      const step = currentAgentStep(agent);
+      appendEvent(agent, "odai/responsibility-gap", {
+        ...(turn === undefined ? {} : { turn }),
+        ...(step === undefined ? {} : { step }),
+        ...proposal,
+      });
+    },
+  }));
   ctx.tools.register(createRouteCardTool({
     activeFor(agent) {
       return activeRouteCard(evidence.events(agent));
+    },
+    unsettledFor(agent) {
+      return unsettledRouteCard(evidence.events(agent));
+    },
+    authorizationFor(agent) {
+      const message = latestDirectUserMessage(agent);
+      if (!message) return Object.freeze({ status: "unknown" });
+      return Object.freeze({
+        ...classifyImplementationAuthorization(extractLatestUserText([message])),
+        userMessageId: message.id,
+      });
     },
     onFrozen(agent, card) {
       appendEvent(agent, "odai/route-card-frozen", { card });
@@ -847,6 +1124,9 @@ export function apply(ctx, rawConfig) {
   }));
   ctx.tools.register(createCompactionConfigTool(config.compaction.configPath, {
     isChild: isSubagent,
+    resolveCallConfig(route, signal) {
+      return ctx.llm.resolveCallConfig(route, signal);
+    },
     onConfigured(agent, data) {
       appendEvent(agent, "odai/compaction-configured", data);
     },
@@ -855,6 +1135,16 @@ export function apply(ctx, rawConfig) {
     configuredMode: config.memory.mode,
     onChanged(agent, data) {
       appendEvent(agent, "odai/memory-changed", data);
+    },
+  }));
+  ctx.tools.register(createHumanSafetyContinuityTool({
+    storePath: humanSafetyContinuityStorePath,
+    directUserTextFor(agent) {
+      const message = latestDirectUserMessage(agent);
+      return message ? extractLatestUserText([message]) : "";
+    },
+    onChanged(agent, data) {
+      appendEvent(agent, "odai/human-safety-continuity-changed", data);
     },
   }));
   ctx.tools.guard((execution) => childGuard(execution) ?? routeProtectionGuard(execution));
@@ -866,7 +1156,7 @@ export function apply(ctx, rawConfig) {
     appendEvent(execution.agent, "odai/tool-observed", summary, logger);
   });
 
-  ctx.on("agent/request", async ({ agent, turn, step }, next) => {
+  ctx.on("agent/request", async ({ agent, turn, step, signal }, next) => {
     const proposed = await next();
     const childRole = routedRoleOf(agent);
     const childRoleState = childRole ? configuredRole(agent, childRole, turn) : undefined;
@@ -877,17 +1167,17 @@ export function apply(ctx, rawConfig) {
     }
     const upgrade = controllerUpgrades.get(agent);
     const upgradeRole = upgrade && upgrade.turn === turn ? upgrade.role : undefined;
-    const roleRoute = childRole
+    let roleRoute = childRole
       ? childRoleState.route
       : upgradeRole
         ? upgrade.route
         : undefined;
     const routeSource = childRole ? childRoleState?.source : upgrade?.source;
-    const routeMode = childRole ? "child" : "same-turn";
-    const scopedFrontendMaxTokens = upgradeRole === "frontend" ? roleRoute?.maxTokens : undefined;
+    let routeMode = childRole ? "child" : sameRequestModelRoute(proposed, roleRoute) ? "inline" : "same-turn";
+    let scopedFrontendMaxTokens = upgradeRole === "frontend" ? roleRoute?.maxTokens : undefined;
     const finalize = (finalRequest) => {
       if (roleRoute && agent?.session && Number.isSafeInteger(turn) && Number.isSafeInteger(step)) {
-        const expectedRoute = routeMode === "same-turn" && upgradeRole !== "frontend"
+        const expectedRoute = routeMode !== "child" && upgradeRole !== "frontend"
           ? Object.freeze({
               provider: roleRoute.provider,
               model: roleRoute.model,
@@ -901,6 +1191,7 @@ export function apply(ctx, rawConfig) {
           responsibility: childRole ?? upgradeRole,
           routeMode,
           routeSource,
+          ...(upgrade?.cardId ? { routeCardId: upgrade.cardId } : {}),
           requestedRoute: expectedRoute,
           expectedRoute,
         }));
@@ -919,6 +1210,60 @@ export function apply(ctx, rawConfig) {
           ? { maxTokens: roleRoute.maxTokens }
           : {}),
       });
+      const validation = upgrade?.routeValidated
+        ? Object.freeze({ status: "verified" })
+        : await probeModelRoute(
+            (candidate, candidateSignal) => ctx.llm.resolveCallConfig(candidate, candidateSignal),
+            request,
+            signal,
+          );
+      if (validation.status === "rejected") {
+        const responsibility = childRole ?? upgradeRole;
+        const invalidation = invalidateFailedRoleRoute(
+          agent,
+          responsibility,
+          roleRoute,
+          routeSource,
+          validation.failure,
+          { turn, step },
+        );
+        appendEvent(agent, "odai/route-fallback", {
+          turn,
+          step,
+          responsibility,
+          routeMode,
+          routeSource,
+          requestedRoute: roleRoute,
+          fallbackUsed: true,
+          fallbackRoute: routeFromConfig(proposed),
+          failureKind: validation.failure.kind,
+          errorCode: validation.failure.code,
+          error: validation.failure.message,
+          invalidated: invalidation.invalidated,
+        });
+        if (upgrade?.cardId) {
+          appendEvent(agent, "odai/route-card-claim-released", {
+            cardId: upgrade.cardId,
+            turn,
+            step,
+            reason: "route-validation-failed",
+          });
+        }
+        if (childRole) {
+          const error = new Error(`Odai ${childRole} route failed validation: ${validation.failure.code}: ${validation.failure.message}`);
+          error.code = validation.failure.code;
+          error.routeFailureKind = validation.failure.kind;
+          throw error;
+        }
+        controllerUpgrades.delete(agent);
+        if (upgrade?.decision && requiresFailClosedProtection(upgrade.decision)) {
+          protectController(agent, turn, step, upgrade.decision, "route-validation", validation.failure.message);
+        }
+        roleRoute = undefined;
+        routeMode = "same-turn";
+        scopedFrontendMaxTokens = undefined;
+        request = proposed;
+      }
     }
     if (childRole || isSubagentSession(agent)) return finalize(request);
 
@@ -956,6 +1301,66 @@ export function apply(ctx, rawConfig) {
     return finalize(Object.freeze({ ...request, maxTokens: effectiveMaxTokens }));
   }, { prepend: true });
 
+  const routeFallbackAttempts = new WeakMap();
+  ctx.on("agent/request-error", async ({ agent, turn, step, provider, failure, signal }, next) => {
+    if (signal.aborted || failure?.code === "CONTEXT_WINDOW_EXCEEDED") return next();
+    const childRole = routedRoleOf(agent);
+    const upgrade = controllerUpgrades.get(agent);
+    const active = childRole
+      ? { role: childRole, ...configuredRole(agent, childRole, turn) }
+      : upgrade && upgrade.turn === turn
+        ? upgrade
+        : undefined;
+    if (!active?.route || provider !== active.route.provider) return next();
+
+    const classified = classifyModelRouteFailure(failure);
+    const invalidation = invalidateFailedRoleRoute(
+      agent,
+      active.role,
+      active.route,
+      active.source,
+      classified,
+      { turn, step },
+    );
+    appendEvent(agent, "odai/route-fallback", {
+      turn,
+      step,
+      responsibility: active.role,
+      routeMode: childRole ? "child" : "same-turn",
+      routeSource: active.source,
+      requestedRoute: active.route,
+      fallbackUsed: !childRole,
+      fallbackRoute: childRole ? undefined : routeFromConfig(agent?.options),
+      failureKind: classified.kind,
+      errorCode: classified.code,
+      error: classified.message,
+      invalidated: invalidation.invalidated,
+    });
+    if (active.cardId) {
+      appendEvent(agent, "odai/route-card-claim-released", {
+        cardId: active.cardId,
+        turn,
+        step,
+        reason: "route-request-failed",
+      });
+    }
+    if (childRole || classified.kind === "cancelled") return next();
+
+    let attempts = routeFallbackAttempts.get(agent);
+    if (!attempts) {
+      attempts = new Set();
+      routeFallbackAttempts.set(agent, attempts);
+    }
+    const key = `${turn}:${step}`;
+    if (attempts.has(key)) return next();
+    attempts.add(key);
+    controllerUpgrades.delete(agent);
+    if (upgrade.decision && requiresFailClosedProtection(upgrade.decision)) {
+      protectController(agent, turn, step, upgrade.decision, "route-request-failure", classified.message);
+    }
+    return { kind: "retry" };
+  });
+
   const protectController = (agent, turn, step, decision, source, failure) => {
     const protection = Object.freeze({
       turn,
@@ -984,6 +1389,14 @@ export function apply(ctx, rawConfig) {
         requestedRoute: pending.requestedRoute,
         stopReason: "no-effective-request",
       });
+      if (pending.routeCardId) {
+        appendEvent(pending.agent, "odai/route-card-claim-released", {
+          cardId: pending.routeCardId,
+          turn: pending.turn,
+          step: pending.step,
+          reason: "no-effective-request",
+        });
+      }
       pendingRouteReceipts.delete(session);
       return;
     }
@@ -1008,6 +1421,14 @@ export function apply(ctx, rawConfig) {
       ...(actualRoute ? { actualRoute } : {}),
       ...(mismatch ? { stopReason: "route-mismatch", error: mismatch } : {}),
     });
+    if (pending.routeCardId) {
+      appendEvent(pending.agent, mismatch ? "odai/route-card-claim-released" : "odai/route-card-consumed", {
+        cardId: pending.routeCardId,
+        turn: pending.turn,
+        step: pending.step,
+        ...(mismatch ? { reason: "route-mismatch" } : { receiptStatus: "applied" }),
+      });
+    }
     pendingRouteReceipts.delete(session);
     if (mismatch && pending.routeMode === "same-turn") {
       protectController(
@@ -1045,11 +1466,13 @@ export function apply(ctx, rawConfig) {
         controllerUpgrades.delete(agent);
       }
       let downstream = await next();
-      if (downstream.kind === "reject" || signal.aborted || step !== 1 || subagentSession) {
+      if (downstream.kind === "reject" || signal.aborted || subagentSession) {
         return downstream;
       }
+      const responsibilityGap = pendingResponsibilityGap(agent, turn, step);
+      if (step !== 1 && !responsibilityGap) return downstream;
 
-      if (claimSemanticMemoryTurn(agent, turn, step)) {
+      if (step === 1 && claimSemanticMemoryTurn(agent, turn, step)) {
         const settings = memorySettingsFor(agent, turn);
         const message = latestDirectUserMessage(agent, downstream.messages, { turn });
         const query = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
@@ -1123,7 +1546,7 @@ export function apply(ctx, rawConfig) {
       const taskText = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
       let routedDownstream = downstream;
       let researchPacketText = "";
-      const researchDecision = decideResearchPrefetch({ text: taskText });
+      const researchDecision = decideResearchPrefetch({ text: taskText, proposal: responsibilityGap });
       if (researchDecision.action === "delegate") {
         appendEvent(agent, "odai/research-decided", {
           turn,
@@ -1224,7 +1647,7 @@ export function apply(ctx, rawConfig) {
       }
 
       const frozenCard = activeRouteCard(evidence.events(agent));
-      let decision = decideRoute({ text: taskText, routeCard: frozenCard });
+      let decision = decideRoute({ text: taskText, routeCard: frozenCard, proposal: responsibilityGap });
       let routeRole = decision.targetRole ?? decision.role;
       const roleTaskText = researchPacketText ? `${taskText}\n\n${researchPacketText}` : taskText;
       let roleContext = decision.action === "direct"
@@ -1253,8 +1676,24 @@ export function apply(ctx, rawConfig) {
         mode: config.routing.mode,
         reasonCode: decision.reasonCode,
         signals: decision.signals,
+        ...(responsibilityGap ? {
+          stateDigest: responsibilityGap.stateDigest,
+          gap: responsibilityGap.gap,
+          evidenceRefs: responsibilityGap.evidenceRefs,
+          expectedChange: responsibilityGap.expectedChange,
+        } : {}),
         ...(decision.considerations ? { considerations: decision.considerations } : {}),
       }, logger);
+      if (responsibilityGap) {
+        appendEvent(agent, "odai/responsibility-gap-consumed", {
+          turn,
+          step,
+          responsibility: responsibilityGap.responsibility,
+          stateDigest: responsibilityGap.stateDigest,
+          routeAction: decision.action,
+          reasonCode: decision.reasonCode,
+        }, logger);
+      }
 
       if (decision.action === "direct") return routedDownstream;
 
@@ -1312,6 +1751,55 @@ export function apply(ctx, rawConfig) {
       const roleBundle = sharedSkillSelection(agent, turn)?.bundle ?? bundled;
       const canonicalRoleContract = roleBundle.roleContracts[routeRole];
       const roleContract = dshRoleContract(routeRole, canonicalRoleContract, roleBundle.referenceContracts);
+      let rolePreflightVerified = false;
+      if (routeRole === "frontend" && decision.action === "upgrade") {
+        const health = await probeModelRoute(
+          (candidate, candidateSignal) => ctx.llm.resolveCallConfig(candidate, candidateSignal),
+          roleRoute,
+          signal,
+        );
+        if (health.status === "rejected") {
+          const invalidation = invalidateFailedRoleRoute(
+            agent,
+            routeRole,
+            roleRoute,
+            roleState.source,
+            health.failure,
+            { turn, step, position: "pre-step" },
+          );
+          appendEvent(agent, "odai/route-result", {
+            turn,
+            step,
+            role: routeRole,
+            action: "upgrade",
+            status: "fallback",
+            stopReason: "route-preflight-failed",
+            routeSource: roleState.source,
+            fallbackUsed: true,
+            requestedRoute: roleRoute,
+            failureKind: health.failure.kind,
+            error: health.failure.message,
+            invalidated: invalidation.invalidated,
+          }, logger);
+          return {
+            kind: "enter",
+            messages: [
+              ...routedDownstream.messages,
+              pluginMessage(
+                [
+                  `The configured frontend route failed preflight (${health.failure.kind}: ${health.failure.message}).`,
+                  "Continue locally as the current controller for this turn using the canonical frontend and craft contract below. Do not claim the configured frontend responsibility ran; no routed receipt exists.",
+                  "",
+                  "frontend local-fallback responsibility contract:",
+                  roleContract,
+                ].join("\n"),
+                "odai frontend route unavailable; explicit local fallback",
+              ),
+            ],
+          };
+        }
+        rolePreflightVerified = health.status === "verified";
+      }
       roleContext ??= buildRoleContextPacket(agent, routeRole, taskText);
       const inPlaceUpgrade = decision.action === "upgrade"
         && (config.routing.mode === "auto" || ["executor", "frontend"].includes(routeRole));
@@ -1358,13 +1846,16 @@ export function apply(ctx, rawConfig) {
           protectController(agent, turn, step, decision, `same-turn-${routeRole}`);
         }
         if (routeRole === "executor" && frozenCard) {
-          appendEvent(agent, "odai/route-card-consumed", { cardId: frozenCard.id, turn, step });
+          appendEvent(agent, "odai/route-card-claimed", { cardId: frozenCard.id, turn, step });
         }
         controllerUpgrades.set(agent, Object.freeze({
           turn,
           role: routeRole,
           route: roleRoute,
           source: roleState.source,
+          decision,
+          ...(rolePreflightVerified ? { routeValidated: true } : {}),
+          ...(routeRole === "executor" && frozenCard ? { cardId: frozenCard.id } : {}),
         }));
         appendEvent(agent, "odai/route-upgrade", {
           turn,
