@@ -2,6 +2,21 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-17 — DSH 0.1.1 发布候选：实施阶段路由重评
+
+- 冻结待发布的 `odai-dsh-agent@0.1.1` 与 `odai-dsh-plugin@0.1.1`，两包继续作为同一发布单元保持版本同步；内置 canonical skill 升为 `0.2.1`，runtime contract 保持 `3`。
+- 当任务从未决判断转为边界冻结的实施合同，或实施范围发生实质变化时，旧的 direct 判断失效；总控须在下一次实质写入前重新评估一次 executor 分离收益，既不因执行惯性继续 direct，也不把任务规模本身当成委派理由。该通用语义由 canonical `references/leverage.md` 持有，DSH runtime 只负责 route card 的冻结、所有权和消费机制。
+- 活动 route card 不再被无关新任务消费。明确续作语可直接继续；普通执行动词必须同时指向前一方案、计划、卡片、实现或改动；明确新任务保持 direct。中文“另外”和英文 `another` 只有与具体新任务名词共同出现时才形成否决，避免连接词压过用户显式续作。
+- 升级前须停止 DSH，更新后重启以加载新的 bundled upstream。已有 active skill evolution 不会被覆盖或自动改写指针，但因 canonical digest 变化会显示 `rebaseRequired`；显式 rebase 只创建 inactive candidate，冲突保留 base/ours/theirs 证据并维持原 active generation。
+- Plugin `128/128`、Agent `11/11`、脚本 `7/7`、canonical 校验、真实 DSH Plugin/Agent load 与双包 dry-run 均通过。固定 C04 的 Luna researcher + Sol controller 正式样本增至 `n=4`，四份均为 `4/4`、真实路由和 3 源 packet；新增 3 次复跑均为高置信且工作区无改动。单份 Sol 基线仍为 `n=1`，不据此宣称统计稳定或通用降本。
+
+## 2026-08-17 — DSH 0.1.0 受控演化与语义记忆
+
+- 发布 `odai-dsh-agent@0.1.0` 与 `odai-dsh-plugin@0.1.0`，两包同步携带 canonical skill `0.2.0` 与 runtime contract `3`。
+- 新增本地分域语义记忆：默认 `auto` 不调用 provider、embedding、subagent 或 compaction，只从经过当前 open-turn 事件认证的直接用户消息中捕获高置信持久偏好、决定和约束；低置信候选保持 pending，active 记录按 global/project 范围有界召回。秘密、联系方式、敏感个人类别、临时请求、假设、引述和代码拒绝入库；冲突不静默覆盖，forget/clear 物理删除，非法或 symlink store 安全关闭。
+- 新增受控 skill evolution：只允许对声明内治理 Markdown 做精确替换，候选、验证、激活、rebase、rollback 与 deactivate 均绑定真实直接用户消息中的一次性短语；generation 保存不可变 bundle 与内容寻址来源。manifest、脚本、runtime、symlink、旧哈希或未跟踪改动均拒绝，breaking 变更使用独立授权短语，包更新不删除用户演化状态。
+- Plugin 与 Agent 共享同一 memory/evolution 状态 owner，安装、更新、修复和卸载均不删除这些用户数据；child agents 不能检查或修改。责任映射、skill source、输出策略、compaction 与现有会话兼容行为保持各自边界。
+
 ## 2026-08-17 — DSH 可选证据压缩、前端升级与责任闭环
 
 - 发布 `odai-dsh-agent@0.0.10` 与 `odai-dsh-plugin@0.0.10`，两包从该版本起作为同一发布单元保持版本同步；内置 canonical skill 升为 `0.2.0`、runtime contract 升为 `3`。新增 researcher 与 frontend 可选责任，但二者默认均未映射，只有用户明确给出各自 provider/model 后才可用，不内置 Luna、Sol、K3、token 或推理档默认值。

@@ -56,15 +56,15 @@ Researcher 的运行时触发只判断任务是否匹配，不感知 provider �
 
 | 验证面 | 结果 | 证明范围 |
 |---|---:|---|
-| Plugin runtime/package tests | 94/94 | direct、五责任路由、route card、完整证据包、来源校验、配置与来源选择、兼容及 fail-closed |
+| Plugin runtime/package tests | 128/128 | direct、五责任路由、route card、语义记忆、skill evolution、完整证据包、来源校验、兼容及 fail-closed |
 | Agent installer tests | 11/11 | 安装、更新、历史会话迁移、漂移保护、DSH 版本与状态/卸载 |
-| canary/runner tests | 5/5 | ceiling 观察、frontend 映射、Plugin/Agent 隔离和失败清理 |
+| canary/runner/pack tests | 7/7 | ceiling 观察、frontend 映射、Plugin/Agent 隔离、失败清理及打包目录边界 |
 | canonical 与跨宿主路由 | 通过 | 28 个 Odai 文件、Codex/Claude/Copilot 生成及用户语言合同 |
 | Plugin DSH load | 通过 | 真实 DSH 工具注册、child/controller guard、配置落盘 |
-| Plugin/Agent 共存 | 通过 | prompt/source 去重、canonical `0.2.0`、Agent scoped override 与清理 |
+| Plugin/Agent 共存 | 通过 | prompt/source 去重、canonical `0.2.1`、Agent scoped override 与清理 |
 | CLI/Plugin/Agent pack dry-run | 通过 | 三个产物均包含各自所需 canonical/runtime，生成目录在结束后清理；CLI 本次不发布 |
 
-这组验证证明当前发布机制和安全边界，不替代付费模型质量样本。取消内置映射后没有追加 live 模型调用；下面的模型样本都明确使用了冻结测试映射。
+这组验证证明当前发布机制和安全边界，不替代付费模型质量样本。发布包仍不内置责任映射；下面的模型样本都明确使用冻结测试映射，其中 C04 researcher 新增 3 次正式 live 复跑。
 
 ## 冻结质量与成本证据
 
@@ -94,7 +94,7 @@ C08 要求基于现有运维台材料形成可直接交给设计和前端的改�
 |---|---:|---:|---:|---:|---:|
 | K3/max frontend，同 turn | **4/4** | 98,619 | 10,952 / 83,968 / 3,699 | 约 133.9s | 未取得该 provider 权威单价 |
 
-该样本形成于 canonical `0.2.0` 的 frontend 冻结版；当前 runtime contract `3` 只新增 researcher prefetch，C08 不命中其因果高影响触发，当前单测继续逐项验证 frontend route、`4096` 覆盖、缺配置直退和全局 ceiling 隔离，因此保留这份行为样本。更早一轮因 canary 未观察到路由事件而标为基础设施无效，不计质量结果。单一样本只证明显式 frontend 映射和预算在原生 DSH 中可达且交付达到 `4/4`，不证明 K3 是默认、frontend 普遍优于当前 controller，或应继续按数据库、安全等领域枚举责任。
+该样本形成于 canonical `0.2.0` 的 frontend 冻结版；当前 canonical `0.2.1` 只调整 executor 阶段转换重评及 DSH route-card 续作判定，不触达 C08 的 frontend 触发或预算合同，当前单测继续逐项验证 frontend route、`4096` 覆盖、缺配置直退和全局 ceiling 隔离，因此保留这份行为样本。更早一轮因 canary 未观察到路由事件而标为基础设施无效，不计质量结果。单一样本只证明显式 frontend 映射和预算在原生 DSH 中可达且交付达到 `4/4`，不证明 K3 是默认、frontend 普遍优于当前 controller，或应继续按数据库、安全等领域枚举责任。
 
 ### 简单任务负向纪律
 
