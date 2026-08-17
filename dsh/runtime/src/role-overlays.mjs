@@ -10,10 +10,10 @@ In auto mode this responsibility runs by replacing the current controller reques
 In auto mode this responsibility is reachable only when the user explicitly continues implementation and an active frozen route card proves observable separation benefit. It runs in the current controller turn because DSH routed children are read-only. Follow the consumed card exactly; do not reinterpret the request, broaden scope, or claim final acceptance.`,
   reviewer: `## DSH reviewer execution boundary
 
-Start an independent child only from a bounded, hash-addressed packet that contains verified tool evidence. Without such a packet, auto mode may replace the current request route for a read-only same-turn check, but it must state that the result is not independent acceptance and must not edit, fix, or approve release.`,
+Start an independent child only from a bounded, hash-addressed packet that contains verified tool evidence. The child's effective request header must match its configured route before its output is accepted. Without such a packet, auto mode may replace the current request route for a read-only same-turn check, but it must state that the result is not independent acceptance and must not edit, fix, or approve release.`,
   frontend: `## DSH frontend execution boundary
 
-This responsibility runs in the current controller turn so it retains the active conversation, workspace, dev-server, and browser context. It is not an independent child. DSH may use a user-persisted frontend provider/model/reasoning route and, only when that mapping explicitly includes maxTokens, apply that responsibility ceiling instead of the global controller ceiling for this routed turn. Treat request headers and captured usage as the routing evidence; do not infer success from configuration or self-report.`,
+This responsibility runs in the current controller turn so it retains the active conversation, workspace, dev-server, and browser context. It is not an independent child. DSH may use a user-persisted frontend provider/model/reasoning route and, only when that mapping explicitly includes maxTokens, apply that responsibility ceiling instead of the global controller ceiling for this routed turn. The runtime compares the effective DSH request header with that mapping and records an applied, mismatch, or unverified receipt; configuration and self-report are not routing evidence.`,
 });
 
 export function dshRoleContract(role, canonicalContract, referenceContracts = {}) {

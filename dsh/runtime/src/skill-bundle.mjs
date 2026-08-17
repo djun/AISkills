@@ -213,8 +213,11 @@ export function loadSkillBundle(skillPath, options = {}) {
     if (!text) throw new Error(`Odai canonical ${reference} reference is unavailable: ${resolve(root, relativePath)}`);
     return [reference, text];
   })));
+  const fileContents = Object.freeze(Object.fromEntries(
+    [...contents].map(([relativePath, content]) => [relativePath, content.toString("base64")]),
+  ));
 
-  return Object.freeze({
+  const bundle = {
     path: entryPath,
     root,
     source: typeof options.source === "string" && options.source ? options.source : "bundled",
@@ -224,7 +227,18 @@ export function loadSkillBundle(skillPath, options = {}) {
     roleContracts,
     referenceContracts,
     digest: digest.digest("hex"),
-  });
+  };
+  Object.defineProperty(bundle, "fileContents", { value: fileContents, enumerable: false });
+  return Object.freeze(bundle);
+}
+
+export function readSkillBundleFile(bundle, relativePath) {
+  if (!bundle || typeof bundle !== "object" || !bundle.manifest?.requiredFiles?.includes(relativePath)) {
+    throw new TypeError(`unknown Odai skill bundle file: ${String(relativePath)}`);
+  }
+  const encoded = bundle.fileContents?.[relativePath];
+  if (typeof encoded !== "string") throw new Error(`Odai skill bundle snapshot is missing ${relativePath}`);
+  return Buffer.from(encoded, "base64");
 }
 
 function fallbackSelection(mode, bundled, reasonCode, detail, candidate) {

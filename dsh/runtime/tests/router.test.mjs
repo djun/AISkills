@@ -209,15 +209,43 @@ test("substantial frontend work upgrades in place while narrow fixes stay direct
   assert.equal(handoff.action, "upgrade");
   assert.equal(handoff.targetRole, "frontend");
 
+  const incident = decideRoute({
+    text: "评估一下这个：把小松同学登录页面、登录后的首页以及个人空间截图发上去，帮我们优化界面介绍，看怎么让大家一眼就能明白小松同学是做什么的。",
+  });
+  assert.equal(incident.action, "upgrade");
+  assert.equal(incident.targetRole, "frontend");
+  assert.ok(incident.signals.includes("frontend-multi-surface"));
+  assert.ok(incident.signals.includes("frontend-comprehension"));
+  assert.ok(incident.signals.includes("frontend-acceptance"));
+
   for (const text of [
     "修复这个组件的 padding。",
     "题目选项一多，手机上文字就会换行错位，帮我把这个界面优化稳一点。",
     "把按钮文案改成保存。",
     "总结一下这个界面改版方案。",
     "请把 README 中“整体改版这个网站”这句话缩短。",
+    "优化登录页面、首页和个人空间的 API 接口调用。",
   ]) {
     assert.equal(decideRoute({ text }).action, "direct", text);
   }
+  const partial = decideRoute({ text: "修复这个组件的 padding。" });
+  assert.deepEqual(partial.considerations, [{
+    role: "frontend",
+    match: "partial",
+    action: "skip",
+    reasonCode: "FRONTEND_BELOW_SPECIALIST_THRESHOLD",
+    signals: ["frontend-interface-scope", "frontend-delivery-request"],
+    unmet: ["specialist-or-substantial-scope"],
+  }]);
+  const apiOnly = decideRoute({ text: "优化登录页面、首页和个人空间的 API 接口调用。" });
+  assert.deepEqual(apiOnly.considerations, [{
+    role: "frontend",
+    match: "partial",
+    action: "skip",
+    reasonCode: "FRONTEND_API_REQUEST",
+    signals: ["frontend-interface-scope", "frontend-delivery-request", "frontend-multi-surface"],
+    unmet: ["ui-production-request"],
+  }]);
 });
 
 test("latest genuine user text ignores plugin notices", () => {
@@ -255,6 +283,27 @@ test("routing text inherits referenced high-impact context but keeps low-risk tr
   );
   assert.equal(afterNewTask, "继续处理");
   assert.equal(decideRoute({ text: afterNewTask }).action, "direct");
+});
+
+test("frontend continuation inherits only the immediately referenced substantive task", () => {
+  const user = (text) => ({ role: "user", source: { kind: "user" }, content: [{ type: "text", text }] });
+  const incident = "优化登录页面、首页和个人空间的界面介绍，让家长一眼明白产品做什么，并检查截图。";
+  const continued = extractRoutingText(
+    [user("你能做不？")],
+    [{ type: "user/message", data: user(incident) }],
+  );
+  assert.match(continued, /Referenced earlier frontend user context/u);
+  assert.equal(decideRoute({ text: continued }).targetRole, "frontend");
+
+  const unrelated = extractRoutingText(
+    [user("你能做不？")],
+    [
+      { type: "user/message", data: user(incident) },
+      { type: "user/message", data: user("排查后端缓存键错乱") },
+    ],
+  );
+  assert.equal(unrelated, "你能做不？");
+  assert.equal(decideRoute({ text: unrelated }).action, "direct");
 });
 
 test("delegation prompt requires a canonical role contract and bounded context", () => {

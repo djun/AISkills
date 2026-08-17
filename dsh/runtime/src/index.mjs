@@ -24,7 +24,7 @@ import {
   CONFIGURABLE_ROLES,
   ROUTING_CONFIG_PROMPT,
   createRoutingConfigTool,
-  effectiveRoleRoute,
+  effectiveRoutingSnapshot,
   resolveRoleRoute,
   resolveRoutingConfigPath,
 } from "./routing-config.mjs";
@@ -70,6 +70,27 @@ import {
   selectSharedSkillForTurn,
   sharedSkillSelection,
 } from "./skill-selection-state.mjs";
+import {
+  applySkillEvolutionSelection,
+  createSkillEvolutionTool,
+  resolveSkillEvolutionRoot,
+  skillEvolutionDisabled,
+} from "./skill-evolution.mjs";
+import {
+  MEMORY_PROMPT,
+  captureAutomaticMemories,
+  claimSemanticMemoryTurn,
+  createSemanticMemoryTool,
+  latestDirectUserMessage,
+  memoryPacketMessage,
+  renderSemanticMemoryPacket,
+  retrieveSemanticMemories,
+} from "./semantic-memory.mjs";
+import {
+  MEMORY_MODES,
+  effectiveMemorySettings,
+  resolveMemoryStorePath,
+} from "./semantic-memory-store.mjs";
 
 export const name = "odai-dsh-runtime";
 export const inject = ["systemPrompt", "tools", "subagents", "sessions"];
@@ -95,6 +116,7 @@ export function resolveConfig(rawConfig = {}) {
   const governance = assertPlainObject(raw.governance, "config.governance");
   const output = assertPlainObject(raw.output, "config.output");
   const compaction = assertPlainObject(raw.compaction, "config.compaction");
+  const memory = assertPlainObject(raw.memory, "config.memory");
   const mode = routing.mode ?? DEFAULT_ROUTING_MODE;
   const provider = routing.provider ?? "spawn";
   const maxInputChars = routing.maxInputChars ?? 12_000;
@@ -102,14 +124,19 @@ export function resolveConfig(rawConfig = {}) {
   const additionalDeniedTools = governance.additionalDeniedTools ?? [];
   const skillSource = governance.skillSource ?? "bundled";
   const skillConfigPath = resolveSkillSourceConfigPath(governance.skillConfigPath);
+  const evolutionRoot = resolveSkillEvolutionRoot(governance.evolutionRoot);
   const outputConfigPath = resolveOutputConfigPath(output.configPath);
   const compactionConfigPath = resolveCompactionConfigPath(compaction.configPath);
+  const memoryStorePath = resolveMemoryStorePath(memory.storePath);
+  const memoryMode = memory.mode ?? "auto";
+  const memoryMaxRetrieved = memory.maxRetrieved ?? 6;
   const compactionCacheRetention = compaction.cacheRetention
     ?? process.env.ODAI_COMPACTION_CACHE_RETENTION
     ?? "provider-default";
   const unknownRoles = Object.keys(roles).filter((role) => !ROUTED_ROLES.includes(role));
   const unknownOutputFields = Object.keys(output).filter((field) => field !== "configPath");
   const unknownCompactionFields = Object.keys(compaction).filter((field) => !["cacheRetention", "configPath"].includes(field));
+  const unknownMemoryFields = Object.keys(memory).filter((field) => !["mode", "storePath", "maxRetrieved"].includes(field));
 
   if (!ROUTING_MODES.has(mode)) {
     throw new TypeError("config.routing.mode must be off, observe, auto, or execute");
@@ -128,6 +155,15 @@ export function resolveConfig(rawConfig = {}) {
   }
   if (unknownCompactionFields.length > 0) {
     throw new TypeError(`config.compaction has unknown fields: ${unknownCompactionFields.join(", ")}`);
+  }
+  if (unknownMemoryFields.length > 0) {
+    throw new TypeError(`config.memory has unknown fields: ${unknownMemoryFields.join(", ")}`);
+  }
+  if (!MEMORY_MODES.includes(memoryMode)) {
+    throw new TypeError("config.memory.mode must be auto or off");
+  }
+  if (!Number.isSafeInteger(memoryMaxRetrieved) || memoryMaxRetrieved < 1 || memoryMaxRetrieved > 12) {
+    throw new TypeError("config.memory.maxRetrieved must be an integer from 1 to 12");
   }
   if (!COMPACTION_CACHE_RETENTIONS.has(compactionCacheRetention)) {
     throw new TypeError("config.compaction.cacheRetention must be provider-default, short, long, or none");
@@ -159,11 +195,17 @@ export function resolveConfig(rawConfig = {}) {
       additionalDeniedTools: Object.freeze(additionalDeniedTools.map((tool) => tool.trim())),
       skillSource,
       skillConfigPath,
+      evolutionRoot,
     }),
     output: Object.freeze({ configPath: outputConfigPath }),
     compaction: Object.freeze({
       cacheRetention: compactionCacheRetention,
       configPath: compactionConfigPath,
+    }),
+    memory: Object.freeze({
+      mode: memoryMode,
+      storePath: memoryStorePath,
+      maxRetrieved: memoryMaxRetrieved,
     }),
   });
 }
@@ -273,32 +315,40 @@ function roleAgentOptions(roleRoute) {
   };
 }
 
+function routeFromConfig(config) {
+  if (typeof config?.provider !== "string" || typeof config?.model !== "string") return undefined;
+  return Object.freeze({
+    provider: config.provider,
+    model: config.model,
+    ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
+    ...(config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens }),
+  });
+}
+
 function latestRequestRoute(localAgent) {
   const events = localAgent?.session?.events;
   if (!Array.isArray(events)) return undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (event?.type !== "request/header") continue;
-    const config = event.data?.header?.config;
-    if (typeof config?.provider !== "string" || typeof config?.model !== "string") return undefined;
-    return Object.freeze({
-      provider: config.provider,
-      model: config.model,
-      ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
-    });
+    return routeFromConfig(event.data?.header?.config);
+  }
+  return undefined;
+}
+
+function routeMismatchFor(expected, actual, subject) {
+  if (!expected) return undefined;
+  if (!actual) return `${subject} request/header did not expose an actual model route`;
+  for (const field of ["provider", "model", "reasoningEffort", "maxTokens"]) {
+    if (expected[field] !== undefined && expected[field] !== actual[field]) {
+      return `${subject} ${field} mismatch: expected ${expected[field]}, got ${actual[field] ?? "<absent>"}`;
+    }
   }
   return undefined;
 }
 
 function routeMismatch(expected, actual) {
-  if (!expected) return undefined;
-  if (!actual) return "child request/header did not expose an actual model route";
-  for (const field of ["provider", "model", "reasoningEffort"]) {
-    if (expected[field] !== undefined && expected[field] !== actual[field]) {
-      return `child ${field} mismatch: expected ${expected[field]}, got ${actual[field] ?? "<absent>"}`;
-    }
-  }
-  return undefined;
+  return routeMismatchFor(expected, actual, "child");
 }
 
 export async function runRoutedRole({ subagents, provider, decision, taskText, roleContract, agent, signal, roleRoute }) {
@@ -316,12 +366,18 @@ export async function runRoutedRole({ subagents, provider, decision, taskText, r
     const result = await run.result;
     const actualRoute = latestRequestRoute(run.localAgent);
     const mismatch = routeMismatch(roleRoute, actualRoute);
+    const routeReceiptStatus = !actualRoute ? "unverified" : mismatch ? "mismatch" : "applied";
+    const routeEvidence = Object.freeze({
+      routeReceiptStatus,
+      ...(mismatch ? { routeReceiptError: mismatch } : {}),
+      ...(actualRoute ? { actualRoute } : {}),
+    });
     if (result.stopReason !== "completed") {
       outcome = Object.freeze({
         status: "fallback",
         stopReason: result.stopReason,
         output: result.output ?? [],
-        ...(actualRoute ? { actualRoute } : {}),
+        ...routeEvidence,
       });
     } else if (mismatch) {
       outcome = Object.freeze({
@@ -329,7 +385,7 @@ export async function runRoutedRole({ subagents, provider, decision, taskText, r
         stopReason: "route-unverified",
         output: [],
         error: mismatch,
-        ...(actualRoute ? { actualRoute } : {}),
+        ...routeEvidence,
       });
     } else if (!outputText(result.output)) {
       outcome = Object.freeze({
@@ -337,22 +393,26 @@ export async function runRoutedRole({ subagents, provider, decision, taskText, r
         stopReason: "route-empty-output",
         output: [],
         error: "child completed without textual evidence",
-        ...(actualRoute ? { actualRoute } : {}),
+        taskError: "child completed without textual evidence",
+        ...routeEvidence,
       });
     } else {
       outcome = Object.freeze({
         status: "completed",
         stopReason: result.stopReason,
         output: result.output ?? [],
-        ...(actualRoute ? { actualRoute } : {}),
+        ...routeEvidence,
       });
     }
   } catch (error) {
+    const taskError = error instanceof Error ? error.message : String(error);
     outcome = Object.freeze({
       status: "fallback",
       stopReason: "infrastructure-error",
       output: [],
-      error: error instanceof Error ? error.message : String(error),
+      routeReceiptStatus: "unverified",
+      error: taskError,
+      taskError,
     });
   }
 
@@ -361,13 +421,20 @@ export async function runRoutedRole({ subagents, provider, decision, taskText, r
       await run.dispose();
     } catch (error) {
       const disposeError = error instanceof Error ? error.message : String(error);
+      const cleanupTaskError = outcome?.taskError
+        ? `${outcome.taskError}; provider cleanup failed: ${disposeError}`
+        : `provider cleanup failed: ${disposeError}`;
       return Object.freeze({
         status: "fallback",
         stopReason: "infrastructure-error",
         output: [],
+        routeReceiptStatus: outcome?.routeReceiptStatus ?? "unverified",
+        ...(outcome?.routeReceiptError ? { routeReceiptError: outcome.routeReceiptError } : {}),
+        ...(outcome?.actualRoute ? { actualRoute: outcome.actualRoute } : {}),
         error: outcome?.error
           ? `${outcome.error}; provider cleanup failed: ${disposeError}`
-          : `provider cleanup failed: ${disposeError}`,
+          : cleanupTaskError,
+        taskError: cleanupTaskError,
       });
     }
   }
@@ -380,16 +447,85 @@ function canonicalPrompt(selection) {
   const fallback = selection.status === "fallback"
     ? `Selection fallback: ${selection.reasonCode}${selection.detail ? ` (${selection.detail})` : ""}.`
     : undefined;
+  const evolution = selection.evolution?.status === "active"
+    ? `User evolution: generation ${selection.evolution.generationId}; base digest ${selection.evolution.baseDigest}; current upstream digest ${selection.evolution.upstreamDigest}; rebase required: ${String(selection.evolution.rebaseRequired)}.`
+    : undefined;
   return [
     "## odai canonical governance",
     `Canonical source: ${bundle.source} (${bundle.provider})`,
     `Canonical skill: ${bundle.manifest.skillVersion}; runtime contract: ${bundle.manifest.runtimeContract}; digest: ${bundle.digest}.`,
+    ...(evolution ? [evolution] : []),
     ...(fallback ? [fallback] : []),
     "Apply this governance to every request. Keep the controller as the final delivery owner; use another role only for a real independent gap with observable net benefit.",
     "Odai governance is already loaded by this runtime; do not call the skill tool or read SKILL.md to load odai again.",
     "",
     bundle.skillText,
   ].join("\n");
+}
+
+function renderEffectiveRoutingContext(snapshotState) {
+  if (snapshotState.error) {
+    return [
+      "Current effective responsibility mappings: unavailable because the saved routing configuration is invalid.",
+      `Configuration error: ${snapshotState.detail}`,
+      "Use odai_routing_config only when the user asks to inspect or repair it; do not infer any route.",
+    ].join("\n");
+  }
+  const mappings = CONFIGURABLE_ROLES.flatMap((role) => {
+    const route = snapshotState.snapshot.roles[role];
+    if (!route) return [];
+    const options = [
+      ...(route.reasoningEffort ? [`reasoningEffort=${route.reasoningEffort}`] : []),
+      ...(route.maxTokens ? [`maxTokens=${route.maxTokens}`] : []),
+    ];
+    return [`${role}=${route.provider}/${route.model}${options.length > 0 ? ` (${options.join(", ")})` : ""} [${snapshotState.snapshot.sources[role]}]`];
+  });
+  return [
+    `Current effective responsibility mappings (runtime-owned; supersedes conversation summaries): ${mappings.join("; ") || "none"}.`,
+    "These are route targets, not evidence that a responsibility ran. Only an actual route receipt proves use; a generic subagent does not.",
+  ].join("\n");
+}
+
+function latestRouteReceipt(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const data = event?.data;
+    if (!data?.routeSource || !Number.isSafeInteger(data.turn) || !Number.isSafeInteger(data.step)) continue;
+    if (event.type === "odai/route-applied") {
+      return Object.freeze({
+        turn: data.turn,
+        step: data.step,
+        responsibility: data.responsibility,
+        status: data.status,
+        routeMode: data.routeMode,
+        routeSource: data.routeSource,
+        fallbackUsed: data.fallbackUsed,
+        requestedRoute: data.requestedRoute,
+        ...(data.actualRoute ? { actualRoute: data.actualRoute } : {}),
+        ...(data.stopReason ? { stopReason: data.stopReason } : {}),
+        ...(data.error ? { error: data.error } : {}),
+      });
+    }
+    if (["odai/route-result", "odai/research-result"].includes(event.type)) {
+      const routeReceiptStatus = data.routeReceiptStatus ?? "unverified";
+      return Object.freeze({
+        turn: data.turn,
+        step: data.step,
+        responsibility: data.role,
+        status: routeReceiptStatus,
+        taskStatus: data.status,
+        routeMode: "child",
+        routeSource: data.routeSource,
+        fallbackUsed: routeReceiptStatus !== "applied",
+        requestedRoute: data.requestedRoute,
+        ...(data.actualRoute ? { actualRoute: data.actualRoute } : {}),
+        ...(data.routeReceiptError ? { error: data.routeReceiptError } : {}),
+        ...(data.stopReason ? { taskStopReason: data.stopReason } : {}),
+        ...(data.error ? { taskError: data.error } : {}),
+      });
+    }
+  }
+  return undefined;
 }
 
 function routedRoleOf(agent) {
@@ -399,9 +535,9 @@ function routedRoleOf(agent) {
     const event = events[index];
     if (event?.type !== "subagent/descriptor") continue;
     const label = event.data?.label;
-    if (typeof label !== "string" || !label.startsWith("odai-")) return undefined;
-    const role = label.slice("odai-".length);
-    return ROUTED_ROLES.includes(role) ? role : undefined;
+    if (typeof label !== "string") return undefined;
+    const match = /^odai-(researcher|planner|executor|reviewer|frontend)(?:$|[\s:])/u.exec(label.trim());
+    return match && ROUTED_ROLES.includes(match[1]) ? match[1] : undefined;
   }
   return undefined;
 }
@@ -455,6 +591,7 @@ export function apply(ctx, rawConfig) {
     bundle: bundled,
     rejections: Object.freeze([]),
   });
+  const evolutionDisabled = explicitSkillPath || skillEvolutionDisabled();
 
   ctx.systemPrompt.section({
     name: "odai:canonical-governance",
@@ -486,6 +623,11 @@ export function apply(ctx, rawConfig) {
     order: -16,
     text: COMPACTION_CONFIG_PROMPT,
   });
+  ctx.systemPrompt.section({
+    name: "odai:semantic-memory",
+    order: -15,
+    text: MEMORY_PROMPT,
+  });
 
   const optionalSkillRegistry = () => {
     try {
@@ -498,7 +640,7 @@ export function apply(ctx, rawConfig) {
       return undefined;
     }
   };
-  const selectForAgent = async (agent, context) => {
+  const selectUpstreamForAgent = async (agent, context) => {
     if (explicitSkillPath) return baseSelection;
     let mode;
     try {
@@ -521,6 +663,10 @@ export function apply(ctx, rawConfig) {
       skills: optionalSkillRegistry(),
     });
   };
+  const selectForAgent = async (agent, context) => {
+    const upstream = await selectUpstreamForAgent(agent, context);
+    return applySkillEvolutionSelection(upstream, config.governance.evolutionRoot, { disabled: evolutionDisabled });
+  };
   const selectOutputForAgent = () => {
     try {
       return effectiveOutputPolicy(config.output.configPath);
@@ -533,6 +679,38 @@ export function apply(ctx, rawConfig) {
         reasonCode: "output-config-invalid",
       });
     }
+  };
+  const memorySettingsSnapshots = new WeakMap();
+  const memorySettingsFor = (agent, turn = currentAgentTurn(agent)) => {
+    const cached = memorySettingsSnapshots.get(agent);
+    if (cached && cached.turn === turn) return cached.settings;
+    let settings;
+    try {
+      settings = effectiveMemorySettings(config.memory.storePath, { mode: config.memory.mode });
+    } catch (error) {
+      logger.warn(`Odai semantic memory is unavailable; capture and retrieval are disabled for this turn: ${error instanceof Error ? error.message : String(error)}`);
+      settings = Object.freeze({ mode: "off", source: "invalid-store" });
+    }
+    memorySettingsSnapshots.set(agent, { turn, settings });
+    return settings;
+  };
+  const routingSnapshots = new WeakMap();
+  const routingSnapshotFor = (agent, turn = currentAgentTurn(agent)) => {
+    const cached = routingSnapshots.get(agent);
+    if (cached && cached.turn === turn) return cached.state;
+    let state;
+    try {
+      state = Object.freeze({
+        snapshot: effectiveRoutingSnapshot(config.routing.configPath, config.routing.roles),
+      });
+    } catch (error) {
+      state = Object.freeze({
+        error: "persisted Odai routing configuration failed validation",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+    routingSnapshots.set(agent, { turn, state });
+    return state;
   };
   ctx.on("system-prompt/assemble", async (assembly, context, next) => {
     const downstream = await next();
@@ -553,6 +731,15 @@ export function apply(ctx, rawConfig) {
       runtimeContract: selection.bundle.manifest.runtimeContract,
       digest: selection.bundle.digest,
       rejections: selection.rejections.map(({ source, reasonCode }) => ({ source, reasonCode })),
+      ...(selection.evolution?.generationId ? {
+        evolution: {
+          status: selection.evolution.status,
+          generationId: selection.evolution.generationId,
+          ...(selection.evolution.baseDigest ? { baseDigest: selection.evolution.baseDigest } : {}),
+          ...(selection.evolution.upstreamDigest ? { upstreamDigest: selection.evolution.upstreamDigest } : {}),
+          ...(selection.evolution.rebaseRequired === undefined ? {} : { rebaseRequired: selection.evolution.rebaseRequired }),
+        },
+      } : {}),
     };
     if (!hasSessionEvent(agent, "odai/skill-selected", (data) => data?.turn === turn && data?.digest === selection.bundle.digest)) {
       appendEvent(agent, "odai/skill-selected", selectionEvidence);
@@ -561,6 +748,9 @@ export function apply(ctx, rawConfig) {
       logger.warn(`Odai skill source ${selection.mode} fell back to bundled governance (${selection.reasonCode})`);
     }
     const outputPrompt = renderOutputPolicyPrompt(outputSelection.policy);
+    const routingPrompt = isSubagentSession(agent)
+      ? ROUTING_CONFIG_PROMPT
+      : `${ROUTING_CONFIG_PROMPT}\n\n${renderEffectiveRoutingContext(routingSnapshotFor(agent, turn))}`;
     if (outputPrompt && !hasSessionEvent(agent, "odai/output-policy-selected", (data) => data?.turn === turn)) {
       appendEvent(agent, "odai/output-policy-selected", {
         ...(turn === undefined ? {} : { turn }),
@@ -572,6 +762,7 @@ export function apply(ctx, rawConfig) {
       ...downstream,
       sections: downstream.sections.map((section) => {
         if (section.name === "odai:canonical-governance") return { ...section, text: canonicalPrompt(selection) };
+        if (section.name === "odai:routing-configuration") return { ...section, text: routingPrompt };
         if (section.name === "odai:controller-output-policy") return { ...section, text: outputPrompt };
         return section;
       }),
@@ -580,15 +771,14 @@ export function apply(ctx, rawConfig) {
 
   const routeProtections = new WeakMap();
   const controllerUpgrades = new WeakMap();
-  const configuredRole = (role) => {
-    try {
-      return { route: effectiveRoleRoute(config.routing.configPath, config.routing.roles, role) };
-    } catch (error) {
-      return {
-        error: "persisted Odai routing configuration failed validation",
-        detail: error instanceof Error ? error.message : String(error),
-      };
-    }
+  const pendingRouteReceipts = new WeakMap();
+  const configuredRole = (agent, role, turn = currentAgentTurn(agent)) => {
+    const state = routingSnapshotFor(agent, turn);
+    if (state.error) return state;
+    return {
+      route: state.snapshot.roles[role],
+      source: state.snapshot.sources[role],
+    };
   };
   const onDenied = (execution, reason) => {
     appendEvent(execution.agent, "odai/governance-denied", {
@@ -610,6 +800,10 @@ export function apply(ctx, rawConfig) {
     },
   });
   ctx.tools.register(createRoutingConfigTool(config.routing.configPath, {
+    configuredRoles: config.routing.roles,
+    latestRouteFor(agent) {
+      return latestRouteReceipt(evidence.events(agent));
+    },
     onConfigured(agent, data) {
       appendEvent(agent, "odai/routing-configured", data);
     },
@@ -635,6 +829,16 @@ export function apply(ctx, rawConfig) {
       },
     },
   ));
+  ctx.tools.register(createSkillEvolutionTool(config.governance.evolutionRoot, {
+    disabled: evolutionDisabled,
+    currentSelectionFor(agent) {
+      return sharedSkillSelection(agent)
+        ?? applySkillEvolutionSelection(baseSelection, config.governance.evolutionRoot, { disabled: evolutionDisabled });
+    },
+    onChanged(agent, data) {
+      appendEvent(agent, `odai/evolution-${data.action}`, data);
+    },
+  }));
   ctx.tools.register(createOutputConfigTool(config.output.configPath, {
     isChild: isSubagent,
     onConfigured(agent, data) {
@@ -645,6 +849,12 @@ export function apply(ctx, rawConfig) {
     isChild: isSubagent,
     onConfigured(agent, data) {
       appendEvent(agent, "odai/compaction-configured", data);
+    },
+  }));
+  ctx.tools.register(createSemanticMemoryTool(config.memory.storePath, {
+    configuredMode: config.memory.mode,
+    onChanged(agent, data) {
+      appendEvent(agent, "odai/memory-changed", data);
     },
   }));
   ctx.tools.guard((execution) => childGuard(execution) ?? routeProtectionGuard(execution));
@@ -659,7 +869,12 @@ export function apply(ctx, rawConfig) {
   ctx.on("agent/request", async ({ agent, turn, step }, next) => {
     const proposed = await next();
     const childRole = routedRoleOf(agent);
-    const childRoleState = childRole ? configuredRole(childRole) : undefined;
+    const childRoleState = childRole ? configuredRole(agent, childRole, turn) : undefined;
+    if (childRole && !childRoleState.route) {
+      throw new Error(childRoleState.error
+        ? `Odai ${childRole} child route is unavailable: ${childRoleState.detail}`
+        : `Odai ${childRole} child route is not configured`);
+    }
     const upgrade = controllerUpgrades.get(agent);
     const upgradeRole = upgrade && upgrade.turn === turn ? upgrade.role : undefined;
     const roleRoute = childRole
@@ -667,7 +882,31 @@ export function apply(ctx, rawConfig) {
       : upgradeRole
         ? upgrade.route
         : undefined;
+    const routeSource = childRole ? childRoleState?.source : upgrade?.source;
+    const routeMode = childRole ? "child" : "same-turn";
     const scopedFrontendMaxTokens = upgradeRole === "frontend" ? roleRoute?.maxTokens : undefined;
+    const finalize = (finalRequest) => {
+      if (roleRoute && agent?.session && Number.isSafeInteger(turn) && Number.isSafeInteger(step)) {
+        const expectedRoute = routeMode === "same-turn" && upgradeRole !== "frontend"
+          ? Object.freeze({
+              provider: roleRoute.provider,
+              model: roleRoute.model,
+              ...(roleRoute.reasoningEffort === undefined ? {} : { reasoningEffort: roleRoute.reasoningEffort }),
+            })
+          : roleRoute;
+        pendingRouteReceipts.set(agent.session, Object.freeze({
+          agent,
+          turn,
+          step,
+          responsibility: childRole ?? upgradeRole,
+          routeMode,
+          routeSource,
+          requestedRoute: expectedRoute,
+          expectedRoute,
+        }));
+      }
+      return finalRequest;
+    };
     let request = proposed;
     if (roleRoute) {
       const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = proposed;
@@ -681,7 +920,7 @@ export function apply(ctx, rawConfig) {
           : {}),
       });
     }
-    if (childRole || isSubagentSession(agent)) return request;
+    if (childRole || isSubagentSession(agent)) return finalize(request);
 
     const outputSelection = await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
     const configuredMaxTokens = outputSelection.policy.maxTokens;
@@ -697,9 +936,9 @@ export function apply(ctx, rawConfig) {
           semantics: "explicit-responsibility-override",
         });
       }
-      return Object.freeze({ ...request, maxTokens: scopedFrontendMaxTokens });
+      return finalize(Object.freeze({ ...request, maxTokens: scopedFrontendMaxTokens }));
     }
-    if (configuredMaxTokens === undefined) return request;
+    if (configuredMaxTokens === undefined) return finalize(request);
     const priorMaxTokens = request.maxTokens;
     const effectiveMaxTokens = priorMaxTokens === undefined
       ? configuredMaxTokens
@@ -714,7 +953,7 @@ export function apply(ctx, rawConfig) {
         semantics: "provider-request-ceiling",
       });
     }
-    return Object.freeze({ ...request, maxTokens: effectiveMaxTokens });
+    return finalize(Object.freeze({ ...request, maxTokens: effectiveMaxTokens }));
   }, { prepend: true });
 
   const protectController = (agent, turn, step, decision, source, failure) => {
@@ -730,7 +969,74 @@ export function apply(ctx, rawConfig) {
     appendEvent(agent, "odai/route-protection", protection, logger);
   };
 
-  if (config.routing.mode !== "off") {
+  ctx.on("session/event", (session, event) => {
+    const pending = pendingRouteReceipts.get(session);
+    if (!pending) return;
+    if (event?.type === "turn/end") {
+      appendEvent(pending.agent, "odai/route-applied", {
+        turn: pending.turn,
+        step: pending.step,
+        responsibility: pending.responsibility,
+        status: "unverified",
+        routeMode: pending.routeMode,
+        routeSource: pending.routeSource,
+        fallbackUsed: true,
+        requestedRoute: pending.requestedRoute,
+        stopReason: "no-effective-request",
+      });
+      pendingRouteReceipts.delete(session);
+      return;
+    }
+    if (!["request/header", "assistant/chunk"].includes(event?.type)) return;
+    let actualRoute;
+    try {
+      actualRoute = event.type === "request/header"
+        ? routeFromConfig(event.data?.header?.config)
+        : routeFromConfig(session.requestHeader?.()?.config);
+    } catch {}
+    if (!actualRoute && event.type !== "assistant/chunk") return;
+    const mismatch = routeMismatchFor(pending.expectedRoute, actualRoute, pending.routeMode);
+    appendEvent(pending.agent, "odai/route-applied", {
+      turn: pending.turn,
+      step: pending.step,
+      responsibility: pending.responsibility,
+      status: mismatch ? "mismatch" : "applied",
+      routeMode: pending.routeMode,
+      routeSource: pending.routeSource,
+      fallbackUsed: Boolean(mismatch),
+      requestedRoute: pending.requestedRoute,
+      ...(actualRoute ? { actualRoute } : {}),
+      ...(mismatch ? { stopReason: "route-mismatch", error: mismatch } : {}),
+    });
+    pendingRouteReceipts.delete(session);
+    if (mismatch && pending.routeMode === "same-turn") {
+      protectController(
+        pending.agent,
+        pending.turn,
+        pending.step,
+        { reasonCode: `${pending.responsibility.toUpperCase()}_ROUTE_MISMATCH` },
+        "route-mismatch",
+        mismatch,
+      );
+    }
+  });
+
+  ctx.on("agent/turn-stopping", ({ agent, turn }) => {
+    const role = routedRoleOf(agent);
+    if (!role) return;
+    const receipts = evidence.events(agent)
+      .filter((event) => event.type === "odai/route-applied"
+        && event.data?.turn === turn
+        && event.data?.responsibility === role
+        && event.data?.routeMode === "child")
+      .map((event) => event.data);
+    const failed = receipts.find((receipt) => receipt.status !== "applied");
+    if (receipts.length > 0 && !failed) return;
+    const detail = failed?.error ?? failed?.stopReason ?? "no verified child route receipt";
+    throw new Error(`Odai ${role} child route was not verified: ${detail}`);
+  });
+
+  {
     const routedSteps = new WeakMap();
     ctx.on("agent/pre-step", async ({ agent, turn, step, signal }, next) => {
       const subagentSession = isSubagentSession(agent);
@@ -738,10 +1044,69 @@ export function apply(ctx, rawConfig) {
         routeProtections.delete(agent);
         controllerUpgrades.delete(agent);
       }
-      const downstream = await next();
+      let downstream = await next();
       if (downstream.kind === "reject" || signal.aborted || step !== 1 || subagentSession) {
         return downstream;
       }
+
+      if (claimSemanticMemoryTurn(agent, turn, step)) {
+        const settings = memorySettingsFor(agent, turn);
+        const message = latestDirectUserMessage(agent, downstream.messages, { turn });
+        const query = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
+        let retrieved = [];
+        let captured = [];
+        let error;
+        if (settings.mode === "auto" && message) {
+          try {
+            retrieved = retrieveSemanticMemories({
+              storePath: config.memory.storePath,
+              query,
+              cwd: agent?.session?.header?.cwd,
+              limit: config.memory.maxRetrieved,
+            });
+            captured = captureAutomaticMemories({
+              storePath: config.memory.storePath,
+              mode: settings.mode,
+              agent,
+              message,
+              turn,
+              cwd: agent?.session?.header?.cwd,
+            });
+          } catch (memoryError) {
+            error = memoryError instanceof Error ? memoryError.message : String(memoryError);
+            logger.warn(`Odai semantic memory processing failed closed for this turn: ${error}`);
+            retrieved = [];
+            captured = [];
+          }
+        }
+        const captureEvidence = captured.filter((result) => result.changed);
+        if (retrieved.length > 0 || captureEvidence.length > 0 || error) {
+          appendEvent(agent, "odai/memory-processed", {
+            turn,
+            step,
+            mode: settings.mode,
+            source: settings.source,
+            retrievedIds: retrieved.map((entry) => entry.id),
+            captures: captureEvidence.map((result) => ({
+              changed: true,
+              reasonCode: result.reasonCode,
+              ...(result.id ? { id: result.id } : {}),
+              ...(result.status ? { status: result.status } : {}),
+              ...(result.scope ? { scope: result.scope } : {}),
+            })),
+            ...(error ? { status: "fallback", error: "memory-store-unavailable" } : { status: "completed" }),
+          }, logger);
+        }
+        const packet = renderSemanticMemoryPacket(retrieved);
+        if (packet) {
+          downstream = {
+            ...downstream,
+            messages: [...downstream.messages, memoryPacketMessage(packet)],
+          };
+        }
+      }
+
+      if (config.routing.mode === "off") return downstream;
       if (hasSessionEvent(agent, "odai/route-decided", (data) => data?.turn === turn && data?.step === step)) {
         return downstream;
       }
@@ -778,7 +1143,7 @@ export function apply(ctx, rawConfig) {
             stopReason: "observe-mode",
           }, logger);
         } else {
-          const researchState = configuredRole("researcher");
+          const researchState = configuredRole(agent, "researcher", turn);
           const researchRoute = researchState.route;
           if (!researchRoute) {
             appendEvent(agent, "odai/research-result", {
@@ -832,9 +1197,14 @@ export function apply(ctx, rawConfig) {
               role: "researcher",
               status: completed ? "completed" : "fallback",
               stopReason: completed ? result.stopReason : (packetError ? "packet-invalid" : result.stopReason),
+              routeSource: researchState.source,
+              fallbackUsed: !completed,
+              routeReceiptStatus: result.routeReceiptStatus,
+              requestedRoute: researchRoute,
+              ...(result.routeReceiptError ? { routeReceiptError: result.routeReceiptError } : {}),
               ...(result.actualRoute ? { actualRoute: result.actualRoute } : {}),
               ...(packet ? { packetDigest: packet.digest, sourceCount: packet.sourceCount } : {}),
-              ...(packetError ? { error: packetError } : result.error ? { error: result.error } : {}),
+              ...(packetError ? { error: packetError } : result.taskError ? { error: result.taskError } : {}),
             }, logger);
             if (completed) {
               researchPacketText = renderResearchPacket(packet);
@@ -883,6 +1253,7 @@ export function apply(ctx, rawConfig) {
         mode: config.routing.mode,
         reasonCode: decision.reasonCode,
         signals: decision.signals,
+        ...(decision.considerations ? { considerations: decision.considerations } : {}),
       }, logger);
 
       if (decision.action === "direct") return routedDownstream;
@@ -903,7 +1274,7 @@ export function apply(ctx, rawConfig) {
         };
       }
 
-      const roleState = configuredRole(routeRole);
+      const roleState = configuredRole(agent, routeRole, turn);
       const roleRoute = roleState.route;
       if (!roleRoute) {
         const invalidConfig = Boolean(roleState.error);
@@ -989,13 +1360,19 @@ export function apply(ctx, rawConfig) {
         if (routeRole === "executor" && frozenCard) {
           appendEvent(agent, "odai/route-card-consumed", { cardId: frozenCard.id, turn, step });
         }
-        controllerUpgrades.set(agent, Object.freeze({ turn, role: routeRole, route: roleRoute }));
+        controllerUpgrades.set(agent, Object.freeze({
+          turn,
+          role: routeRole,
+          route: roleRoute,
+          source: roleState.source,
+        }));
         appendEvent(agent, "odai/route-upgrade", {
           turn,
           step,
           role: decision.role,
           targetRole: routeRole,
           status: "requested",
+          routeSource: roleState.source,
           requestedRoute: roleRoute,
           contextDigest: roleContext.digest,
           contextMode,
@@ -1054,9 +1431,14 @@ export function apply(ctx, rawConfig) {
         action: "delegate",
         status: result.status,
         stopReason: result.stopReason,
+        routeSource: roleState.source,
+        fallbackUsed: result.status !== "completed",
+        routeReceiptStatus: result.routeReceiptStatus,
+        requestedRoute: roleRoute,
         contextDigest: roleContext.digest,
+        ...(result.routeReceiptError ? { routeReceiptError: result.routeReceiptError } : {}),
         ...(result.actualRoute ? { actualRoute: result.actualRoute } : {}),
-        ...(result.error ? { error: result.error } : {}),
+        ...(result.taskError ? { error: result.taskError } : {}),
       }, logger);
 
       if (result.status === "completed") {

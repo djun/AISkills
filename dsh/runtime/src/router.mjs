@@ -66,8 +66,8 @@ const IRREVERSIBLE_ACTION_PATTERNS = [
 ];
 
 const CONTINUATION_PATTERNS = [
-  /(?:继续|接着|进一步|深入|再(?:判断|分析|评估|检查|处理)|按(?:照)?(?:刚才|上面|上述|前面|这个|该)|那就|就按)/iu,
-  /\b(?:continue|proceed|go ahead|follow up|dig deeper|based on (?:that|the previous|the above))\b/iu,
+  /(?:继续|接着|进一步|深入|再(?:判断|分析|评估|检查|处理)|按(?:照)?(?:刚才|上面|上述|前面|这个|该)|那就|就按|能做不|能不能做|可以做不|可以做吗)/iu,
+  /\b(?:continue|proceed|go ahead|follow up|dig deeper|based on (?:that|the previous|the above)|can you (?:do|handle|implement) (?:it|that))\b/iu,
 ];
 
 const LOW_RISK_TRANSFORM_PATTERNS = [
@@ -92,6 +92,21 @@ const FRONTEND_STRONG_WORK_PATTERNS = [
   /(?:从零|新建|新做|整页|整站|整体改版|完整界面|设计并实现|重新设计|重做|改版|搭建)/iu,
   /\b(?:build|create|design and implement|redesign|revamp|rebuild)\b[^.!?\n]{0,60}\b(?:ui|interface|page|website|web app|dashboard|component|game)\b/iu,
 ];
+const FRONTEND_SURFACE_PATTERNS = [
+  /登录(?:页|页面)/iu,
+  /(?:登录后)?首页/iu,
+  /(?:个人空间|个人中心|用户中心|个人主页)/iu,
+  /(?:注册|设置|搜索|列表|详情|结算|支付)(?:页|页面)/iu,
+  /\b(?:login page|home page|profile|personal space|settings page|search page|list page|detail page|checkout page)\b/iu,
+];
+const FRONTEND_NON_UI_PATTERNS = [
+  /(?:API|接口)(?:调用|请求|响应|超时|缓存|鉴权|数据|字段|契约)/iu,
+  /\b(?:api|endpoint|backend|server-side)\b/iu,
+];
+const FRONTEND_UI_PRODUCTION_PATTERNS = [
+  /(?:UI|UX|用户界面|界面介绍|布局|样式|排版|配色|交互|视觉|响应式|移动端|桌面端|截图|浏览器验收)/iu,
+  /\b(?:ui|ux|interface|layout|styling|typography|interaction|visual|responsive|mobile|desktop|screenshot|browser acceptance)\b/iu,
+];
 const FRONTEND_EXPLICIT_SPECIALIST_PATTERNS = [
   /(?:交给|使用|用)[^。！？\n]{0,30}(?:前端|UI|UX)(?:专长|专家|模型)/iu,
   /\b(?:use|with|via)\b[^.!?\n]{0,30}\b(?:front[- ]?end|ui|ux) (?:specialist|expert|model)\b/iu,
@@ -100,6 +115,7 @@ const FRONTEND_AXIS_PATTERNS = Object.freeze({
   responsive: [/(?:响应式|移动端|桌面端|多端|窄屏|宽屏|视口)/iu, /\b(?:responsive|mobile|desktop|viewport|breakpoint)\b/iu],
   interaction: [/(?:交互|动效|动画|拖拽|手势|状态流转|多状态)/iu, /\b(?:interaction|animation|motion|drag|gesture|state flow|multiple states)\b/iu],
   visual: [/(?:视觉|品牌|排版|配色|设计系统|素材|图片|图标|3D|游戏界面)/iu, /\b(?:visual|brand|typography|palette|design system|asset|image|icon|3d|game ui)\b/iu],
+  comprehension: [/(?:一眼(?:就)?(?:看懂|明白|理解)|做什么|首屏认知|价值表达|信息架构|界面介绍)/iu, /\b(?:understand at a glance|first-screen comprehension|value proposition|information architecture|what (?:it|the product) does)\b/iu],
   acceptance: [/(?:截图|浏览器验收|视觉验收|无障碍|Playwright|真机)/iu, /\b(?:screenshot|browser acceptance|visual acceptance|accessibility|playwright|device testing)\b/iu],
 });
 
@@ -130,20 +146,42 @@ function isLowRiskTransform(text) {
 
 function frontendSpecializationSignals(text) {
   const explicit = matchesAny(text, FRONTEND_EXPLICIT_SPECIALIST_PATTERNS);
-  const scope = matchesAny(text, FRONTEND_SCOPE_PATTERNS);
+  const surfaceCount = FRONTEND_SURFACE_PATTERNS.filter((pattern) => pattern.test(text)).length;
+  const explicitScope = matchesAny(text, FRONTEND_SCOPE_PATTERNS);
+  const scope = surfaceCount > 0 || explicitScope;
   const delivery = matchesAny(text, FRONTEND_DELIVERY_PATTERNS);
   const strongWork = matchesAny(text, FRONTEND_STRONG_WORK_PATTERNS);
   const axes = Object.entries(FRONTEND_AXIS_PATTERNS)
     .filter(([, patterns]) => matchesAny(text, patterns))
     .map(([axis]) => axis);
+  const nonUiRequest = matchesAny(text, FRONTEND_NON_UI_PATTERNS)
+    && !matchesAny(text, FRONTEND_UI_PRODUCTION_PATTERNS);
+  const specialistDepth = explicit
+    || strongWork
+    || axes.length >= 2
+    || (surfaceCount >= 2 && (explicitScope || axes.length >= 1));
   return Object.freeze({
     explicit,
     scope,
     delivery,
     strongWork,
+    nonUiRequest,
+    specialistDepth,
+    surfaceCount,
     axes: Object.freeze(axes),
-    substantial: scope && delivery && (explicit || strongWork || axes.length >= 2),
+    substantial: scope && delivery && specialistDepth && !nonUiRequest,
   });
+}
+
+function frontendRouteSignals(frontend) {
+  return [
+    ...(frontend.scope ? ["frontend-interface-scope"] : []),
+    ...(frontend.delivery ? ["frontend-delivery-request"] : []),
+    ...(frontend.explicit ? ["explicit-frontend-specialist"] : []),
+    ...(frontend.strongWork ? ["substantial-frontend-work"] : []),
+    ...(frontend.surfaceCount >= 2 ? ["frontend-multi-surface"] : []),
+    ...frontend.axes.map((axis) => `frontend-${axis}`),
+  ];
 }
 
 function genuineUserText(message) {
@@ -284,14 +322,9 @@ export function decideRoute(input = {}) {
     );
   }
 
+  const frontendSignals = frontend.scope || frontend.explicit ? frontendRouteSignals(frontend) : [];
   if (frontend.substantial && !isLowRiskTransform(explicitIntentText)) {
-    signals.push(
-      "frontend-interface-scope",
-      "frontend-delivery-request",
-      ...(frontend.explicit ? ["explicit-frontend-specialist"] : []),
-      ...(frontend.strongWork ? ["substantial-frontend-work"] : []),
-      ...frontend.axes.map((axis) => `frontend-${axis}`),
-    );
+    signals.push(...frontendSignals);
     return route(
       "controller",
       FRONTEND_SPECIALIST_REASON,
@@ -302,13 +335,36 @@ export function decideRoute(input = {}) {
     );
   }
 
-  signals.push("no-independent-gap");
-  return route(
+  signals.push(...frontendSignals, "no-independent-gap");
+  const direct = route(
     "controller",
     "DIRECT_DEFAULT_NO_INDEPENDENT_GAP",
     "No explicit independent decision, execution, or acceptance gap was found.",
     signals,
   );
+  if (frontendSignals.length === 0) return direct;
+  const lowRiskTransform = isLowRiskTransform(explicitIntentText);
+  return Object.freeze({
+    ...direct,
+    considerations: Object.freeze([Object.freeze({
+      role: "frontend",
+      match: "partial",
+      action: "skip",
+      reasonCode: frontend.nonUiRequest
+        ? "FRONTEND_API_REQUEST"
+        : lowRiskTransform
+          ? "FRONTEND_LOW_RISK_TRANSFORM"
+          : "FRONTEND_BELOW_SPECIALIST_THRESHOLD",
+      signals: Object.freeze(frontendSignals),
+      unmet: Object.freeze(frontend.nonUiRequest
+        ? ["ui-production-request"]
+        : [
+            ...(frontend.scope ? [] : ["interface-scope"]),
+            ...(frontend.delivery ? [] : ["delivery-request"]),
+            ...(frontend.specialistDepth ? [] : ["specialist-or-substantial-scope"]),
+          ]),
+    })]),
+  });
 }
 
 export function extractLatestUserText(messages) {
@@ -326,15 +382,26 @@ export function extractRoutingText(messages, sessionEvents) {
   }
 
   let referencedHighImpact;
+  let referencedFrontend;
   for (const text of texts.slice(1)) {
     if (hasContextualPlannerGap(text)) {
       referencedHighImpact = text;
       break;
     }
+    const frontend = frontendSpecializationSignals(stripQuotedMaterial(text));
+    if (frontend.scope && frontend.delivery) {
+      referencedFrontend = text;
+      break;
+    }
     if (!isLowRiskTransform(text)) break;
   }
-  if (!referencedHighImpact) return latest;
-  return `${latest}\n\nReferenced earlier high-impact user context:\n${referencedHighImpact}`;
+  if (referencedHighImpact) {
+    return `${latest}\n\nReferenced earlier high-impact user context:\n${referencedHighImpact}`;
+  }
+  if (referencedFrontend) {
+    return `${latest}\n\nReferenced earlier frontend user context:\n${referencedFrontend}`;
+  }
+  return latest;
 }
 
 export function requiresFailClosedProtection(decision) {

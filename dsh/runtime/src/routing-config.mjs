@@ -19,6 +19,7 @@ export const ROUTING_CONFIG_PROMPT = [
   "For set, call the tool only after the user explicitly supplies both provider and model. Pass reasoningEffort or maxTokens only when the user supplies them; otherwise omit them.",
   "Never infer, recommend as chosen, or silently select any provider, model, effort, token limit, or price. Ask a concise clarification when provider or model is ambiguous.",
   "Researcher routing is task-gated but not price-aware. A researcher mapping enables the narrow trigger but does not guarantee lower cost; compare actual provider prices and measured usage without inventing either.",
+  "A generic subagent is not proof that a configured responsibility ran. When a real responsibility gap emerges after initial routing and manual delegation is necessary, begin the subagent label with `odai-<responsibility>` followed by a space or colon; otherwise keep it generic and do not claim the responsibility mapping was used.",
   "Do not ask the user to edit YAML, JSON, managed Agent files, or Plugin configuration. The tool owns persistence. A set/remove change applies from the next user turn.",
   "Base controller selection remains host-owned and is not changed by this tool.",
 ].join("\n");
@@ -110,7 +111,23 @@ export function readRoutingStore(configPath) {
 }
 
 export function effectiveRoleRoute(configPath, configuredRoles, role) {
-  return readRoutingStore(configPath).roles[role] ?? configuredRoles[role];
+  return effectiveRoutingSnapshot(configPath, configuredRoles).roles[role];
+}
+
+export function effectiveRoutingSnapshot(configPath, configuredRoles = {}) {
+  const persisted = readRoutingStore(configPath).roles;
+  const roles = {};
+  const sources = {};
+  for (const role of CONFIGURABLE_ROLES) {
+    const route = persisted[role] ?? configuredRoles[role];
+    if (!route) continue;
+    roles[role] = route;
+    sources[role] = persisted[role] ? "persisted-mapping" : "deployment-config";
+  }
+  return Object.freeze({
+    roles: Object.freeze(roles),
+    sources: Object.freeze(sources),
+  });
 }
 
 function writeRoutingStore(configPath, roles) {
@@ -170,23 +187,27 @@ function routeSchema(required) {
   };
 }
 
-function resultFor(configPath, action, roles, responsibility, recoveredInvalidStore = false) {
+function resultFor(configPath, action, snapshot, responsibility, recoveredInvalidStore = false, latestRoute) {
   return {
     action,
     ...(responsibility ? { responsibility } : {}),
     configPath,
-    roles,
+    roles: snapshot.roles,
+    sources: snapshot.sources,
     requiresNextTurn: action !== "show",
     ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
+    ...(latestRoute ? { latestRoute } : {}),
   };
 }
 
 export function createRoutingConfigTool(configPath, options = {}) {
   const onConfigured = typeof options.onConfigured === "function" ? options.onConfigured : () => {};
+  const configuredRoles = options.configuredRoles ?? {};
+  const latestRouteFor = typeof options.latestRouteFor === "function" ? options.latestRouteFor : () => undefined;
   return {
     name: "odai_routing_config",
     description: [
-      "Inspect, set, or remove Odai model mappings for researcher, planner, executor, reviewer, and frontend responsibilities.",
+      "Inspect effective Odai model mappings and the latest current-session route receipt, or set/remove persisted mappings for researcher, planner, executor, reviewer, and frontend responsibilities.",
       "Use this only when the user naturally and explicitly asks to inspect/remove a mapping or names the provider/model to set.",
       "Never choose a provider, model, reasoning effort, token limit, or price on the user's behalf.",
       "Researcher routing is task-gated but not price-aware; its mapping does not guarantee lower cost.",
@@ -229,7 +250,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
       schema: {
         type: "object",
         additionalProperties: false,
-        required: ["action", "configPath", "roles", "requiresNextTurn"],
+        required: ["action", "configPath", "roles", "sources", "requiresNextTurn"],
         properties: {
           action: { type: "string", enum: ["show", "set", "remove"] },
           responsibility: { type: "string", enum: [...CONFIGURABLE_ROLES] },
@@ -239,8 +260,37 @@ export function createRoutingConfigTool(configPath, options = {}) {
             additionalProperties: false,
             properties: Object.fromEntries(CONFIGURABLE_ROLES.map((role) => [role, routeSchema(true)])),
           },
+          sources: {
+            type: "object",
+            additionalProperties: false,
+            properties: Object.fromEntries(CONFIGURABLE_ROLES.map((role) => [role, {
+              type: "string",
+              enum: ["persisted-mapping", "deployment-config"],
+            }])),
+          },
           requiresNextTurn: { type: "boolean" },
           recoveredInvalidStore: { type: "boolean" },
+          latestRoute: {
+            type: "object",
+            additionalProperties: false,
+            required: ["turn", "step", "responsibility", "status", "routeSource", "fallbackUsed"],
+            properties: {
+              turn: { type: "integer" },
+              step: { type: "integer" },
+              responsibility: { type: "string", enum: [...CONFIGURABLE_ROLES] },
+              status: { type: "string", enum: ["applied", "mismatch", "unverified"] },
+              taskStatus: { type: "string", enum: ["completed", "fallback"] },
+              routeMode: { type: "string", enum: ["same-turn", "child"] },
+              routeSource: { type: "string", enum: ["persisted-mapping", "deployment-config"] },
+              fallbackUsed: { type: "boolean" },
+              requestedRoute: routeSchema(true),
+              actualRoute: routeSchema(true),
+              stopReason: { type: "string" },
+              error: { type: "string" },
+              taskStopReason: { type: "string" },
+              taskError: { type: "string" },
+            },
+          },
         },
       },
       render(_args, value) {
@@ -250,15 +300,32 @@ export function createRoutingConfigTool(configPath, options = {}) {
               ...(route.reasoningEffort ? [`reasoningEffort=${route.reasoningEffort}`] : []),
               ...(route.maxTokens ? [`maxTokens=${route.maxTokens}`] : []),
             ];
-            return `${role}: ${route.provider}/${route.model}${options.length > 0 ? ` (${options.join(", ")})` : ""}`;
+            return `${role}: ${route.provider}/${route.model}${options.length > 0 ? ` (${options.join(", ")})` : ""} [${value.sources[role]}]`;
           })
           .join("\n") || "No Odai responsibility models are configured.";
+        const latestRoute = value.latestRoute
+          ? [
+              "\nLatest current-session responsibility route receipt:",
+              `responsibility=${value.latestRoute.responsibility} status=${value.latestRoute.status} mode=${value.latestRoute.routeMode ?? "unknown"}`,
+              `routeSource=${value.latestRoute.routeSource} fallbackUsed=${String(value.latestRoute.fallbackUsed)}`,
+              ...(value.latestRoute.taskStatus ? [`taskStatus=${value.latestRoute.taskStatus}`] : []),
+              ...(value.latestRoute.taskStopReason ? [`taskStopReason=${value.latestRoute.taskStopReason}`] : []),
+              ...(value.latestRoute.error ? [`routeError=${value.latestRoute.error}`] : []),
+              ...(value.latestRoute.taskError ? [`taskError=${value.latestRoute.taskError}`] : []),
+              ...(value.latestRoute.actualRoute
+                ? [`actual=${value.latestRoute.actualRoute.provider}/${value.latestRoute.actualRoute.model} (reasoningEffort=${value.latestRoute.actualRoute.reasoningEffort ?? "unspecified"})`]
+                : ["actual=<unverified>"]),
+            ].join("\n")
+          : value.action === "show"
+            ? "\nNo mapped responsibility route receipt is recorded in this session."
+            : "";
         return [{
           type: "text",
           text: [
             `${value.action === "show" ? "Current" : "Updated"} Odai routing configuration:\n${mapping}`,
             ...(value.recoveredInvalidStore ? ["\nAn invalid prior store was preserved and replaced."] : []),
             ...(value.roles.researcher ? ["\nResearcher routing is task-gated but not price-aware. This mapping does not guarantee lower cost; compare actual provider prices and measured usage."] : []),
+            latestRoute,
             ...(value.requiresNextTurn ? ["\nThe change applies from the next user turn."] : []),
           ].join(""),
         }];
@@ -274,7 +341,14 @@ export function createRoutingConfigTool(configPath, options = {}) {
       if (!["show", "set", "remove"].includes(args.action)) throw new TypeError("action must be show, set, or remove");
 
       if (args.action === "show") {
-        return Promise.resolve(resultFor(configPath, "show", readRoutingStore(configPath).roles));
+        return Promise.resolve(resultFor(
+          configPath,
+          "show",
+          effectiveRoutingSnapshot(configPath, configuredRoles),
+          undefined,
+          false,
+          latestRouteFor(execution.agent),
+        ));
       }
       if (!CONFIGURABLE_ROLES.includes(args.responsibility)) {
         throw new TypeError("responsibility must be researcher, planner, executor, reviewer, or frontend for set/remove");
@@ -314,7 +388,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
         return Promise.resolve(resultFor(
           configPath,
           args.action,
-          roles,
+          effectiveRoutingSnapshot(configPath, configuredRoles),
           args.responsibility,
           recoveredInvalidStore,
         ));

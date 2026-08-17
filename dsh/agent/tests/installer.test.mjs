@@ -19,8 +19,14 @@ test("managed preset installs, updates, reports status, and uninstalls", async (
   const scratch = await mkdtemp(resolve(tmpdir(), "odai-agent-installer-"));
   const sourceRoot = resolve(scratch, "source");
   const dshHome = resolve(scratch, "home");
+  const evolutionSentinel = resolve(dshHome, "odai/skill-evolution/user-generation.sentinel");
+  const memorySentinel = resolve(dshHome, "odai/memory/store.json");
   try {
     await writeFixture(sourceRoot, "first runtime");
+    await mkdir(resolve(evolutionSentinel, ".."), { recursive: true });
+    await writeFile(evolutionSentinel, "user-owned evolution\n", "utf8");
+    await mkdir(resolve(memorySentinel, ".."), { recursive: true });
+    await writeFile(memorySentinel, "user-owned semantic memory\n", "utf8");
     const installed = await installAgentPreset({ dshHome, sourceRoot });
     assert.equal(installed.operation, "installed");
     assert.equal(installed.trust, "user");
@@ -39,6 +45,7 @@ test("managed preset installs, updates, reports status, and uninstalls", async (
     assert.match(await readFile(resolve(updated.target, "runtime/index.mjs"), "utf8"), /second runtime/u);
     const secondCompositionSize = Buffer.byteLength(await readFile(resolve(updated.target, "agent.cordis.yml")));
     assert.notEqual(secondCompositionSize, firstCompositionSize);
+    assert.equal(await readFile(memorySentinel, "utf8"), "user-owned semantic memory\n");
 
     const refreshed = await installAgentPreset({ dshHome, sourceRoot });
     const thirdCompositionSize = Buffer.byteLength(await readFile(resolve(refreshed.target, "agent.cordis.yml")));
@@ -47,6 +54,8 @@ test("managed preset installs, updates, reports status, and uninstalls", async (
     const removed = await uninstallAgentPreset({ dshHome });
     assert.equal(removed.operation, "uninstalled");
     assert.equal((await inspectAgentInstallation({ dshHome })).status, "absent");
+    assert.equal(await readFile(evolutionSentinel, "utf8"), "user-owned evolution\n");
+    assert.equal(await readFile(memorySentinel, "utf8"), "user-owned semantic memory\n");
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -217,6 +226,7 @@ async function writeFixture(root, runtimeText) {
     ),
     writeFile(resolve(root, "runtime/session-evidence.mjs"), "export const fixture = true;\n", "utf8"),
     writeFile(resolve(root, "runtime/skill-bundle.mjs"), "export const fixture = true;\n", "utf8"),
+    writeFile(resolve(root, "runtime/skill-evolution.mjs"), "export const fixture = true;\n", "utf8"),
     writeFile(resolve(root, "runtime/skill-selection-state.mjs"), "export const fixture = true;\n", "utf8"),
     writeFile(resolve(root, "runtime/skill-selector.mjs"), "export const fixture = true;\n", "utf8"),
     writeFile(resolve(root, "runtime/skill-source-config.mjs"), "export const fixture = true;\n", "utf8"),
