@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 export const ROUTE_CARD_PROMPT = [
   "## Odai frozen route cards",
   "Use odai_route_card only after planning has frozen a concrete implementation boundary and executor separation has an observable net benefit.",
+  "After the canonical executor reassessment proves observable net benefit, freeze the card before implementation continues. Otherwise continue directly without a card or process narration.",
   "A card must preserve the target, decisive evidence, allowed and forbidden scope, acceptance conditions, and stop condition. Do not freeze a card merely because an executor model is configured or cheaper.",
   "The controller owns the card. Child agents may not create, replace, or clear it. A frozen card is consumed only by a later explicit execution continuation such as continue, proceed, execute, or implement the plan.",
 ].join("\n");

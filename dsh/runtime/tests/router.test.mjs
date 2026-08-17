@@ -187,6 +187,22 @@ test("executor requires a frozen card, observable benefit, and explicit continua
     text: "介绍一下刚才的方案",
     routeCard: { frozen: true, observableBenefit: true },
   }).action, "direct");
+  for (const text of [
+    "开始处理另一个问题：修复登录页错位",
+    "执行登录页修复",
+    "implement a new task: fix the login page",
+  ]) {
+    assert.equal(decideRoute({
+      text,
+      routeCard: { frozen: true, observableBenefit: true },
+    }).action, "direct", text);
+  }
+  for (const text of ["请执行这个方案", "按上述计划", "implement the plan"]) {
+    assert.equal(decideRoute({
+      text,
+      routeCard: { frozen: true, observableBenefit: true },
+    }).targetRole, "executor", text);
+  }
 
   const decision = decideRoute({
     text: "继续执行这个方案",

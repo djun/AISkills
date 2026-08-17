@@ -106,11 +106,14 @@ function assemblyFor(ctx) {
 }
 
 test("bundle manifest validates complete content and full SemVer precedence", () => {
-  assert.equal(bundled.manifest.skillVersion, "0.2.0");
+  assert.equal(bundled.manifest.skillVersion, "0.2.1");
   assert.equal(bundled.manifest.runtimeContract, 3);
   assert.equal(bundled.manifest.requiredFiles.length, 27);
   assert.match(bundled.roleContracts.researcher, /来源账本只是检索索引/u);
   assert.match(bundled.referenceContracts.craft, /通用制作工艺/u);
+  const leverage = readFileSync(resolve(canonicalRoot, "references/leverage.md"), "utf8");
+  assert.match(leverage, /先前的 direct 判断即失效/u);
+  assert.match(leverage, /不因执行惯性继续 direct，也不因规模本身委派/u);
   assert.match(bundled.digest, /^[a-f0-9]{64}$/u);
   assert.equal(compareSkillVersions("1.0.0-alpha.2", "1.0.0-alpha.10"), -1);
   assert.equal(compareSkillVersions("1.0.0+build.1", "1.0.0+build.2"), 0);
@@ -119,7 +122,7 @@ test("bundle manifest validates complete content and full SemVer precedence", ()
 
   const scratch = fixtureRoot("bundle-conflict");
   try {
-    const conflicting = loadSkillBundle(installBundle(resolve(scratch, "odai"), "0.2.0", "CONFLICT"), {
+    const conflicting = loadSkillBundle(installBundle(resolve(scratch, "odai"), "0.2.1", "CONFLICT"), {
       source: "user-dsh",
     });
     const selection = chooseSkillBundle({ mode: "auto", bundled, candidate: conflicting });
@@ -196,7 +199,7 @@ test("invalid and conflicting candidates continue to the next compatible source"
     mkdirSync(resolve(project, ".git"), { recursive: true });
     installBundle(resolve(project, ".dsh/skills/odai"), "0.5.0", "BROKEN_PROJECT");
     rmSync(resolve(project, ".dsh/skills/odai/assets/routing-roles/reviewer.md"));
-    installBundle(resolve(dshHome, "skills/odai"), "0.2.0", "SAME_VERSION_CONFLICT");
+    installBundle(resolve(dshHome, "skills/odai"), "0.2.1", "SAME_VERSION_CONFLICT");
     installBundle(resolve(agentsHome, "skills/odai"), "0.4.0", "USER_AGENTS");
 
     const selection = await resolveSkillSelection({

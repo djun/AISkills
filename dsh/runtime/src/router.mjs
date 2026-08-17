@@ -75,9 +75,21 @@ const LOW_RISK_TRANSFORM_PATTERNS = [
   /\b(?:restate|summari[sz]e|translate|shorten|rewrite|format|explain)\b/iu,
 ];
 
-const EXECUTION_CONTINUATION_PATTERNS = [
-  /(?:继续|开始|执行|实施|落实|动手|按(?:照)?(?:方案|计划|卡片)|就按)/iu,
-  /\b(?:continue|proceed|execute|implement|apply|go ahead|follow the plan)\b/iu,
+const EXPLICIT_EXECUTION_CONTINUATION_PATTERNS = [
+  /(?:继续|接着|就按|按(?:照)?(?:(?:这个|该|上述|上面|前面|刚才)的?)?(?:方案|计划|卡片))/iu,
+  /\b(?:continue|proceed|go ahead|follow the plan)\b/iu,
+];
+const EXECUTION_ACTION_PATTERNS = [
+  /(?:开始|执行|实施|落实|动手)/iu,
+  /\b(?:start|execute|implement|apply)\b/iu,
+];
+const ROUTE_CARD_REFERENCE_PATTERNS = [
+  /(?:(?:这个|该|上述|上面|前面|刚才)的?(?:方案|计划|卡片|实现|改动|工作))/iu,
+  /\b(?:(?:this|that|the|above|previous)\s+(?:plan|proposal|route card|implementation|change)|(?:it|that))\b/iu,
+];
+const NEW_TASK_PATTERNS = [
+  /(?:另一个|另一项|另一件|另外(?:一个|一项|一件)?|新(?:的)?(?:问题|任务|需求|工作))/iu,
+  /\b(?:another|a new|new task|new issue|different task|separate task)\b/iu,
 ];
 
 const FRONTEND_SCOPE_PATTERNS = [
@@ -129,6 +141,13 @@ function stripQuotedMaterial(text) {
     .replace(/^\s*>.*$/gmu, " ")
     .replace(/`[^`\n]*`/gu, " ")
     .replace(/“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|《[^》\n]*》|"[^"\n]*"/gu, " ");
+}
+
+function isExecutionContinuation(text) {
+  if (matchesAny(text, NEW_TASK_PATTERNS)) return false;
+  if (matchesAny(text, EXPLICIT_EXECUTION_CONTINUATION_PATTERNS)) return true;
+  return matchesAny(text, EXECUTION_ACTION_PATTERNS)
+    && matchesAny(text, ROUTE_CARD_REFERENCE_PATTERNS);
 }
 
 function hasContextualPlannerGap(text) {
@@ -273,7 +292,7 @@ export function decideRoute(input = {}) {
 
   if (input.routeCard?.frozen === true
     && input.routeCard?.observableBenefit === true
-    && matchesAny(explicitIntentText, EXECUTION_CONTINUATION_PATTERNS)) {
+    && isExecutionContinuation(explicitIntentText)) {
     signals.push("route-card-frozen", "observable-net-benefit", "explicit-execution-continuation");
     return route(
       "controller",

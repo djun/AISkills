@@ -486,7 +486,7 @@ test("core and destructive changes require a generation-bound BREAKING confirmat
     cpSync(canonicalRoot, newRoot, { recursive: true });
     const manifestPath = resolve(newRoot, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.skillVersion = "0.2.1";
+    manifest.skillVersion = "0.2.2";
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     const verificationPath = resolve(newRoot, "references/verification.md");
     writeFileSync(verificationPath, `${readFileSync(verificationPath, "utf8").trimEnd()}\n\nBREAKING_REBASE_UPSTREAM\n`, "utf8");
@@ -596,7 +596,7 @@ test("clean rebase preserves both upstream and user changes without activating",
     cpSync(canonicalRoot, newRoot, { recursive: true });
     const manifestPath = resolve(newRoot, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.skillVersion = "0.2.1";
+    manifest.skillVersion = "0.2.2";
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     writeFileSync(
       resolve(newRoot, "references/verification.md"),
@@ -646,7 +646,7 @@ test("clean rebase preserves both upstream and user changes without activating",
     }, { agent: owner });
     current = applySkillEvolutionSelection(newUpstream, root);
     assert.equal(current.evolution.rebaseRequired, false);
-    assert.equal(current.bundle.manifest.skillVersion, "0.2.1");
+    assert.equal(current.bundle.manifest.skillVersion, "0.2.2");
     assert.match(readFileSync(resolve(current.bundle.root, "references/support.md"), "utf8"), /EVOLUTION_REBASE/u);
   } finally {
     rmSync(scratch, { recursive: true, force: true });

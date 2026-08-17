@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { activeRouteCard, createRouteCardTool } from "../src/route-card.mjs";
+import { ROUTE_CARD_PROMPT, activeRouteCard, createRouteCardTool } from "../src/route-card.mjs";
 
 function cardArgs() {
   return {
@@ -14,6 +14,14 @@ function cardArgs() {
     stop: "Stop if the public contract changes",
   };
 }
+
+test("route-card guidance applies canonical reassessment without size routing", () => {
+  assert.match(ROUTE_CARD_PROMPT, /After the canonical executor reassessment proves observable net benefit/u);
+  assert.doesNotMatch(ROUTE_CARD_PROMPT, /earlier direct-routing choice expires/u);
+  assert.match(ROUTE_CARD_PROMPT, /freeze the card before implementation continues/u);
+  assert.match(ROUTE_CARD_PROMPT, /Otherwise continue directly without a card/u);
+  assert.doesNotMatch(ROUTE_CARD_PROMPT, /task size alone never justifies delegation/u);
+});
 
 test("route cards freeze, expose, consume, and clear exactly once", async () => {
   const events = [];

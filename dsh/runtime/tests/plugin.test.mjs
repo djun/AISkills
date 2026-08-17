@@ -1056,6 +1056,9 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
   assert.match(ctx.captured.sections[1].text, /naturally asks to inspect, set, change, or remove/u);
   assert.match(ctx.captured.sections[1].text, /Never infer, recommend as chosen, or silently select/u);
   assert.match(ctx.captured.sections[2].text, /frozen route cards/u);
+  assert.match(ctx.captured.sections[2].text, /canonical executor reassessment proves observable net benefit/u);
+  assert.doesNotMatch(ctx.captured.sections[2].text, /earlier direct-routing choice expires/u);
+  assert.doesNotMatch(ctx.captured.sections[2].text, /task size alone never justifies delegation/u);
   assert.match(ctx.captured.sections[3].text, /explicitly asks to inspect, set, or reset that source/u);
   assert.equal(ctx.captured.sections[4].text, "");
   assert.match(ctx.captured.sections[5].text, /compaction model configuration/u);
@@ -1548,8 +1551,18 @@ test("a consumed frozen route card makes executor auto routing reachable exactly
   }, { agent });
 
   const signal = new AbortController().signal;
-  const result = await ctx.captured.handlers.get("agent/pre-step")(
+  await ctx.captured.handlers.get("agent/pre-step")(
     { agent, turn: 1, step: 1, signal },
+    async () => ({ kind: "enter", messages: [userMessage("开始处理另一个问题：修复登录页错位")] }),
+  );
+  assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 0);
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1 },
+    async () => ({ provider: "base", model: "controller", reasoningEffort: "max" }),
+  ), { provider: "base", model: "controller", reasoningEffort: "max" });
+
+  const result = await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 2, step: 1, signal },
     async () => ({ kind: "enter", messages: [userMessage("继续执行这个方案")] }),
   );
   assert.equal(starts, 0);
@@ -1557,7 +1570,7 @@ test("a consumed frozen route card makes executor auto routing reachable exactly
   assert.match(result.messages[1].content[0].text, new RegExp(frozen.card.id, "u"));
   assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 1);
   const executorRequest = await ctx.captured.handlers.get("agent/request")(
-    { agent, turn: 1, step: 1 },
+    { agent, turn: 2, step: 1 },
     async () => ({ provider: "base", model: "controller", reasoningEffort: "max" }),
   );
   assert.deepEqual(executorRequest, {
@@ -1576,11 +1589,11 @@ test("a consumed frozen route card makes executor auto routing reachable exactly
   assert.equal((await routeCard.execute({ action: "clear", cardId: frozen.card.id }, { agent })).status, "absent");
 
   await ctx.captured.handlers.get("agent/pre-step")(
-    { agent, turn: 2, step: 1, signal },
+    { agent, turn: 3, step: 1, signal },
     async () => ({ kind: "enter", messages: [userMessage("继续执行这个方案")] }),
   );
   assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
-    { agent, turn: 2, step: 1 },
+    { agent, turn: 3, step: 1 },
     async () => ({ provider: "base", model: "controller", reasoningEffort: "max" }),
   ), { provider: "base", model: "controller", reasoningEffort: "max" });
 });

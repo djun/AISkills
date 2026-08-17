@@ -20,7 +20,7 @@
 
 - `odai-dsh-plugin` 与 `odai-dsh-agent` 的问题必须在本仓库内解决；修复实现、兼容层、配置、补丁、测试和文档只能落到本项目受版本控制的文件中。
 - `skills/odai/` 只承载跨宿主都成立的治理语义和通用角色合同；DSH 的 hook、工具名、same-turn / child 调度、路由状态、证据事件、provider / model 字段与 token 优先级必须落在 `dsh/runtime/`，不得为方便复用写入 canonical skill、通用角色正文或 `.odai/local.md`。
-- DSH 可在运行时组合 canonical 通用合同与 `dsh/runtime/` 私有补充合同。只有至少两个宿主已经采用同一语义、各自适配不再含宿主机制，且兼容影响与迁移已明确验证时，才可把该语义上移到 canonical；需要新增 required file 或改变读取契约时必须显式升级 skill version / runtime contract，不得顺带修改。
+- DSH 可在运行时组合 canonical 通用合同与 `dsh/runtime/` 私有补充合同。语义是否上移 canonical 由责任归属与证据决定，不设固定宿主数量门槛：只有该语义跨宿主成立、不含 DSH 机制，证据足以支持其通用净收益，且兼容影响与迁移已明确验证时才上移；单一宿主暴露问题既不自动证明通用，也不自动阻止通用治理修正。需要新增 required file 或改变读取契约时必须显式升级 skill version / runtime contract，不得顺带修改。
 - `AGENTS.md` 只记录上述稳定落位规则；具体触发条件、事件字段、预算值和实现流程以 `dsh/runtime` 源码及同目录测试为事实源，避免文档副本漂移。
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 作为同一发布单元维护；从 `0.0.10` 起两个 `package.json` 的版本号必须完全一致，同一功能发布同时升版。测试与 prepack 必须运行仓库版本一致性检查，禁止单包漂移或用已发布旧版本承载新改动。
 - DeepSeek Harness 的源码 checkout、全局或本地安装包、`node_modules/@deepseek-ai/dsh` 及其核心文件一律只读，只能用于定位行为、核对契约和运行兼容性验证；不得直接修改、打补丁或用本机改造后的 DSH 冒充本项目修复。
