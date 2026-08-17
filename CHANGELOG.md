@@ -2,13 +2,13 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
-## 2026-08-17 — DSH 0.1.1 发布候选：实施阶段路由重评
+## 2026-08-17 — DSH 0.1.1 实施阶段路由重评
 
-- 冻结待发布的 `odai-dsh-agent@0.1.1` 与 `odai-dsh-plugin@0.1.1`，两包继续作为同一发布单元保持版本同步；内置 canonical skill 升为 `0.2.1`，runtime contract 保持 `3`。
+- 发布 `odai-dsh-agent@0.1.1` 与 `odai-dsh-plugin@0.1.1`，两包继续作为同一发布单元保持版本同步；内置 canonical skill 升为 `0.2.1`，runtime contract 保持 `3`。
 - 当任务从未决判断转为边界冻结的实施合同，或实施范围发生实质变化时，旧的 direct 判断失效；总控须在下一次实质写入前重新评估一次 executor 分离收益，既不因执行惯性继续 direct，也不把任务规模本身当成委派理由。该通用语义由 canonical `references/leverage.md` 持有，DSH runtime 只负责 route card 的冻结、所有权和消费机制。
 - 活动 route card 不再被无关新任务消费。明确续作语可直接继续；普通执行动词必须同时指向前一方案、计划、卡片、实现或改动；明确新任务保持 direct。中文“另外”和英文 `another` 只有与具体新任务名词共同出现时才形成否决，避免连接词压过用户显式续作。
 - 升级前须停止 DSH，更新后重启以加载新的 bundled upstream。已有 active skill evolution 不会被覆盖或自动改写指针，但因 canonical digest 变化会显示 `rebaseRequired`；显式 rebase 只创建 inactive candidate，冲突保留 base/ours/theirs 证据并维持原 active generation。
-- Plugin `128/128`、Agent `11/11`、脚本 `7/7`、canonical 校验、真实 DSH Plugin/Agent load 与双包 dry-run 均通过。固定 C04 的 Luna researcher + Sol controller 正式样本增至 `n=4`，四份均为 `4/4`、真实路由和 3 源 packet；新增 3 次复跑均为高置信且工作区无改动。单份 Sol 基线仍为 `n=1`，不据此宣称统计稳定或通用降本。
+- Plugin `128/128`、Agent `11/11`、脚本 `7/7`、canonical 校验、真实 DSH Plugin/Agent load 与双包 dry-run 均通过；从 npmjs `latest` 全新安装双包与固定 DSH `0.1.0-rc.6` 后，两份随包真实 DSH load 再次通过。固定 C04 的 Luna researcher + Sol controller 正式样本增至 `n=4`，四份均为 `4/4`、真实路由和 3 源 packet；新增 3 次复跑均为高置信且工作区无改动。单份 Sol 基线仍为 `n=1`，不据此宣称统计稳定或通用降本。
 
 ## 2026-08-17 — DSH 0.1.0 受控演化与语义记忆
 
