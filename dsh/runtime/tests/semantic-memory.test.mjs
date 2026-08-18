@@ -268,6 +268,38 @@ test("retrieval is deterministic, bounded, and canonicalizes project aliases", (
   }
 });
 
+test("early emotional signals never enter generic semantic memory", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "odai-memory-emotional-safety-"));
+  try {
+    const storePath = resolveMemoryStorePath(undefined, { DSH_HOME: root });
+    const cwd = resolve(root, "project");
+    mkdirSync(cwd);
+    const values = [
+      "以后记住我焦虑时会反复怀疑自己。",
+      "以后记住我最近一直内耗、提不起劲。",
+      "Remember that I ruminate and doubt myself when I feel anxious.",
+      "以后记住我希望默认使用欧黛的陪伴风格。",
+    ];
+    for (const [index, text] of values.entries()) {
+      const fixture = agentFor({ id: `emotional-safety-${index}`, cwd, turn: index + 1, text });
+      assert.deepEqual(capture(storePath, fixture), []);
+      const tool = createSemanticMemoryTool(storePath);
+      const result = await tool.execute({
+        action: "consider",
+        scope: "project",
+        category: "preference",
+        subject: "emotional-state",
+        excerpt: text,
+      }, { agent: fixture.agent });
+      assert.equal(result.changed, false);
+      assert.equal(result.reasonCode, "sensitive");
+    }
+    assert.deepEqual(readMemoryStore(storePath).entries, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("semantic candidates stay pending, reinforce across sessions, and require exact current excerpts", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "odai-memory-tool-"));
   try {

@@ -53,8 +53,8 @@ const SENSITIVE_PATTERNS = [
   /(?:\+?\d[\d ()-]{7,}\d)/u,
   /\b(?:\d[ -]*?){13,19}\b/u,
   /(?:我|我的).{0,20}(?:身份证|护照号|银行卡|信用卡|住址|家庭地址|病历|诊断|疾病|收入|工资|债务|性取向)/u,
-  /(?:疲惫|心累|持续低落|绝望|抑郁|躁郁|双相|焦虑症|精神疾病|心理疾病|自残|自杀|轻生|不想活|活不下去|想死|结束生命)/u,
-  /\b(?:fatigue|burn(?:ed|t) out|persistent low mood|hopeless|depress(?:ed|ion)|bipolar|anxiety disorder|mental illness|self[- ]?harm|suicid(?:e|al)|want to die|kill myself|end my life)\b/iu,
+  /(?:阿岱|欧黛|陪伴风格|行动支撑|疲惫|心累|焦虑|怀疑自己|否定自己|自我怀疑|内耗|反刍|反复纠结|持续消极|提不起劲|失去行动感|持续低落|绝望|抑郁|躁郁|双相|精神疾病|心理疾病|自残|自杀|轻生|不想活|活不下去|想死|结束生命)/u,
+  /\b(?:companionship style|practical support style|fatigue|burn(?:ed|t) out|anxi(?:ous|ety)|self[- ]doubt|doubt myself|ruminat(?:e|ing|ion)|internal conflict|persistent negativity|cannot get started|persistent low mood|hopeless|depress(?:ed|ion)|bipolar|mental illness|self[- ]?harm|suicid(?:e|al)|want to die|kill myself|end my life)\b/iu,
 ];
 const GLOBAL_SCOPE_PATTERNS = [
   /(?:所有项目|每个项目|全局|我一直|我通常|我的项目都)/u,

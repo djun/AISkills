@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { spawnDsh } from "../scripts/dsh-process.mjs";
+import { spawnDsh, terminateDsh } from "../scripts/dsh-process.mjs";
 
 const pluginRoot = resolve(import.meta.dirname, "..");
 
@@ -40,10 +40,14 @@ test("DSH process spawn supports Windows npm command shims", () => {
     platform: "linux",
     execute,
   });
+  spawnDsh("C:\\tools\\dsh.cmd", ["--profile", "web"], { cwd: pluginRoot }, {
+    platform: "win32",
+    execute,
+  });
 
   assert.deepEqual(calls, [
     {
-      command: "dsh",
+      command: "dsh.cmd",
       args: ["--profile", "web"],
       options: { cwd: pluginRoot, shell: true },
     },
@@ -52,5 +56,24 @@ test("DSH process spawn supports Windows npm command shims", () => {
       args: ["--profile", "web"],
       options: { cwd: pluginRoot },
     },
+    {
+      command: "C:\\tools\\dsh.cmd",
+      args: ["--profile", "web"],
+      options: { cwd: pluginRoot, shell: true },
+    },
   ]);
+});
+
+test("Windows plugin probe terminates the DSH process tree", () => {
+  const calls = [];
+  const child = { pid: 42, exitCode: null, kill() { throw new Error("taskkill should be preferred"); } };
+  terminateDsh(child, {
+    platform: "win32",
+    execute(command, args, options) { calls.push({ command, args, options }); },
+  });
+  assert.deepEqual(calls, [{
+    command: "taskkill",
+    args: ["/pid", "42", "/T", "/F"],
+    options: { stdio: "ignore" },
+  }]);
 });

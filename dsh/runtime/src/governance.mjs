@@ -73,10 +73,17 @@ export function activeRouteProtection(agent, recordedEvents = agent?.session?.ev
   }
   if (currentTurn === undefined) return undefined;
 
+  const releasedScopes = new Set();
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
+    if (event?.type === "odai/route-protection-released" && event.data?.turn === currentTurn) {
+      if (typeof event.data?.scopeId === "string") releasedScopes.add(event.data.scopeId);
+      continue;
+    }
     if (event?.type !== "odai/route-protection") continue;
-    if (event.data?.turn === currentTurn && event.data?.mode === "read-only") return event.data;
+    if (event.data?.turn !== currentTurn || event.data?.mode !== "read-only") continue;
+    if (event.data?.scopeId && releasedScopes.has(event.data.scopeId)) continue;
+    return event.data;
   }
   return undefined;
 }

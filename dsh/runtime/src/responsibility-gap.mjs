@@ -3,12 +3,10 @@ import { createHash } from "node:crypto";
 import { CONFIGURABLE_ROLES } from "./routing-config.mjs";
 
 export const RESPONSIBILITY_GAP_PROMPT = [
-  "## Odai automatic responsibility and user-alignment gaps",
-  "Users describe goals, constraints, materials, and acceptance; they never need to request internal roles, routing modes, or handoffs.",
-  "Keep work direct when the current controller can close it reliably. Keywords such as plan, review, research, frontend, or independent are only clues and never sufficient routing authority.",
-  "When project evidence reveals a real capability gap that can change the result, call odai_responsibility_gap with the smallest grounded proposal before the next affected action. The runtime chooses inline, same-turn, or child execution from the configured mapping, context need, evidence, and net benefit.",
-  "Use responsibility=user only when a missing user-owned choice, priority, or unacceptable outcome changes the route. Ask one concise question after the tool accepts that gap. Do not ask users for repository facts, technical investigation, implementation details the project already determines, or internal routing choices.",
-  "Do not submit a gap merely because a task is complex, risky, multi-step, uses a role word, has a configured model, or could use a cheaper model. Do not resubmit an unchanged gap or state.",
+  "## Odai responsibility gaps",
+  "Users provide goals, constraints, materials, and acceptance; they never need to request internal roles or handoffs.",
+  "Keep work direct when the controller can close it reliably. Call odai_responsibility_gap only when current evidence shows an independent capability or user-decision gap that can change a concrete result; keywords, complexity, risk, configured models, and price are insufficient. The runtime decides direct, inline, same-turn, child, or user-question handling.",
+  "Use responsibility=user only for a missing user-owned choice, priority, or unacceptable outcome, then ask exactly the accepted concise question. Do not ask users for repository facts or implementation details the project can determine. Do not resubmit unchanged state.",
 ].join("\n");
 
 const RESPONSIBILITIES = Object.freeze([...CONFIGURABLE_ROLES, "user"]);
@@ -58,10 +56,10 @@ export function createResponsibilityGapTool(options = {}) {
       required: ["responsibility", "gap", "evidenceRefs", "expectedChange"],
       properties: {
         responsibility: { type: "string", enum: [...RESPONSIBILITIES] },
-        gap: { type: "string", description: "The unresolved capability or user-owned decision gap." },
-        evidenceRefs: { type: "array", items: { type: "string" }, description: "Small stable references to current task evidence." },
-        expectedChange: { type: "string", description: "The concrete decision, artifact, or acceptance result this responsibility can change." },
-        question: { type: "string", description: "One concise question, required only for responsibility=user." },
+        gap: { type: "string" },
+        evidenceRefs: { type: "array", items: { type: "string" } },
+        expectedChange: { type: "string" },
+        question: { type: "string" },
       },
     },
     output: {

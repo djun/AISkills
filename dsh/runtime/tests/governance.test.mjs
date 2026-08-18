@@ -47,6 +47,7 @@ test("high-impact route protection denies controller mutations only for the acti
             step: 1,
             mode: "read-only",
             reasonCode: "PLANNER_UNVERIFIED_HIGH_IMPACT_CHANGE",
+            scopeId: "scope-1",
           },
         },
       ],
@@ -68,6 +69,13 @@ test("high-impact route protection denies controller mutations only for the acti
 
   const restrictedGuard = createRouteProtectionGuard({ additionalDeniedTools: ["web_fetch"] });
   assert.match(restrictedGuard({ agent: protectedController, name: "web_fetch" }), /^ODAI_HIGH_IMPACT_ROUTE_BLOCKED:/u);
+
+  protectedController.session.events.push({
+    type: "odai/route-protection-released",
+    data: { turn: 1, scopeId: "scope-1", reason: "terminal-response" },
+  });
+  assert.equal(activeRouteProtection(protectedController), undefined);
+  assert.equal(guard({ agent: protectedController, name: "write" }), undefined);
 
   protectedController.session.events.push({
     type: "odai/route-decided",

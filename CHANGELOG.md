@@ -2,6 +2,15 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-18 — DSH 0.2.1 有界责任作用域与早期情绪支持
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 的发布单元同步升为 `0.2.1`，内置 canonical skill 升为 `0.3.2`，runtime contract 保持 `3`。
+- planner、executor、frontend 的 controller 原地路由改为显式 responsibility scope。runtime 分开记录 start、claim、stop、base-route restoration 与实际 route receipt；工具链可按责任策略继续，终端响应、直接用户输入、失败、取消、route mismatch、route-card release 或 turn end 会幂等回收 route 与只读 protection。恢复使用 claim 前保存的完整 controller proposal，不改写用户默认模型或持久 responsibility mappings。reviewer 只有在证据包完整时启动独立 child；不完整包保持当前 controller route、继续补齐项目可得证据，不再用终端 same-turn reviewer 响应截断原任务。
+- 日常关怀与危机安全拆为两个按需合同：`references/care.md` 负责焦虑、自我怀疑、反复内耗、持续消极、羞耻、害怕犯错、失去行动感及透明可控的阿岱/欧黛风格；`references/human-safety.md` 只负责持续或加重的低落、绝望、负担感、自伤、轻生与即时危险。前者不自动判为危机或触发模型路由，危机时风格退后并由同一 controller 直接执行安全确认和现实支持连接。
+- 普通语义记忆继续拒绝情绪与危机状态；只有用户明确要求跨会话保存时，独立 human-safety continuity 才接受用户原文中的沟通偏好，且仍不把历史偏好当作当前状态。历史记录只在当前对话独立出现关怀、危机支持或档案管理相关性时向 controller 注入，永不进入 child prompt。
+- 低频 Odai prompt 与工具 schema 改为 agent-scoped 自适应暴露；普通 turn 保留完整 canonical、输出策略、责任缺口和一个只负责发现的紧凑 capability gateway。罕见表达可通过 gateway 在下一 step 取得真实工具，宿主不支持 scoped restriction 时回退完整目录。按 DSH context meter 同口径，Odai-only 普通 turn 预算由约 `6194` tokens 降至能力等价实测 `1672`、受测上限 `1900`；canonical 恢复删减前的完整治理能力，该下降不以压缩治理语义换取。
+- Windows 上的 DSH probe 对裸 `dsh` 明确选择 `dsh.cmd`，并在成功 marker 后终止完整 DSH 进程树，避免 PowerShell 解析到受执行策略限制的 `dsh.ps1` 或留下 shell 子进程；显式 `DSH_BIN` 和非 Windows 行为保持不变。
+
 ## 2026-08-18 — DSH 0.2.0 状态路由、正式回退与人身安全
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.0`，DSH 基线升为 `0.1.0-rc.7` 并继续精确兼容 `0.1.0-rc.6`，内置 canonical skill 升为 `0.3.0`，runtime contract 保持 `3`。Agent composition 以 rc.7 Standard preset 为 source，并在安装 rc.6 时确定性还原两项 disabled provider 的 `enableRunInBackground: false` 契约；人身与心理危机成为最高优先级保护：持续或加重的可观察信号触发低负担关怀，任何可信自残或轻生倾向都不因“没有计划”而忽略；全程不诊断、不贴标签、不说教、不提供方法或隐匿指导，并防止二次伤害。

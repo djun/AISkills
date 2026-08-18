@@ -127,6 +127,9 @@ test("continuity rejects ordinary memory content even when the requested categor
 
   for (const value of [
     "项目截止期让我焦虑时，请先听我说",
+    "我开始怀疑自己时，希望欧黛先陪我说说，不要马上给方案",
+    "我内耗时，希望阿岱帮我把事实和自责分开",
+    "我希望默认先用欧黛的陪伴风格，需要行动时再用阿岱支撑",
     "When I am overwhelmed by code reviews, give me space.",
     "When deployment incidents make me anxious, give me space.",
   ]) {

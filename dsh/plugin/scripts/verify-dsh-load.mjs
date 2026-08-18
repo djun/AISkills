@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { spawnDsh } from "./dsh-process.mjs";
+import { spawnDsh, terminateDsh } from "./dsh-process.mjs";
 
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(pluginRoot, "../..");
@@ -171,13 +171,13 @@ try {
   let verified = false;
   const completed = new Promise((accept, reject) => {
     const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
+      terminateDsh(child);
       reject(new Error(`timed out waiting for odai plugin load marker\n${output}`));
     }, 15_000);
     const markerPoll = setInterval(() => {
       if (!existsSync(markerPath)) return;
       verified = true;
-      child.kill("SIGTERM");
+      terminateDsh(child);
     }, 50);
 
     const capture = (chunk) => {

@@ -266,7 +266,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
         },
         maxTokens: {
           type: "integer",
-          description: "Optional positive output limit explicitly supplied by the user. It limits routed child requests; on a routed frontend controller turn it instead explicitly overrides the global controller ceiling only for that turn. Other same-turn responsibility upgrades remain governed by the controller policy."
+          description: "Optional positive output limit explicitly supplied by the user. It limits routed child requests; inside a routed frontend controller responsibility scope it explicitly overrides the global controller ceiling only for that scope. Other in-place responsibility scopes remain governed by the controller policy."
         },
       },
     },

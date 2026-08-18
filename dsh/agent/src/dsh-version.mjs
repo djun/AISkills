@@ -5,14 +5,18 @@ export function readDshVersion({
   platform = process.platform,
   execute = execFileSync,
 } = {}) {
-  return execute(dsh, ["-V"], dshProcessOptions({ encoding: "utf8" }, platform)).trim();
+  return execute(normalizeDshCommand(dsh, platform), ["-V"], dshProcessOptions({ encoding: "utf8" }, platform)).trim();
 }
 
 export function spawnDsh(command, args, options = {}, {
   platform = process.platform,
   execute = spawn,
 } = {}) {
-  return execute(command, args, dshProcessOptions(options, platform));
+  return execute(normalizeDshCommand(command, platform), args, dshProcessOptions(options, platform));
+}
+
+function normalizeDshCommand(command, platform) {
+  return platform === "win32" && command === "dsh" ? "dsh.cmd" : command;
 }
 
 function dshProcessOptions(options, platform) {

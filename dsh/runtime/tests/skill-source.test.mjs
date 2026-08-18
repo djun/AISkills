@@ -106,10 +106,11 @@ function assemblyFor(ctx) {
 }
 
 test("bundle manifest validates complete content and full SemVer precedence", () => {
-  assert.equal(bundled.manifest.skillVersion, "0.3.0");
+  assert.equal(bundled.manifest.skillVersion, "0.3.2");
   assert.equal(bundled.manifest.runtimeContract, 3);
-  assert.equal(bundled.manifest.requiredFiles.length, 28);
+  assert.equal(bundled.manifest.requiredFiles.length, 29);
   assert.match(bundled.roleContracts.researcher, /来源账本只是检索索引/u);
+  assert.ok(bundled.manifest.requiredFiles.includes("references/care.md"));
   assert.match(bundled.referenceContracts.craft, /通用制作工艺/u);
   const leverage = readFileSync(resolve(canonicalRoot, "references/leverage.md"), "utf8");
   assert.match(leverage, /先前的 direct 判断即失效/u);

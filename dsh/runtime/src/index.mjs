@@ -51,6 +51,29 @@ import {
 import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
 import { classifyModelRouteFailure, probeModelRoute } from "./model-route.mjs";
 import { RESPONSIBILITY_GAP_PROMPT, createResponsibilityGapTool } from "./responsibility-gap.mjs";
+import {
+  ODAI_CORE_TOOL_NAMES,
+  activeOdaiToolNames,
+  classifyContextActivation,
+  inactiveOdaiToolNames,
+} from "./context-activation.mjs";
+import {
+  activateRequestedCapabilities,
+  createContextCapabilityTool,
+  requestedContextCapabilities,
+} from "./context-capability.mjs";
+import {
+  claimResponsibilityScope,
+  createResponsibilityScope,
+  latestDanglingResponsibilityScope,
+  pendingResponsibilityScopeRestoration,
+  responsibilityScopeClaimedEvent,
+  responsibilityScopeOwnsRequest,
+  responsibilityScopeStartedEvent,
+  responsibilityScopeStopReason,
+  responsibilityScopeStoppedEvent,
+} from "./responsibility-scope.mjs";
+import { HUMAN_CARE_REFERENCE_PATH, createHumanCareTool } from "./human-care.mjs";
 import { HUMAN_SAFETY_REFERENCE_PATH, createHumanSafetyTool } from "./human-safety.mjs";
 import {
   HUMAN_SAFETY_CONTINUITY_PROMPT,
@@ -878,6 +901,10 @@ export function apply(ctx, rawConfig) {
     memorySettingsSnapshots.set(agent, { turn, settings });
     return settings;
   };
+  const contextActivationFor = (agent, text, turn = currentAgentTurn(agent)) => activateRequestedCapabilities(
+    classifyContextActivation(text),
+    requestedContextCapabilities(evidence.events(agent), turn),
+  );
   const routingSnapshots = new WeakMap();
   const routingSnapshotFor = (agent, turn = currentAgentTurn(agent)) => {
     const cached = routingSnapshots.get(agent);
@@ -933,11 +960,18 @@ export function apply(ctx, rawConfig) {
     }
     const outputPrompt = renderOutputPolicyPrompt(outputSelection.policy);
     const childSession = isSubagentSession(agent);
-    const routingPrompt = childSession
-      ? ROUTING_CONFIG_PROMPT
-      : `${ROUTING_CONFIG_PROMPT}\n\n${renderEffectiveRoutingContext(routingSnapshotFor(agent, turn))}`;
+    const directMessage = latestDirectUserMessage(agent);
+    const activation = contextActivationFor(agent, directMessage ? extractLatestUserText([directMessage]) : "", turn);
+    const proposedStep = (currentAgentStep(agent) ?? 0) + 1;
+    const routeCardNeeded = !childSession && (Boolean(activeRouteCard(evidence.events(agent)))
+      || ["planner", "executor"].includes(pendingResponsibilityGap(agent, turn, proposedStep)?.responsibility));
+    const routingPrompt = !activation.routingConfig
+      ? ""
+      : childSession
+        ? ROUTING_CONFIG_PROMPT
+        : `${ROUTING_CONFIG_PROMPT}\n\n${renderEffectiveRoutingContext(routingSnapshotFor(agent, turn))}`;
     let continuityRecordPrompt;
-    if (!childSession) {
+    if (!childSession && (activation.care || activation.safety || activation.continuity)) {
       try {
         continuityRecordPrompt = renderHumanSafetyContinuitySection(
           readHumanSafetyContinuityStore(humanSafetyContinuityStorePath),
@@ -946,7 +980,9 @@ export function apply(ctx, rawConfig) {
         logger.warn(`Odai human-safety continuity is unavailable for this turn: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    const continuityPrompt = [HUMAN_SAFETY_CONTINUITY_PROMPT, continuityRecordPrompt].filter(Boolean).join("\n\n");
+    const continuityPrompt = [activation.continuity ? HUMAN_SAFETY_CONTINUITY_PROMPT : undefined, continuityRecordPrompt]
+      .filter(Boolean)
+      .join("\n\n");
     if (outputPrompt && !hasSessionEvent(agent, "odai/output-policy-selected", (data) => data?.turn === turn)) {
       appendEvent(agent, "odai/output-policy-selected", {
         ...(turn === undefined ? {} : { turn }),
@@ -960,15 +996,51 @@ export function apply(ctx, rawConfig) {
         if (section.name === "odai:canonical-governance") return { ...section, text: canonicalPrompt(selection) };
         if (section.name === "odai:routing-configuration") return { ...section, text: routingPrompt };
         if (section.name === "odai:human-safety-continuity") return { ...section, text: continuityPrompt };
+        if (section.name === "odai:responsibility-gap") return { ...section, text: childSession ? "" : RESPONSIBILITY_GAP_PROMPT };
+        if (section.name === "odai:route-card") return { ...section, text: routeCardNeeded ? ROUTE_CARD_PROMPT : "" };
+        if (section.name === "odai:skill-source-configuration") return { ...section, text: activation.skillSource ? SKILL_SOURCE_CONFIG_PROMPT : "" };
         if (section.name === "odai:controller-output-policy") return { ...section, text: outputPrompt };
+        if (section.name === "odai:compaction-model-configuration") return { ...section, text: activation.compactionConfig ? COMPACTION_CONFIG_PROMPT : "" };
+        if (section.name === "odai:semantic-memory") return { ...section, text: activation.memory ? MEMORY_PROMPT : "" };
         return section;
       }),
     };
   });
 
   const routeProtections = new WeakMap();
-  const controllerUpgrades = new WeakMap();
+  const responsibilityScopes = new WeakMap();
+  const responsibilityScopeOwners = new WeakMap();
   const pendingRouteReceipts = new WeakMap();
+  const pendingScopeRestorations = new WeakMap();
+  const stopResponsibilityScope = (agent, reason, position = {}) => {
+    const scope = responsibilityScopes.get(agent);
+    if (!scope || (position.scopeId && position.scopeId !== scope.id)) return undefined;
+    responsibilityScopes.delete(agent);
+    const protection = routeProtections.get(agent);
+    if (protection?.scopeId === scope.id) routeProtections.delete(agent);
+    appendEvent(agent, "odai/route-protection-released", {
+      scopeId: scope.id,
+      turn: scope.turn,
+      reason,
+    });
+    appendEvent(agent, "odai/responsibility-scope-stopped", responsibilityScopeStoppedEvent(scope, reason, position));
+    return scope;
+  };
+  const stopDanglingResponsibilityScope = (agent, reason) => {
+    if (responsibilityScopes.has(agent)) return undefined;
+    const dangling = latestDanglingResponsibilityScope(evidence.events(agent));
+    if (!dangling) return undefined;
+    appendEvent(agent, "odai/route-protection-released", {
+      scopeId: dangling.scopeId,
+      turn: dangling.turn,
+      reason,
+    });
+    appendEvent(agent, "odai/responsibility-scope-stopped", {
+      ...dangling,
+      reason,
+    });
+    return dangling;
+  };
   const configuredRole = (agent, role, turn = currentAgentTurn(agent)) => {
     const state = routingSnapshotFor(agent, turn);
     if (state.error) return state;
@@ -1043,6 +1115,18 @@ export function apply(ctx, rawConfig) {
       return routeProtections.get(agent) ?? activeRouteProtection(agent, evidence.events(agent));
     },
   });
+  ctx.tools.register(createContextCapabilityTool({
+    isChild: isSubagent,
+    onRequested(agent, capability) {
+      const turn = currentAgentTurn(agent);
+      const step = currentAgentStep(agent);
+      appendEvent(agent, "odai/context-capability-requested", {
+        ...(turn === undefined ? {} : { turn }),
+        ...(step === undefined ? {} : { step }),
+        capability,
+      });
+    },
+  }));
   ctx.tools.register(createRoutingConfigTool(config.routing.configPath, {
     configuredRoles: config.routing.roles,
     resolveCallConfig(route, signal) {
@@ -1053,6 +1137,13 @@ export function apply(ctx, rawConfig) {
     },
     onConfigured(agent, data) {
       appendEvent(agent, "odai/routing-configured", data);
+    },
+  }));
+  ctx.tools.register(createHumanCareTool({
+    isChild: isSubagent,
+    contractFor(agent) {
+      const bundle = sharedSkillSelection(agent)?.bundle ?? bundled;
+      return readSkillBundleFile(bundle, HUMAN_CARE_REFERENCE_PATH).toString("utf8");
     },
   }));
   ctx.tools.register(createHumanSafetyTool({
@@ -1149,6 +1240,41 @@ export function apply(ctx, rawConfig) {
   }));
   ctx.tools.guard((execution) => childGuard(execution) ?? routeProtectionGuard(execution));
 
+  const toolExposureStates = new WeakMap();
+  const syncToolExposure = (agent, activation, options = {}) => {
+    const child = isSubagentSession(agent);
+    const activeNames = activeOdaiToolNames(activation, { child, routeCard: options.routeCard === true });
+    const deniedNames = [
+      ...inactiveOdaiToolNames(activeNames),
+      ...(child ? ODAI_CORE_TOOL_NAMES : []),
+    ];
+    const key = deniedNames.join("\u0000");
+    const previous = toolExposureStates.get(agent);
+    if (previous?.key === key || ["unsupported", "fallback"].includes(previous?.key)) return activeNames;
+    previous?.dispose?.();
+    const restrict = agent?.ctx?.tools?.restrict;
+    if (typeof restrict !== "function") {
+      toolExposureStates.set(agent, Object.freeze({ key: "unsupported", dispose: undefined }));
+      return activeNames;
+    }
+    try {
+      const dispose = deniedNames.length > 0
+        ? restrict.call(agent.ctx.tools, { deny: deniedNames })
+        : undefined;
+      toolExposureStates.set(agent, Object.freeze({ key, dispose }));
+      appendEvent(agent, "odai/tool-exposure-selected", {
+        ...(options.turn === undefined ? {} : { turn: options.turn }),
+        ...(options.step === undefined ? {} : { step: options.step }),
+        mode: "adaptive",
+        activeTools: activeNames,
+      });
+    } catch (error) {
+      logger.warn(`Odai adaptive tool exposure is unavailable; retaining the complete tool catalog: ${error instanceof Error ? error.message : String(error)}`);
+      toolExposureStates.set(agent, Object.freeze({ key: "fallback", dispose: undefined }));
+    }
+    return activeNames;
+  };
+
   ctx.on("tools/result", (execution, result) => {
     if (!execution.agent) return;
     const summary = summarizeToolResult(execution, result);
@@ -1157,7 +1283,7 @@ export function apply(ctx, rawConfig) {
   });
 
   ctx.on("agent/request", async ({ agent, turn, step, signal }, next) => {
-    const proposed = await next();
+    let proposed = await next();
     const childRole = routedRoleOf(agent);
     const childRoleState = childRole ? configuredRole(agent, childRole, turn) : undefined;
     if (childRole && !childRoleState.route) {
@@ -1165,14 +1291,42 @@ export function apply(ctx, rawConfig) {
         ? `Odai ${childRole} child route is unavailable: ${childRoleState.detail}`
         : `Odai ${childRole} child route is not configured`);
     }
-    const upgrade = controllerUpgrades.get(agent);
-    const upgradeRole = upgrade && upgrade.turn === turn ? upgrade.role : undefined;
+    let scope = responsibilityScopes.get(agent);
+    if (scope && !responsibilityScopeOwnsRequest(scope, turn, step)) {
+      stopResponsibilityScope(agent, "ownership-boundary", { step });
+      scope = undefined;
+    }
+    if (!childRole && !scope) {
+      const restoration = pendingResponsibilityScopeRestoration(evidence.events(agent));
+      if (restoration && sameRequestModelRoute(proposed, restoration.temporaryRoute)) {
+        const { reasoningEffort: _temporaryEffort, maxTokens: _temporaryMaxTokens, ...withoutTemporaryRoute } = proposed;
+        proposed = Object.freeze({ ...withoutTemporaryRoute, ...restoration.baseRoute });
+        appendEvent(agent, "odai/responsibility-scope-restoration-requested", {
+          scopeId: restoration.scopeId,
+          turn,
+          step,
+          role: restoration.role,
+          requestedRoute: restoration.baseRoute,
+        });
+        if (agent?.session) {
+          pendingScopeRestorations.set(agent.session, Object.freeze({
+            agent,
+            scopeId: restoration.scopeId,
+            turn,
+            step,
+            role: restoration.role,
+            expectedRoute: restoration.baseRoute,
+          }));
+        }
+      }
+    }
+    const upgradeRole = scope?.role;
     let roleRoute = childRole
       ? childRoleState.route
-      : upgradeRole
-        ? upgrade.route
+      : scope
+        ? scope.route
         : undefined;
-    const routeSource = childRole ? childRoleState?.source : upgrade?.source;
+    const routeSource = childRole ? childRoleState?.source : scope?.source;
     let routeMode = childRole ? "child" : sameRequestModelRoute(proposed, roleRoute) ? "inline" : "same-turn";
     let scopedFrontendMaxTokens = upgradeRole === "frontend" ? roleRoute?.maxTokens : undefined;
     const finalize = (finalRequest) => {
@@ -1191,7 +1345,8 @@ export function apply(ctx, rawConfig) {
           responsibility: childRole ?? upgradeRole,
           routeMode,
           routeSource,
-          ...(upgrade?.cardId ? { routeCardId: upgrade.cardId } : {}),
+          ...(scope?.id ? { responsibilityScopeId: scope.id } : {}),
+          ...(scope?.cardId ? { routeCardId: scope.cardId } : {}),
           requestedRoute: expectedRoute,
           expectedRoute,
         }));
@@ -1210,7 +1365,17 @@ export function apply(ctx, rawConfig) {
           ? { maxTokens: roleRoute.maxTokens }
           : {}),
       });
-      const validation = upgrade?.routeValidated
+      if (!childRole && scope?.state === "pending") {
+        scope = claimResponsibilityScope(scope, {
+          step,
+          baseRoute: proposed,
+          temporaryRoute: request,
+          routeMode,
+        });
+        responsibilityScopes.set(agent, scope);
+        appendEvent(agent, "odai/responsibility-scope-claimed", responsibilityScopeClaimedEvent(scope));
+      }
+      const validation = scope?.routeValidated
         ? Object.freeze({ status: "verified" })
         : await probeModelRoute(
             (candidate, candidateSignal) => ctx.llm.resolveCallConfig(candidate, candidateSignal),
@@ -1241,9 +1406,9 @@ export function apply(ctx, rawConfig) {
           error: validation.failure.message,
           invalidated: invalidation.invalidated,
         });
-        if (upgrade?.cardId) {
+        if (scope?.cardId) {
           appendEvent(agent, "odai/route-card-claim-released", {
-            cardId: upgrade.cardId,
+            cardId: scope.cardId,
             turn,
             step,
             reason: "route-validation-failed",
@@ -1255,9 +1420,9 @@ export function apply(ctx, rawConfig) {
           error.routeFailureKind = validation.failure.kind;
           throw error;
         }
-        controllerUpgrades.delete(agent);
-        if (upgrade?.decision && requiresFailClosedProtection(upgrade.decision)) {
-          protectController(agent, turn, step, upgrade.decision, "route-validation", validation.failure.message);
+        stopResponsibilityScope(agent, "route-validation-failed", { step });
+        if (scope?.decision && requiresFailClosedProtection(scope.decision)) {
+          protectController(agent, turn, step, scope.decision, "route-validation", validation.failure.message);
         }
         roleRoute = undefined;
         routeMode = "same-turn";
@@ -1303,13 +1468,18 @@ export function apply(ctx, rawConfig) {
 
   const routeFallbackAttempts = new WeakMap();
   ctx.on("agent/request-error", async ({ agent, turn, step, provider, failure, signal }, next) => {
-    if (signal.aborted || failure?.code === "CONTEXT_WINDOW_EXCEEDED") return next();
     const childRole = routedRoleOf(agent);
-    const upgrade = controllerUpgrades.get(agent);
+    const scope = responsibilityScopes.get(agent);
+    if (!childRole && scope && (signal.aborted || failure?.code === "CONTEXT_WINDOW_EXCEEDED")) {
+      if (agent?.session) pendingRouteReceipts.delete(agent.session);
+      stopResponsibilityScope(agent, signal.aborted ? "request-aborted" : "context-window-exceeded", { step });
+      return next();
+    }
+    if (signal.aborted || failure?.code === "CONTEXT_WINDOW_EXCEEDED") return next();
     const active = childRole
       ? { role: childRole, ...configuredRole(agent, childRole, turn) }
-      : upgrade && upgrade.turn === turn
-        ? upgrade
+      : responsibilityScopeOwnsRequest(scope, turn, step)
+        ? scope
         : undefined;
     if (!active?.route || provider !== active.route.provider) return next();
 
@@ -1330,7 +1500,7 @@ export function apply(ctx, rawConfig) {
       routeSource: active.source,
       requestedRoute: active.route,
       fallbackUsed: !childRole,
-      fallbackRoute: childRole ? undefined : routeFromConfig(agent?.options),
+      fallbackRoute: childRole ? undefined : active.baseRoute ?? routeFromConfig(agent?.options),
       failureKind: classified.kind,
       errorCode: classified.code,
       error: classified.message,
@@ -1344,7 +1514,13 @@ export function apply(ctx, rawConfig) {
         reason: "route-request-failed",
       });
     }
-    if (childRole || classified.kind === "cancelled") return next();
+    if (childRole) return next();
+    if (agent?.session) pendingRouteReceipts.delete(agent.session);
+    stopResponsibilityScope(agent, classified.kind === "cancelled" ? "request-cancelled" : "route-request-failed", { step });
+    if (scope?.decision && requiresFailClosedProtection(scope.decision)) {
+      protectController(agent, turn, step, scope.decision, "route-request-failure", classified.message);
+    }
+    if (classified.kind === "cancelled") return next();
 
     let attempts = routeFallbackAttempts.get(agent);
     if (!attempts) {
@@ -1354,14 +1530,10 @@ export function apply(ctx, rawConfig) {
     const key = `${turn}:${step}`;
     if (attempts.has(key)) return next();
     attempts.add(key);
-    controllerUpgrades.delete(agent);
-    if (upgrade.decision && requiresFailClosedProtection(upgrade.decision)) {
-      protectController(agent, turn, step, upgrade.decision, "route-request-failure", classified.message);
-    }
     return { kind: "retry" };
   });
 
-  const protectController = (agent, turn, step, decision, source, failure) => {
+  const protectController = (agent, turn, step, decision, source, failure, scopeId) => {
     const protection = Object.freeze({
       turn,
       step,
@@ -1369,12 +1541,59 @@ export function apply(ctx, rawConfig) {
       reasonCode: decision.reasonCode,
       source,
       ...(failure ? { failure } : {}),
+      ...(scopeId ? { scopeId } : {}),
     });
     routeProtections.set(agent, protection);
     appendEvent(agent, "odai/route-protection", protection, logger);
   };
 
   ctx.on("session/event", (session, event) => {
+    const owner = responsibilityScopeOwners.get(session);
+    const activeScope = owner ? responsibilityScopes.get(owner) : undefined;
+    const scopeStopReason = responsibilityScopeStopReason(activeScope, event);
+    if (scopeStopReason) {
+      stopResponsibilityScope(owner, scopeStopReason, {
+        scopeId: activeScope.id,
+        ...(Number.isSafeInteger(event.data?.step) ? { step: event.data.step } : {}),
+      });
+    }
+
+    const pendingRestoration = pendingScopeRestorations.get(session);
+    if (pendingRestoration && event?.type === "turn/end") {
+      appendEvent(pendingRestoration.agent, "odai/responsibility-scope-restored", {
+        scopeId: pendingRestoration.scopeId,
+        turn: pendingRestoration.turn,
+        step: pendingRestoration.step,
+        role: pendingRestoration.role,
+        status: "unverified",
+        requestedRoute: pendingRestoration.expectedRoute,
+        stopReason: "no-effective-request",
+      });
+      pendingScopeRestorations.delete(session);
+    }
+    if (pendingRestoration && ["request/header", "assistant/chunk"].includes(event?.type)) {
+      let actualRoute;
+      try {
+        actualRoute = event.type === "request/header"
+          ? routeFromConfig(event.data?.header?.config)
+          : routeFromConfig(session.requestHeader?.()?.config);
+      } catch {}
+      if (actualRoute || event.type === "assistant/chunk") {
+        const mismatch = routeMismatchFor(pendingRestoration.expectedRoute, actualRoute, "base-route restoration");
+        appendEvent(pendingRestoration.agent, "odai/responsibility-scope-restored", {
+          scopeId: pendingRestoration.scopeId,
+          turn: pendingRestoration.turn,
+          step: pendingRestoration.step,
+          role: pendingRestoration.role,
+          status: mismatch ? "mismatch" : "applied",
+          requestedRoute: pendingRestoration.expectedRoute,
+          ...(actualRoute ? { actualRoute } : {}),
+          ...(mismatch ? { error: mismatch } : {}),
+        });
+        pendingScopeRestorations.delete(session);
+      }
+    }
+
     const pending = pendingRouteReceipts.get(session);
     if (!pending) return;
     if (event?.type === "turn/end") {
@@ -1397,6 +1616,10 @@ export function apply(ctx, rawConfig) {
           reason: "no-effective-request",
         });
       }
+      stopResponsibilityScope(pending.agent, "no-effective-request", {
+        scopeId: pending.responsibilityScopeId,
+        step: pending.step,
+      });
       pendingRouteReceipts.delete(session);
       return;
     }
@@ -1421,6 +1644,12 @@ export function apply(ctx, rawConfig) {
       ...(actualRoute ? { actualRoute } : {}),
       ...(mismatch ? { stopReason: "route-mismatch", error: mismatch } : {}),
     });
+    if (mismatch && pending.routeMode === "same-turn") {
+      stopResponsibilityScope(pending.agent, "route-mismatch", {
+        scopeId: pending.responsibilityScopeId,
+        step: pending.step,
+      });
+    }
     if (pending.routeCardId) {
       appendEvent(pending.agent, mismatch ? "odai/route-card-claim-released" : "odai/route-card-consumed", {
         cardId: pending.routeCardId,
@@ -1443,6 +1672,7 @@ export function apply(ctx, rawConfig) {
   });
 
   ctx.on("agent/turn-stopping", ({ agent, turn }) => {
+    stopResponsibilityScope(agent, "turn-stopping");
     const role = routedRoleOf(agent);
     if (!role) return;
     const receipts = evidence.events(agent)
@@ -1461,15 +1691,22 @@ export function apply(ctx, rawConfig) {
     const routedSteps = new WeakMap();
     ctx.on("agent/pre-step", async ({ agent, turn, step, signal }, next) => {
       const subagentSession = isSubagentSession(agent);
-      if (step === 1 && !subagentSession) {
-        routeProtections.delete(agent);
-        controllerUpgrades.delete(agent);
+      if (!subagentSession) {
+        if (step === 1) {
+          stopResponsibilityScope(agent, "new-turn");
+          routeProtections.delete(agent);
+        }
+        stopDanglingResponsibilityScope(agent, "runtime-resume");
       }
       let downstream = await next();
-      if (downstream.kind === "reject" || signal.aborted || subagentSession) {
-        return downstream;
-      }
-      const responsibilityGap = pendingResponsibilityGap(agent, turn, step);
+      if (downstream.kind === "reject" || signal.aborted) return downstream;
+      const responsibilityGap = subagentSession ? undefined : pendingResponsibilityGap(agent, turn, step);
+      const directMessage = latestDirectUserMessage(agent, downstream.messages, { turn });
+      const activation = contextActivationFor(agent, directMessage ? extractLatestUserText([directMessage]) : "", turn);
+      const routeCardNeeded = !subagentSession && (Boolean(activeRouteCard(evidence.events(agent)))
+        || ["planner", "executor"].includes(responsibilityGap?.responsibility));
+      syncToolExposure(agent, activation, { turn, step, routeCard: routeCardNeeded });
+      if (subagentSession) return downstream;
       if (step !== 1 && !responsibilityGap) return downstream;
 
       if (step === 1 && claimSemanticMemoryTurn(agent, turn, step)) {
@@ -1653,17 +1890,19 @@ export function apply(ctx, rawConfig) {
       let roleContext = decision.action === "direct"
         ? undefined
         : buildRoleContextPacket(agent, routeRole, roleTaskText);
+      let localReviewerCoverage;
       if (config.routing.mode === "auto"
         && routeRole === "reviewer"
         && decision.action === "delegate"
         && !roleContext.sufficient) {
+        localReviewerCoverage = roleContext.coverage;
         decision = Object.freeze({
           ...decision,
           role: "controller",
-          mode: "upgrade",
-          action: "upgrade",
+          mode: "direct",
+          action: "direct",
           targetRole: "reviewer",
-          signals: Object.freeze([...decision.signals, "review-evidence-packet-missing"]),
+          signals: Object.freeze([...decision.signals, "review-evidence-packet-missing", "controller-local-review"]),
         });
         routeRole = "reviewer";
       }
@@ -1695,7 +1934,46 @@ export function apply(ctx, rawConfig) {
         }, logger);
       }
 
-      if (decision.action === "direct") return routedDownstream;
+      if (decision.action === "direct") {
+        if (!localReviewerCoverage) return routedDownstream;
+        appendEvent(agent, "odai/route-context", {
+          turn,
+          step,
+          role: "reviewer",
+          mode: "controller-local",
+          digest: roleContext.digest,
+          evidenceCount: roleContext.evidenceCount,
+          toolEvidenceCount: roleContext.toolEvidenceCount,
+          acceptanceCount: localReviewerCoverage.acceptanceCount,
+          diffCount: localReviewerCoverage.diffCount,
+          testCount: localReviewerCoverage.testCount,
+          truncated: roleContext.truncated,
+          sufficient: false,
+        }, logger);
+        appendEvent(agent, "odai/route-result", {
+          turn,
+          step,
+          role: "reviewer",
+          action: "direct",
+          status: "fallback",
+          stopReason: "evidence-packet-missing",
+          independent: false,
+        }, logger);
+        return {
+          kind: "enter",
+          messages: [
+            ...routedDownstream.messages,
+            pluginMessage(
+              [
+                `An independent reviewer was not started because the bounded packet is incomplete (${JSON.stringify(localReviewerCoverage)}).`,
+                "Remain on the current controller route and continue the authorized task. Gather project-available requirements, acceptance conditions, diff, tests, and matching tool evidence before resubmitting a changed reviewer gap.",
+                "A controller-local read-only check may guide the work, but it is not independent acceptance. Do not stop solely to ask the user for review artifacts the project can produce, and do not claim the reviewer approved release.",
+              ].join("\n"),
+              "odai reviewer evidence is incomplete; controller continues locally",
+            ),
+          ],
+        };
+      }
 
       if (config.routing.mode === "observe") {
         if (requiresFailClosedProtection(decision)) {
@@ -1842,27 +2120,35 @@ export function apply(ctx, rawConfig) {
       }
 
       if (inPlaceUpgrade) {
-        if (["planner", "reviewer"].includes(routeRole)) {
-          protectController(agent, turn, step, decision, `same-turn-${routeRole}`);
-        }
-        if (routeRole === "executor" && frozenCard) {
-          appendEvent(agent, "odai/route-card-claimed", { cardId: frozenCard.id, turn, step });
-        }
-        controllerUpgrades.set(agent, Object.freeze({
+        stopResponsibilityScope(agent, "superseded", { step });
+        const responsibilityScope = createResponsibilityScope({
           turn,
+          startStep: step,
           role: routeRole,
           route: roleRoute,
           source: roleState.source,
           decision,
-          ...(rolePreflightVerified ? { routeValidated: true } : {}),
+          routeValidated: rolePreflightVerified,
           ...(routeRole === "executor" && frozenCard ? { cardId: frozenCard.id } : {}),
-        }));
+        });
+        responsibilityScopes.set(agent, responsibilityScope);
+        if (agent?.session) responsibilityScopeOwners.set(agent.session, agent);
+        appendEvent(agent, "odai/responsibility-scope-started", responsibilityScopeStartedEvent(responsibilityScope));
+        if (["planner", "reviewer"].includes(routeRole)) {
+          protectController(agent, turn, step, decision, `responsibility-scope-${routeRole}`, undefined, responsibilityScope.id);
+        }
+        if (routeRole === "executor" && frozenCard) {
+          appendEvent(agent, "odai/route-card-claimed", { cardId: frozenCard.id, turn, step });
+        }
         appendEvent(agent, "odai/route-upgrade", {
           turn,
           step,
           role: decision.role,
           targetRole: routeRole,
           status: "requested",
+          responsibilityScopeId: responsibilityScope.id,
+          continuationPolicy: responsibilityScope.continuationPolicy,
+          stopPolicy: responsibilityScope.stopPolicy,
           routeSource: roleState.source,
           requestedRoute: roleRoute,
           contextDigest: roleContext.digest,

@@ -76,6 +76,20 @@ test("direct is the default even when risk is present", () => {
   assert.deepEqual(decision.signals, ["risk-present", "irreversible-action", "no-independent-gap"]);
 });
 
+test("early emotional support signals never switch responsibility or model routes", () => {
+  for (const text of [
+    "我现在很焦虑，一直怀疑自己是不是做错了。",
+    "我反复想这件事，越想越内耗，完全提不起劲。",
+    "最近总是很消极，也很怕犯错，你先听我说说。",
+    "I feel anxious, keep doubting myself, and cannot stop ruminating.",
+  ]) {
+    const decision = decideRoute({ text });
+    assert.equal(decision.role, "controller", text);
+    assert.equal(decision.action, "direct", text);
+    assert.equal(decideResearchPrefetch({ text }).action, "direct", text);
+  }
+});
+
 test("research prefetch requires an evidence-grounded source gap and stays independent from the primary route", () => {
   const causal = "checkout 老超时，我看就是支付方不稳定。把客户端超时降到 3 秒、重试次数提到 3，先止血。";
   assert.equal(decideResearchPrefetch({ text: causal }).action, "direct");

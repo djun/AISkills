@@ -16,10 +16,35 @@ test("DSH version probe uses a shell for Windows npm command shims", () => {
 
   assert.equal(actual, "0.1.0-rc.7");
   assert.deepEqual(calls, [{
-    command: "dsh",
+    command: "dsh.cmd",
     args: ["-V"],
     options: { encoding: "utf8", shell: true },
   }]);
+});
+
+test("Windows keeps an explicit DSH binary unchanged", () => {
+  const calls = [];
+  const explicit = "C:\\tools\\dsh.cmd";
+  readDshVersion({
+    dsh: explicit,
+    platform: "win32",
+    execute(command, args, options) {
+      calls.push({ command, args, options });
+      return "0.1.0-rc.7\r\n";
+    },
+  });
+  spawnDsh(explicit, ["web"], {}, {
+    platform: "win32",
+    execute(command, args, options) {
+      calls.push({ command, args, options });
+      return {};
+    },
+  });
+
+  assert.deepEqual(calls, [
+    { command: explicit, args: ["-V"], options: { encoding: "utf8", shell: true } },
+    { command: explicit, args: ["web"], options: { shell: true } },
+  ]);
 });
 
 test("DSH version probe directly executes binaries outside Windows", () => {
@@ -58,7 +83,7 @@ test("DSH process spawn uses a shell only on Windows", () => {
   });
 
   assert.deepEqual(calls, [
-    { command: "dsh", args: ["web"], options: { cwd: "workspace", shell: true } },
+    { command: "dsh.cmd", args: ["web"], options: { cwd: "workspace", shell: true } },
     { command: "dsh", args: ["web"], options: { cwd: "workspace" } },
   ]);
 });
