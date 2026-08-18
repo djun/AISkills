@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "report": "plans/odai-dsh-same-turn-route-leak.md",
+  "capturedAt": "2026-08-18",
+  "source": {
+    "sessionId": "session-d8732c8c-ea3f-4b39-89b8-bbc89f4e28d9",
+    "note": "Normalized from the local DSH session log. The original session is not required to use this packet."
+  },
+  "redaction": {
+    "containsFullConversation": false,
+    "containsSystemPrompt": false,
+    "containsToolArguments": false,
+    "containsCredentials": false,
+    "containsUserMessageText": false
+  },
+  "evidence": [
+    {
+      "id": "E1",
+      "kind": "request-header",
+      "seq": 13,
+      "reason": "initial",
+      "config": {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "reasoningEffort": "xhigh",
+        "maxTokens": 500
+      },
+      "proves": "The session controller started on Sol/xhigh."
+    },
+    {
+      "id": "E2",
+      "kind": "odai-route-notice",
+      "seq": 5188,
+      "sourcePlugin": "odai-dsh-runtime",
+      "summary": "odai upgraded controller route (REVIEWER_EVIDENCE_STATE_GAP)",
+      "decision": {
+        "role": "controller",
+        "action": "upgrade",
+        "targetResponsibility": "reviewer",
+        "requestedRoute": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "reasoningEffort": "xhigh"
+        },
+        "childStarted": false,
+        "independentAcceptanceAllowed": false
+      },
+      "proves": "Odai requested an in-place reviewer route without a child."
+    },
+    {
+      "id": "E3",
+      "kind": "request-header",
+      "seq": 5189,
+      "reason": "change",
+      "config": {
+        "provider": "openai",
+        "model": "gpt-5.6-terra",
+        "reasoningEffort": "xhigh",
+        "maxTokens": 500
+      },
+      "proves": "The reviewer upgrade became the actual durable request route."
+    },
+    {
+      "id": "E4",
+      "kind": "request-header",
+      "seq": 26156,
+      "reason": "change",
+      "config": {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "maxTokens": 500
+      },
+      "attribution": "User confirmed this was part of a manual model switch, not automatic runtime recovery."
+    },
+    {
+      "id": "E5",
+      "kind": "request-header",
+      "seq": 27125,
+      "reason": "change",
+      "config": {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "reasoningEffort": "xhigh",
+        "maxTokens": 500
+      },
+      "attribution": "User confirmed this completed the manual switch back to Sol/xhigh."
+    }
+  ],
+  "mechanismScope": {
+    "confirmedFromVersion020Source": true,
+    "affectedInPlaceResponsibilities": [
+      "planner",
+      "reviewer",
+      "executor",
+      "frontend"
+    ],
+    "notOnThisPath": [
+      "researcher"
+    ],
+    "note": "Reviewer is the observed incident. The shared controllerUpgrades lifecycle is generic to in-place upgrades."
+  },
+  "routingConfigurationObservedDuringInvestigation": {
+    "planner": {
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "xhigh"
+    },
+    "reviewer": {
+      "provider": "openai",
+      "model": "gpt-5.6-terra",
+      "reasoningEffort": "xhigh"
+    },
+    "configurationMutationFoundInSession": false,
+    "note": "The only odai_routing_config call found was action=show."
+  }
+}
