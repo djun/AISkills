@@ -133,6 +133,7 @@ function requireCleanPublishedCommit() {
     "--",
     "CHANGELOG.md",
     "dsh",
+    "scripts",
     "skills/odai",
   ], { capture: true }).stdout.trim();
   if (status) throw new Error("Release-owned files are not clean. Commit and push them before publishing.");
