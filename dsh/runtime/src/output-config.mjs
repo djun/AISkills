@@ -101,6 +101,36 @@ export function effectiveOutputPolicy(configPath) {
   });
 }
 
+export const IN_PLACE_OUTPUT_RESPONSIBILITIES = Object.freeze(["planner", "executor", "frontend"]);
+
+function resolveResponsibilityOutputBudget(policy, route) {
+  if (route.maxTokens !== undefined) {
+    return Object.freeze({
+      source: "responsibility-override",
+      maxTokens: route.maxTokens,
+    });
+  }
+  if (policy?.maxTokens !== undefined) {
+    return Object.freeze({
+      source: "controller-policy",
+      maxTokens: policy.maxTokens,
+      warning: "responsibility-inherits-controller-ceiling",
+    });
+  }
+  return Object.freeze({ source: "unbounded-by-odai" });
+}
+
+export function resolveInPlaceResponsibilityOutputBudgets(policy, routes) {
+  if (!routes || typeof routes !== "object") return undefined;
+  const budgets = Object.fromEntries(IN_PLACE_OUTPUT_RESPONSIBILITIES.flatMap((responsibility) => {
+    const route = routes[responsibility];
+    return route && typeof route === "object"
+      ? [[responsibility, resolveResponsibilityOutputBudget(policy, route)]]
+      : [];
+  }));
+  return Object.keys(budgets).length > 0 ? Object.freeze(budgets) : undefined;
+}
+
 function writeOutputPolicyStore(configPath, policy) {
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   const temporary = `${configPath}.tmp-${process.pid}-${randomUUID()}`;
@@ -123,13 +153,15 @@ function preserveInvalidStore(configPath) {
   }
 }
 
-function resultFor(configPath, action, selection, recoveredInvalidStore = false) {
+function resultFor(configPath, action, selection, recoveredInvalidStore = false, responsibilityRoutes) {
+  const responsibilityBudgets = resolveInPlaceResponsibilityOutputBudgets(selection.policy, responsibilityRoutes);
   return {
     action,
     configPath,
     policy: selection.policy,
     source: selection.source,
     requiresNextTurn: action !== "show",
+    ...(responsibilityBudgets ? { responsibilityBudgets } : {}),
     ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
   };
 }
@@ -144,7 +176,7 @@ export function renderOutputPolicyPrompt(policy) {
     ...(policy.maxTokens === undefined ? [] : [
       `Each controller model request carries a provider output ceiling request of ${policy.maxTokens} tokens, which may include reasoning. Provider enforcement is not guaranteed; prioritize completion and finish before the requested ceiling.`,
     ]),
-    "This policy applies only to controller requests and the final user-facing response. It never reduces child-agent, compaction, checkpoint, or other internal context budgets. A user-configured frontend responsibility maxTokens may explicitly override this ceiling only on a routed frontend controller turn; the runtime records that exception.",
+    "This policy applies only to controller requests and the final user-facing response. It never reduces child-agent, compaction, checkpoint, or other internal context budgets. A user-configured in-place responsibility maxTokens explicitly overrides this ceiling only inside that routed planner, executor, or frontend scope; the runtime records that exception.",
     "The policy changes presentation and the requested controller budget only; it never permits omitting required results, evidence, risks, blockers, or verification.",
   ].join("\n");
 }
@@ -178,6 +210,7 @@ function resolveSetPolicy(args) {
 
 export function createOutputConfigTool(configPath, options = {}) {
   const onConfigured = typeof options.onConfigured === "function" ? options.onConfigured : () => {};
+  const responsibilityRoutesFor = typeof options.responsibilityRoutesFor === "function" ? options.responsibilityRoutesFor : () => undefined;
   const isChild = typeof options.isChild === "function"
     ? options.isChild
     : (agent) => {
@@ -237,6 +270,20 @@ export function createOutputConfigTool(configPath, options = {}) {
           source: { type: "string", enum: ["default", "persisted"] },
           requiresNextTurn: { type: "boolean" },
           recoveredInvalidStore: { type: "boolean" },
+          responsibilityBudgets: {
+            type: "object",
+            additionalProperties: false,
+            properties: Object.fromEntries(IN_PLACE_OUTPUT_RESPONSIBILITIES.map((responsibility) => [responsibility, {
+              type: "object",
+              additionalProperties: false,
+              required: ["source"],
+              properties: {
+                source: { type: "string", enum: ["responsibility-override", "controller-policy", "unbounded-by-odai"] },
+                maxTokens: { type: "integer" },
+                warning: { type: "string", enum: ["responsibility-inherits-controller-ceiling"] },
+              },
+            }])),
+          },
         },
       },
       render(_args, value) {
@@ -244,11 +291,20 @@ export function createOutputConfigTool(configPath, options = {}) {
           `concise=${value.policy.concise ? "on" : "off"}`,
           ...(value.policy.maxTokens === undefined ? [] : [`maxTokens=${value.policy.maxTokens}`]),
         ].join(", ");
+        const responsibilityBudgets = Object.entries(value.responsibilityBudgets ?? {});
+        const configuredResponsibilities = responsibilityBudgets.map(([responsibility, budget]) => (
+          `${responsibility}=${budget.maxTokens === undefined ? "no Odai maxTokens" : `maxTokens=${budget.maxTokens}`} [${budget.source}]`
+        ));
+        const inheritedWarnings = responsibilityBudgets
+          .filter(([, budget]) => budget.warning === "responsibility-inherits-controller-ceiling")
+          .map(([responsibility]) => ` Warning: ${responsibility} has no explicit maxTokens and inherits the controller ceiling when routed in-place; providers may count reasoning and truncate substantial work.`);
         return [{
           type: "text",
           text: [
             `${value.action === "show" ? "Current" : "Updated"} Odai controller output policy (${value.source}): ${settings}.`,
             ...(value.policy.maxTokens === undefined ? [] : [" maxTokens is sent as a provider request ceiling; strict provider compliance is not guaranteed and must be checked from usage."]),
+            ...(configuredResponsibilities.length > 0 ? [` In-place responsibility ceilings: ${configuredResponsibilities.join("; ")}.`] : []),
+            ...inheritedWarnings,
             ...(value.recoveredInvalidStore ? [" An invalid prior store was preserved and replaced."] : []),
             ...(value.requiresNextTurn ? [" The change applies from the next user turn."] : []),
           ].join(""),
@@ -266,7 +322,7 @@ export function createOutputConfigTool(configPath, options = {}) {
         if (args.mode !== undefined || args.concise !== undefined || args.maxTokens !== undefined) {
           throw new TypeError("mode, concise, and maxTokens must be omitted for show");
         }
-        return Promise.resolve(resultFor(configPath, "show", effectiveOutputPolicy(configPath)));
+        return Promise.resolve(resultFor(configPath, "show", effectiveOutputPolicy(configPath), false, responsibilityRoutesFor()));
       }
       if (args.action === "remove"
         && (args.mode !== undefined || args.concise !== undefined || args.maxTokens !== undefined)) {
@@ -295,7 +351,7 @@ export function createOutputConfigTool(configPath, options = {}) {
           policy: selection.policy,
           ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
         });
-        return Promise.resolve(resultFor(configPath, args.action, selection, recoveredInvalidStore));
+        return Promise.resolve(resultFor(configPath, args.action, selection, recoveredInvalidStore, responsibilityRoutesFor()));
       } finally {
         releaseLock();
       }

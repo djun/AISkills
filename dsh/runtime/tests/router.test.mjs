@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  OUTPUT_LIMIT_CONTINUATION_REASON,
   classifyImplementationAuthorization,
+  classifyResponsibilityInterruptionText,
   decideResearchPrefetch,
   decideRoute,
   extractLatestUserText,
@@ -67,6 +69,32 @@ test("implementation authorization distinguishes delivery, plan-only, and unknow
   assert.equal(classifyImplementationAuthorization("Please update the dependency").status, "authorized");
   assert.equal(classifyImplementationAuthorization("你做了吗？").status, "unknown");
   assert.equal(classifyImplementationAuthorization("你觉得这个方向怎么样").status, "unknown");
+});
+
+test("output-limit interruption text only resumes on a pure continuation", () => {
+  for (const text of ["继续", "请继续完成刚才的任务", "resume the interrupted work", "keep going"]) {
+    assert.equal(classifyResponsibilityInterruptionText(text), "continue", text);
+  }
+  for (const text of ["又被截断，到底是什么问题？", "怎么断掉之后就不继续设计了？", "token limit 还是 500 吗？"]) {
+    assert.equal(classifyResponsibilityInterruptionText(text), "preserve", text);
+  }
+  for (const text of ["继续修复登录页", "顺便改一下 API", "开始另一个任务"]) {
+    assert.equal(classifyResponsibilityInterruptionText(text), "clear", text);
+  }
+});
+
+test("verified output-limit interruptions restore each in-place responsibility", () => {
+  for (const responsibility of ["planner", "executor", "frontend"]) {
+    const decision = decideRoute({
+      text: "继续\n\nReferenced earlier task context that is not itself a pure continuation.",
+      interruption: { responsibility, continuationText: "继续", reason: "max-tokens" },
+    });
+    assert.equal(decision.role, "controller", responsibility);
+    assert.equal(decision.action, "upgrade", responsibility);
+    assert.equal(decision.targetRole, responsibility, responsibility);
+    assert.equal(decision.reasonCode, OUTPUT_LIMIT_CONTINUATION_REASON, responsibility);
+    assert.deepEqual(decision.signals, ["verified-output-limit-interruption", "explicit-continuation"], responsibility);
+  }
 });
 
 test("direct is the default even when risk is present", () => {
@@ -214,7 +242,7 @@ test("high-impact observe and route failure notices require a read-only decision
   });
   assert.match(upgrade, /action: upgrade/u);
   assert.match(upgrade, /no child was started/u);
-  assert.match(upgrade, /requested controller route: openai\/gpt-5\.6-sol/u);
+  assert.match(upgrade, /requested controller route: openai\/gpt-5\.6-sol \(reasoning: high, maxTokens: inherited from Controller policy\)/u);
 
   const failure = renderRouteFailureNotice(decision, "provider unavailable");
   assert.match(failure, /High-impact fail-closed protection is active/u);
@@ -428,6 +456,13 @@ test("frontend continuation inherits only the immediately referenced substantive
   );
   assert.match(continued, /Referenced earlier frontend user context/u);
   assert.equal(decideRoute({ text: continued }).targetRole, "frontend");
+
+  const explicitContinuation = extractRoutingText(
+    [user("继续")],
+    [{ type: "user/message", data: user(incident) }],
+  );
+  assert.match(explicitContinuation, /Referenced earlier frontend user context/u);
+  assert.equal(decideRoute({ text: explicitContinuation }).targetRole, "frontend");
 
   const unrelated = extractRoutingText(
     [user("你能做不？")],

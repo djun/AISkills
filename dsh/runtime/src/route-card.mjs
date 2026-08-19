@@ -5,7 +5,7 @@ export const ROUTE_CARD_PROMPT = [
   "Use odai_route_card only after planning has frozen a concrete implementation boundary and executor separation has an observable net benefit.",
   "After the canonical executor reassessment proves observable net benefit, freeze the card before implementation continues. Otherwise continue directly without a card or process narration.",
   "A card must preserve the target, decisive evidence, allowed and forbidden scope, acceptance conditions, and stop condition. Do not freeze a card merely because an executor model is configured or cheaper.",
-  "The controller owns the card. Child agents may not create, replace, or clear it. A card is claimed for one executor attempt and consumed only after an applied executor route receipt; validation, provider, or receipt failure releases the claim for retry.",
+  "The controller owns the card. Child agents may not create, replace, or clear it. A card is claimed for one executor attempt and consumed only after an applied executor route receipt; validation, provider, or receipt failure releases the claim for retry. A verified provider max-token interruption may reclaim that same card only after a direct user continuation, without changing its scope or authorization. A later explicit clear is terminal and cannot be undone by a delayed release.",
   "When the original current task already authorizes implementation, a planner that freezes a card must submit an executor responsibility gap so implementation continues automatically in the same user task. Ask the user only for a new task, plan-only request, changed scope, or missing user-owned authorization.",
 ].join("\n");
 
@@ -48,9 +48,15 @@ function normalizeCard(args, authorization) {
 }
 
 function routeCardInState(events, acceptedStates) {
+  const source = Array.isArray(events) ? events : [];
+  const permanentlyCleared = new Set(source.flatMap((event) => (
+    event?.type === "odai/route-card-cleared" && typeof event.data?.cardId === "string"
+      ? [event.data.cardId]
+      : []
+  )));
   const latestState = new Map();
-  for (let index = (Array.isArray(events) ? events.length : 0) - 1; index >= 0; index -= 1) {
-    const event = events[index];
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const event = source[index];
     const cardId = event?.data?.cardId;
     if (typeof cardId === "string" && !latestState.has(cardId)) {
       if (event.type === "odai/route-card-claim-released") latestState.set(cardId, "active");
@@ -60,7 +66,7 @@ function routeCardInState(events, acceptedStates) {
     if (event?.type !== "odai/route-card-frozen") continue;
     const card = event.data?.card;
     if (card?.frozen !== true || typeof card.id !== "string") continue;
-    const state = latestState.get(card.id) ?? "active";
+    const state = permanentlyCleared.has(card.id) ? "closed" : (latestState.get(card.id) ?? "active");
     if (acceptedStates.has(state)) return card;
   }
   return undefined;
@@ -72,6 +78,16 @@ export function activeRouteCard(events) {
 
 export function unsettledRouteCard(events) {
   return routeCardInState(events, new Set(["active", "claimed"]));
+}
+
+export function routeCardById(events, cardId) {
+  if (typeof cardId !== "string" || cardId === "") return undefined;
+  for (let index = (Array.isArray(events) ? events.length : 0) - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const card = event?.data?.card;
+    if (event?.type === "odai/route-card-frozen" && card?.id === cardId && card.frozen === true) return card;
+  }
+  return undefined;
 }
 
 export function createRouteCardTool(options = {}) {

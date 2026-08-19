@@ -5,6 +5,8 @@ import {
   claimResponsibilityScope,
   createResponsibilityScope,
   latestDanglingResponsibilityScope,
+  latestStoppedResponsibilityScope,
+  pendingResponsibilityInterruption,
   pendingResponsibilityScopeRestoration,
   responsibilityScopeOwnsRequest,
   responsibilityScopeStopReason,
@@ -137,13 +139,84 @@ test("durable scope evidence recovers the base route once and never revives a st
   });
   assert.equal(latestDanglingResponsibilityScope(events), undefined);
   assert.equal(pendingResponsibilityScopeRestoration(events).scopeId, "scope-1");
-  events.push({ type: "request/header", data: { header: { config: baseRoute }, reason: "change" } });
-  assert.equal(pendingResponsibilityScopeRestoration(events), undefined);
-
-  const noEffectiveRequest = events.slice(0, -1);
-  noEffectiveRequest.push({
+  events.push({ type: "request/header", data: { header: { config: roleRoute }, reason: "change" } });
+  assert.equal(pendingResponsibilityScopeRestoration(events).scopeId, "scope-1");
+  events.push({
+    type: "odai/responsibility-scope-restored",
+    data: { scopeId: "another-scope", status: "applied", actualRoute: baseRoute },
+  });
+  assert.equal(pendingResponsibilityScopeRestoration(events).scopeId, "scope-1");
+  events.push({
     type: "odai/responsibility-scope-restored",
     data: { scopeId: "scope-1", status: "unverified", stopReason: "no-effective-request" },
   });
-  assert.equal(pendingResponsibilityScopeRestoration(noEffectiveRequest), undefined);
+  assert.equal(pendingResponsibilityScopeRestoration(events).scopeId, "scope-1");
+  events.push({
+    type: "odai/responsibility-scope-restored",
+    data: { scopeId: "scope-1", status: "mismatch", actualRoute: roleRoute },
+  });
+  assert.equal(pendingResponsibilityScopeRestoration(events).scopeId, "scope-1");
+  events.push({
+    type: "odai/responsibility-scope-restored",
+    data: { scopeId: "scope-1", status: "applied", actualRoute: baseRoute },
+  });
+  assert.equal(pendingResponsibilityScopeRestoration(events), undefined);
+});
+
+test("verified output-limit interruptions remain resumable until consumed or cleared", () => {
+  const resumed = createResponsibilityScope({
+    turn: 3,
+    startStep: 1,
+    role: "frontend",
+    route: roleRoute,
+    source: "persisted-mapping",
+    decision,
+    resumeOfScopeId: "scope-1",
+  });
+  assert.equal(resumed.resumeOfScopeId, "scope-1");
+
+  const events = [
+    {
+      type: "odai/responsibility-scope-stopped",
+      data: { scopeId: "scope-1", turn: 1, role: "frontend", reason: "terminal-response" },
+    },
+    {
+      type: "odai/responsibility-interrupted",
+      data: { scopeId: "scope-1", turn: 1, step: 3, responsibility: "frontend", reason: "max-tokens" },
+    },
+  ];
+  assert.equal(latestStoppedResponsibilityScope(events, 1).scopeId, "scope-1");
+  assert.equal(pendingResponsibilityInterruption(events).responsibility, "frontend");
+
+  events.push({
+    type: "odai/responsibility-interruption-consumed",
+    data: { scopeId: "scope-1", turn: 3, step: 1, responsibility: "frontend" },
+  });
+  assert.equal(pendingResponsibilityInterruption(events), undefined);
+
+  events.push({
+    type: "odai/responsibility-interrupted",
+    data: { scopeId: "scope-2", turn: 4, step: 2, responsibility: "planner", reason: "max-tokens" },
+  });
+  events.push({
+    type: "odai/responsibility-interruption-cleared",
+    data: { scopeId: "scope-2", turn: 5, step: 1, responsibility: "planner" },
+  });
+  assert.equal(pendingResponsibilityInterruption(events), undefined);
+
+  const superseded = [
+    {
+      type: "odai/responsibility-interrupted",
+      data: { scopeId: "old-scope", turn: 1, step: 1, responsibility: "planner", reason: "max-tokens" },
+    },
+    {
+      type: "odai/responsibility-interrupted",
+      data: { scopeId: "new-scope", turn: 2, step: 1, responsibility: "frontend", reason: "max-tokens" },
+    },
+    {
+      type: "odai/responsibility-interruption-consumed",
+      data: { scopeId: "new-scope", turn: 3, step: 1, responsibility: "frontend" },
+    },
+  ];
+  assert.equal(pendingResponsibilityInterruption(superseded), undefined);
 });

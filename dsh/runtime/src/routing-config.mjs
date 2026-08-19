@@ -13,6 +13,10 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
 import { requireModelRoute, sameModelRoute } from "./model-route.mjs";
+import {
+  IN_PLACE_OUTPUT_RESPONSIBILITIES,
+  resolveInPlaceResponsibilityOutputBudgets,
+} from "./output-config.mjs";
 
 export const CONFIGURABLE_ROLES = Object.freeze(["researcher", "planner", "executor", "reviewer", "frontend"]);
 export const ROUTING_CONFIG_PROMPT = [
@@ -210,7 +214,8 @@ function routeSchema(required) {
   };
 }
 
-function resultFor(configPath, action, snapshot, responsibility, recoveredInvalidStore = false, latestRoute) {
+function resultFor(configPath, action, snapshot, responsibility, recoveredInvalidStore = false, latestRoute, outputPolicy) {
+  const responsibilityBudgets = resolveInPlaceResponsibilityOutputBudgets(outputPolicy, snapshot.roles);
   return {
     action,
     ...(responsibility ? { responsibility } : {}),
@@ -218,6 +223,7 @@ function resultFor(configPath, action, snapshot, responsibility, recoveredInvali
     roles: snapshot.roles,
     sources: snapshot.sources,
     requiresNextTurn: action !== "show",
+    ...(responsibilityBudgets ? { responsibilityBudgets } : {}),
     ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
     ...(latestRoute ? { latestRoute } : {}),
   };
@@ -227,6 +233,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
   const onConfigured = typeof options.onConfigured === "function" ? options.onConfigured : () => {};
   const configuredRoles = options.configuredRoles ?? {};
   const latestRouteFor = typeof options.latestRouteFor === "function" ? options.latestRouteFor : () => undefined;
+  const outputPolicyFor = typeof options.outputPolicyFor === "function" ? options.outputPolicyFor : () => undefined;
   const resolveCallConfig = typeof options.resolveCallConfig === "function" ? options.resolveCallConfig : undefined;
   return {
     name: "odai_routing_config",
@@ -236,6 +243,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
       "Never choose a provider, model, reasoning effort, token limit, or price on the user's behalf.",
       "Researcher routing is task-gated but not price-aware; its mapping does not guarantee lower cost.",
       "For set/remove, handle one responsibility per call. Persisted mappings are shared by the Odai DSH Plugin and Agent and apply from the next user turn.",
+      "Results expose configured in-place responsibility ceilings and warn when planner, executor, or frontend mappings without maxTokens inherit the controller ceiling; never invent an override.",
     ].join(" "),
     parameters: {
       type: "object",
@@ -266,7 +274,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
         },
         maxTokens: {
           type: "integer",
-          description: "Optional positive output limit explicitly supplied by the user. It limits routed child requests; inside a routed frontend controller responsibility scope it explicitly overrides the global controller ceiling only for that scope. Other in-place responsibility scopes remain governed by the controller policy."
+          description: "Optional positive output limit explicitly supplied by the user. It limits routed child requests and explicitly overrides the global controller ceiling only inside the same planner, executor, or frontend responsibility scope when that responsibility runs in-place."
         },
       },
     },
@@ -294,6 +302,20 @@ export function createRoutingConfigTool(configPath, options = {}) {
           },
           requiresNextTurn: { type: "boolean" },
           recoveredInvalidStore: { type: "boolean" },
+          responsibilityBudgets: {
+            type: "object",
+            additionalProperties: false,
+            properties: Object.fromEntries(IN_PLACE_OUTPUT_RESPONSIBILITIES.map((responsibility) => [responsibility, {
+              type: "object",
+              additionalProperties: false,
+              required: ["source"],
+              properties: {
+                source: { type: "string", enum: ["responsibility-override", "controller-policy", "unbounded-by-odai"] },
+                maxTokens: { type: "integer" },
+                warning: { type: "string", enum: ["responsibility-inherits-controller-ceiling"] },
+              },
+            }])),
+          },
           latestRoute: {
             type: "object",
             additionalProperties: false,
@@ -302,6 +324,8 @@ export function createRoutingConfigTool(configPath, options = {}) {
               turn: { type: "integer" },
               step: { type: "integer" },
               responsibility: { type: "string", enum: [...CONFIGURABLE_ROLES] },
+              responsibilityScopeId: { type: "string" },
+              routeCardId: { type: "string" },
               status: { type: "string", enum: ["applied", "mismatch", "unverified", "fallback"] },
               taskStatus: { type: "string", enum: ["completed", "fallback"] },
               routeMode: { type: "string", enum: ["inline", "same-turn", "child"] },
@@ -327,17 +351,32 @@ export function createRoutingConfigTool(configPath, options = {}) {
             return `${role}: ${route.provider}/${route.model}${options.length > 0 ? ` (${options.join(", ")})` : ""} [${value.sources[role]}]`;
           })
           .join("\n") || "No Odai responsibility models are configured.";
+        const responsibilityBudgets = Object.entries(value.responsibilityBudgets ?? {});
+        const configuredResponsibilities = responsibilityBudgets.length > 0
+          ? `\nIn-place responsibility ceilings: ${responsibilityBudgets.map(([responsibility, budget]) => (
+              `${responsibility}=${budget.maxTokens === undefined ? "no Odai maxTokens" : `maxTokens=${budget.maxTokens}`} [${budget.source}]`
+            )).join("; ")}.`
+          : "";
+        const inheritedWarnings = responsibilityBudgets
+          .filter(([, budget]) => budget.warning === "responsibility-inherits-controller-ceiling")
+          .map(([responsibility]) => `\nWarning: ${responsibility} has no explicit maxTokens and inherits the controller ceiling when routed in-place; providers may count reasoning and truncate substantial work.`)
+          .join("");
         const latestRoute = value.latestRoute
           ? [
               "\nLatest current-session responsibility route receipt:",
               `responsibility=${value.latestRoute.responsibility} status=${value.latestRoute.status} mode=${value.latestRoute.routeMode ?? "unknown"}`,
               `routeSource=${value.latestRoute.routeSource} fallbackUsed=${String(value.latestRoute.fallbackUsed)}`,
+              ...(value.latestRoute.responsibilityScopeId ? [`responsibilityScope=${value.latestRoute.responsibilityScopeId}`] : []),
+              ...(value.latestRoute.routeCardId ? [`routeCard=${value.latestRoute.routeCardId}`] : []),
               ...(value.latestRoute.taskStatus ? [`taskStatus=${value.latestRoute.taskStatus}`] : []),
               ...(value.latestRoute.taskStopReason ? [`taskStopReason=${value.latestRoute.taskStopReason}`] : []),
               ...(value.latestRoute.error ? [`routeError=${value.latestRoute.error}`] : []),
               ...(value.latestRoute.taskError ? [`taskError=${value.latestRoute.taskError}`] : []),
               ...(value.latestRoute.actualRoute
-                ? [`actual=${value.latestRoute.actualRoute.provider}/${value.latestRoute.actualRoute.model} (reasoningEffort=${value.latestRoute.actualRoute.reasoningEffort ?? "unspecified"})`]
+                ? [`actual=${value.latestRoute.actualRoute.provider}/${value.latestRoute.actualRoute.model} (${[
+                    `reasoningEffort=${value.latestRoute.actualRoute.reasoningEffort ?? "unspecified"}`,
+                    ...(value.latestRoute.actualRoute.maxTokens === undefined ? [] : [`maxTokens=${value.latestRoute.actualRoute.maxTokens}`]),
+                  ].join(", ")})`]
                 : ["actual=<unverified>"]),
             ].join("\n")
           : value.action === "show"
@@ -348,6 +387,8 @@ export function createRoutingConfigTool(configPath, options = {}) {
           text: [
             `${value.action === "show" ? "Current" : "Updated"} Odai routing configuration:\n${mapping}`,
             ...(value.recoveredInvalidStore ? ["\nAn invalid prior store was preserved and replaced."] : []),
+            configuredResponsibilities,
+            inheritedWarnings,
             ...(value.roles.researcher ? ["\nResearcher routing is task-gated but not price-aware. This mapping does not guarantee lower cost; compare actual provider prices and measured usage."] : []),
             latestRoute,
             ...(value.requiresNextTurn ? ["\nThe change applies from the next user turn."] : []),
@@ -372,6 +413,7 @@ export function createRoutingConfigTool(configPath, options = {}) {
           undefined,
           false,
           latestRouteFor(execution.agent),
+          outputPolicyFor(),
         ));
       }
       if (!CONFIGURABLE_ROLES.includes(args.responsibility)) {
@@ -417,6 +459,8 @@ export function createRoutingConfigTool(configPath, options = {}) {
             effectiveRoutingSnapshot(configPath, configuredRoles),
             args.responsibility,
             recoveredInvalidStore,
+            undefined,
+            outputPolicyFor(),
           );
         } finally {
           releaseLock();

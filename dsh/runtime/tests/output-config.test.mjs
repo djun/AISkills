@@ -9,6 +9,7 @@ import {
   effectiveOutputPolicy,
   readOutputPolicyStore,
   renderOutputPolicyPrompt,
+  resolveInPlaceResponsibilityOutputBudgets,
   resolveOutputPolicy,
 } from "../src/output-config.mjs";
 import { selectSharedOutputPolicyForTurn } from "../src/output-policy-state.mjs";
@@ -28,6 +29,34 @@ test("output policy validates explicit user-owned values and renders bounded gui
   assert.match(renderOutputPolicyPrompt({ concise: true }), /never permits omitting required results/u);
   assert.match(renderOutputPolicyPrompt({ concise: true }), /never reduces child-agent, compaction, checkpoint/u);
   assert.match(renderOutputPolicyPrompt({ concise: false, maxTokens: 2_500 }), /provider enforcement is not guaranteed/iu);
+});
+
+test("in-place responsibility budgets report unconfigured, inherited, and explicit ceilings", () => {
+  assert.equal(resolveInPlaceResponsibilityOutputBudgets({ concise: true }, undefined), undefined);
+  assert.deepEqual(
+    resolveInPlaceResponsibilityOutputBudgets({ concise: true }, {
+      planner: { provider: "planner", model: "model" },
+      researcher: { provider: "researcher", model: "model", maxTokens: 512 },
+    }),
+    { planner: { source: "unbounded-by-odai" } },
+  );
+  assert.deepEqual(
+    resolveInPlaceResponsibilityOutputBudgets({ concise: true, maxTokens: 500 }, {
+      planner: { provider: "planner", model: "model" },
+      executor: { provider: "executor", model: "model", maxTokens: 8_192 },
+      frontend: { provider: "frontend", model: "model", maxTokens: 16_384 },
+      reviewer: { provider: "reviewer", model: "model" },
+    }),
+    {
+      planner: {
+        source: "controller-policy",
+        maxTokens: 500,
+        warning: "responsibility-inherits-controller-ceiling",
+      },
+      executor: { source: "responsibility-override", maxTokens: 8_192 },
+      frontend: { source: "responsibility-override", maxTokens: 16_384 },
+    },
+  );
 });
 
 test("output policy store is atomic, repairable, locked, and resettable", async () => {

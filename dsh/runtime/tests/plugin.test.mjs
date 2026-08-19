@@ -880,7 +880,7 @@ test("only explicit Odai responsibility labels route manual children", async () 
   await handler({ agent: mismatchedPlanner, turn: 1, step: 1 }, async () => inherited);
   ctx.captured.handlers.get("session/event")(mismatchedPlanner.session, {
     type: "request/header",
-    data: { header: mismatchedHeader },
+    data: { turn: 1, step: 1, header: mismatchedHeader },
   });
   assert.throws(
     () => ctx.captured.handlers.get("agent/turn-stopping")({ agent: mismatchedPlanner, turn: 1 }),
@@ -1051,8 +1051,13 @@ test("controller output policy is default-concise, turn-stable, request-bounded,
     configuredMaxTokens: 2_500,
     priorMaxTokens: 8_000,
     effectiveMaxTokens: 2_500,
+    budgetSource: "controller-policy",
     semantics: "provider-request-ceiling",
   });
+  assert.equal(
+    events.find((event) => event.type === "odai/output-budget-applied" && event.data.step === 2).data.budgetSource,
+    "preexisting-request-ceiling",
+  );
 
   const child = {
     phase: { turn: 1 },
@@ -1763,9 +1768,13 @@ test("execute mode loads without subagents and reports an unconfigured reviewer 
 });
 
 test("configured auto mode upgrades the current controller turn without a child", async () => {
+  const outputConfigPath = resolve(testDshHome, "planner-output-override", "output.json");
+  mkdirSync(resolve(outputConfigPath, ".."), { recursive: true });
+  writeFileSync(outputConfigPath, `${JSON.stringify({ schemaVersion: 1, policy: { concise: true, maxTokens: 500 } })}\n`, "utf8");
   const ctx = fakeContext();
   apply(ctx, {
     skillPath,
+    output: { configPath: outputConfigPath },
     routing: {
       roles: {
         planner: {
@@ -1801,7 +1810,7 @@ test("configured auto mode upgrades the current controller turn without a child"
 
   assert.match(result.messages[1].content[0].text, /action: upgrade/u);
   assert.match(result.messages[1].content[0].text, /no child was started/u);
-  assert.match(result.messages[1].content[0].text, /requested controller route: openai\/gpt-5\.6-sol \(reasoning: high\)/u);
+  assert.match(result.messages[1].content[0].text, /requested controller route: openai\/gpt-5\.6-sol \(reasoning: high, maxTokens: 2048\)/u);
   assert.deepEqual(events.map((event) => event.type), [
     "odai/route-decided",
     "odai/route-context",
@@ -1827,12 +1836,13 @@ test("configured auto mode upgrades the current controller turn without a child"
     maxTokens: 2_048,
   });
 
-  const inherited = { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" };
+  const inherited = { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max", maxTokens: 500 };
   const plannerRequest = await request({ agent, turn: 1, step: 1 }, async () => inherited);
   assert.deepEqual(plannerRequest, {
     provider: "openai",
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
+    maxTokens: 2_048,
   });
   actualHeader = { config: plannerRequest };
   ctx.captured.handlers.get("session/event")(agent.session, {
@@ -1843,7 +1853,17 @@ test("configured auto mode upgrades the current controller turn without a child"
   assert.equal(plannerReceipt.status, "applied");
   assert.equal(plannerReceipt.responsibility, "planner");
   assert.deepEqual(plannerReceipt.actualRoute, plannerRequest);
-  assert.equal(plannerReceipt.requestedRoute.maxTokens, undefined);
+  assert.equal(plannerReceipt.requestedRoute.maxTokens, 2_048);
+  assert.deepEqual(events.find((event) => event.type === "odai/output-budget-overridden").data, {
+    turn: 1,
+    step: 1,
+    responsibility: "planner",
+    responsibilityMaxTokens: 2_048,
+    configuredControllerMaxTokens: 500,
+    effectiveMaxTokens: 2_048,
+    budgetSource: "responsibility-override",
+    semantics: "explicit-responsibility-override",
+  });
 
   ctx.captured.handlers.get("session/event")(agent.session, {
     type: "assistant/message",
@@ -1854,17 +1874,23 @@ test("configured auto mode upgrades the current controller turn without a child"
     provider: "openai",
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
+    maxTokens: 2_048,
   });
   actualHeader = { config: plannerToolContinuation };
   ctx.captured.handlers.get("session/event")(agent.session, {
     type: "request/header",
-    data: { header: actualHeader },
+    data: { turn: 1, step: 2, header: actualHeader },
   });
   ctx.captured.handlers.get("session/event")(agent.session, {
     type: "assistant/message",
     data: { turn: 1, step: 2, message: { content: [{ type: "text", text: "mode: direct" }] } },
   });
   assert.equal(events.findLast((event) => event.type === "odai/responsibility-scope-stopped").data.reason, "terminal-response");
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "turn/end",
+    data: { turn: 1, reason: { kind: "max-tokens" } },
+  });
+  assert.equal(events.some((event) => event.type === "odai/responsibility-interrupted"), false);
   assert.deepEqual(await request({ agent, turn: 1, step: 3 }, async () => inherited), inherited);
 
   await preStep({ agent, turn: 2, step: 1, signal }, async () => ({
@@ -1881,7 +1907,7 @@ test("configured auto mode upgrades the current controller turn without a child"
   actualHeader = { config: queuedScopeRequest };
   ctx.captured.handlers.get("session/event")(agent.session, {
     type: "request/header",
-    data: { header: actualHeader },
+    data: { turn: 3, step: 1, header: actualHeader },
   });
   ctx.captured.handlers.get("session/event")(agent.session, {
     type: "assistant/message",
@@ -1951,13 +1977,83 @@ test("resume restores every in-place responsibility's base route without revivin
     ), base, role);
     ctx.captured.handlers.get("session/event")(agent.session, {
       type: "request/header",
-      data: { header: { config: base } },
+      data: { turn: 2, step: 1, header: { config: base } },
     });
     const restoration = events.findLast((event) => event.type === "odai/responsibility-scope-restored").data;
     assert.equal(restoration.status, "applied", role);
     assert.deepEqual(restoration.actualRoute, base, role);
     assert.equal(events.some((event) => event.type === "odai/route-applied"), false, role);
   }
+});
+
+test("a positionless late header cannot erase durable base-route restoration", async () => {
+  const ctx = fakeContext();
+  apply(ctx, { skillPath });
+  const base = { provider: "openai", model: "controller", reasoningEffort: "high", maxTokens: 500 };
+  const temporary = { provider: "openai", model: "planner", reasoningEffort: "xhigh", maxTokens: 2_048 };
+  const events = [
+    {
+      type: "odai/responsibility-scope-stopped",
+      data: {
+        scopeId: "scope-late-header",
+        turn: 1,
+        startStep: 1,
+        stopStep: 1,
+        role: "planner",
+        requestedRoute: temporary,
+        baseRoute: base,
+        temporaryRoute: temporary,
+        reason: "terminal-response",
+      },
+    },
+    { type: "request/header", data: { header: { config: temporary }, reason: "change" } },
+  ];
+  let actualHeader = { config: temporary };
+  const agent = {
+    session: {
+      header: {},
+      events,
+      requestHeader() { return actualHeader; },
+      append(type, data) { events.push({ type, data }); },
+    },
+  };
+  const signal = new AbortController().signal;
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 2, step: 1, signal },
+    async () => ({ kind: "enter", messages: [userMessage("告诉我当前状态")] }),
+  );
+  const restoredRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 2, step: 1, signal },
+    async () => temporary,
+  );
+  assert.deepEqual(restoredRequest, base);
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/chunk",
+    data: { turn: 2, step: 1, chunk: { type: "block-start" } },
+  });
+  const mismatch = events.find((event) => event.type === "odai/responsibility-scope-restored").data;
+  assert.equal(mismatch.scopeId, "scope-late-header");
+  assert.equal(mismatch.status, "mismatch");
+  assert.match(ctx.captured.guards[0]({ callId: "write-1", agent, name: "write" }), /^ODAI_HIGH_IMPACT_ROUTE_BLOCKED:/u);
+
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 3, step: 1, signal },
+    async () => ({ kind: "enter", messages: [userMessage("继续报告当前状态")] }),
+  );
+  const retriedRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 3, step: 1, signal },
+    async () => temporary,
+  );
+  assert.deepEqual(retriedRequest, base);
+  actualHeader = { config: retriedRequest };
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/chunk",
+    data: { turn: 3, step: 1, chunk: { type: "block-start" } },
+  });
+  const restored = events.findLast((event) => event.type === "odai/responsibility-scope-restored").data;
+  assert.equal(restored.scopeId, "scope-late-header");
+  assert.equal(restored.status, "applied");
+  assert.deepEqual(restored.actualRoute, base);
 });
 
 test("a planner mapping identical to the controller stays inline without a duplicate model call", async () => {
@@ -1997,7 +2093,7 @@ test("a planner mapping identical to the controller stays inline without a dupli
   assert.deepEqual(request, controller);
   assert.equal(routeResolutions, 1);
   actualHeader = { config: request };
-  ctx.captured.handlers.get("session/event")(agent.session, { type: "request/header", data: { header: actualHeader } });
+  ctx.captured.handlers.get("session/event")(agent.session, { type: "request/header", data: { turn: 1, step: 1, header: actualHeader } });
   const receipt = events.find((event) => event.type === "odai/route-applied").data;
   assert.equal(receipt.routeMode, "inline");
   assert.equal(receipt.status, "applied");
@@ -2116,7 +2212,7 @@ test("an authorized planner card and executor gap continue automatically without
   const ctx = fakeContext();
   apply(ctx, {
     skillPath,
-    routing: { roles: { executor: { provider: "openai", model: "executor-model", reasoningEffort: "high" } } },
+    routing: { roles: { executor: { provider: "openai", model: "executor-model", reasoningEffort: "high", maxTokens: 8_192 } } },
   });
   const original = userMessage("请修复并验证当前路由问题");
   const events = [
@@ -2167,10 +2263,74 @@ test("an authorized planner card and executor gap continue automatically without
     { agent, turn: 1, step: 2, signal },
     async () => ({ provider: "base", model: "controller" }),
   );
-  assert.deepEqual(executorRequest, { provider: "openai", model: "executor-model", reasoningEffort: "high" });
+  assert.deepEqual(executorRequest, {
+    provider: "openai",
+    model: "executor-model",
+    reasoningEffort: "high",
+    maxTokens: 8_192,
+  });
+  assert.deepEqual(events.find((event) => event.type === "odai/output-budget-overridden").data, {
+    turn: 1,
+    step: 2,
+    responsibility: "executor",
+    responsibilityMaxTokens: 8_192,
+    effectiveMaxTokens: 8_192,
+    budgetSource: "responsibility-override",
+    semantics: "explicit-responsibility-override",
+  });
   actualHeader = { config: executorRequest };
-  ctx.captured.handlers.get("session/event")(agent.session, { type: "request/header", data: { header: actualHeader } });
+  ctx.captured.handlers.get("session/event")(agent.session, { type: "request/header", data: { turn: 1, step: 2, header: actualHeader } });
   assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 1);
+  const interruptedScope = events.find((event) => event.type === "odai/responsibility-scope-started").data;
+  assert.equal(events.find((event) => event.type === "odai/route-applied").data.routeCardId, frozen.card.id);
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/chunk",
+    data: { turn: 1, step: 2, chunk: { type: "usage", usage: { inputTokens: 500, outputTokens: 8_192 } } },
+  });
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/message",
+    data: {
+      turn: 1,
+      step: 2,
+      usage: { inputTokens: 500, outputTokens: 8_192 },
+      message: { content: [{ type: "text", text: "truncated executor result" }] },
+    },
+  });
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "turn/end",
+    data: { turn: 1, reason: { kind: "max-tokens" } },
+  });
+  const interruption = events.find((event) => event.type === "odai/responsibility-interrupted").data;
+  assert.equal(interruption.scopeId, interruptedScope.scopeId);
+  assert.equal(interruption.responsibility, "executor");
+  assert.equal(interruption.routeCardId, frozen.card.id);
+  assert.equal(interruption.routeCard.id, frozen.card.id);
+
+  const continuation = { ...userMessage("继续"), id: "executor-continuation" };
+  events.push(
+    { type: "turn/start", seq: 100, data: { turn: 2 } },
+    { type: "user/message", seq: 101, data: continuation },
+  );
+  agent.phase = { turn: 2, step: 1 };
+  const resumed = await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 2, step: 1, signal },
+    async () => ({ kind: "enter", messages: [continuation] }),
+  );
+  assert.match(resumed.messages[1].content[0].text, /RESPONSIBILITY_OUTPUT_LIMIT_CONTINUATION/u);
+  assert.match(resumed.messages[1].content[0].text, new RegExp(frozen.card.id, "u"));
+  const resumedScope = events.findLast((event) => event.type === "odai/responsibility-scope-started").data;
+  assert.equal(resumedScope.resumeOfScopeId, interruptedScope.scopeId);
+  assert.equal(events.filter((event) => event.type === "odai/route-card-claimed").length, 2);
+  assert.equal(events.findLast((event) => event.type === "odai/route-card-claimed").data.reason, "output-limit-continuation");
+  const resumedRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 2, step: 1, signal },
+    async () => ({ provider: "base", model: "controller" }),
+  );
+  assert.deepEqual(resumedRequest, executorRequest);
+  actualHeader = { config: resumedRequest };
+  ctx.captured.handlers.get("session/event")(agent.session, { type: "request/header", data: { turn: 2, step: 1, header: actualHeader } });
+  assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 2);
+  assert.equal(events.find((event) => event.type === "odai/responsibility-interruption-consumed").data.resumedScopeId, resumedScope.scopeId);
 });
 
 test("a frozen route card is claimed before executor routing and consumed only by an applied receipt", async () => {
@@ -2241,7 +2401,7 @@ test("a frozen route card is claimed before executor routing and consumed only b
   actualHeader = { config: executorRequest };
   ctx.captured.handlers.get("session/event")(agent.session, {
     type: "request/header",
-    data: { header: actualHeader },
+    data: { turn: 2, step: 1, header: actualHeader },
   });
   const executorReceipt = events.find((event) => event.type === "odai/route-applied").data;
   assert.equal(executorReceipt.status, "applied");
@@ -2307,7 +2467,7 @@ test("an executor provider failure after an applied receipt releases the route c
   actualHeader = { config: executorRequest };
   ctx.captured.handlers.get("session/event")(agent.session, {
     type: "request/header",
-    data: { header: actualHeader },
+    data: { turn: 2, step: 1, header: actualHeader },
   });
   assert.equal(events.filter((event) => event.type === "odai/route-card-consumed").length, 1);
 
@@ -2320,6 +2480,10 @@ test("an executor provider failure after an applied receipt releases the route c
     signal,
   }, async () => ({ kind: "failed" })), { kind: "retry" });
   assert.equal(events.filter((event) => event.type === "odai/route-card-claim-released").length, 1);
+  const failedScope = events.find((event) => event.type === "odai/responsibility-scope-started").data;
+  const failedReceipt = events.findLast((event) => event.type === "odai/route-fallback").data;
+  assert.equal(failedReceipt.responsibilityScopeId, failedScope.scopeId);
+  assert.equal(failedReceipt.routeCardId, frozen.card.id);
   assert.equal((await routeCard.execute({ action: "clear", cardId: frozen.card.id }, { agent })).status, "cleared");
 });
 
@@ -2662,14 +2826,29 @@ test("frontend incident upgrades in place, verifies its actual route, and overri
   });
   actualHeader = { config: effectiveRequest };
   ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "turn/end",
+    data: { turn: 0, reason: { kind: "completed" } },
+  });
+  ctx.captured.handlers.get("session/event")(agent.session, {
     type: "request/header",
     data: { header: actualHeader },
   });
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/chunk",
+    data: { turn: 0, step: 99, chunk: { type: "block-start" } },
+  });
+  assert.equal(events.some((event) => event.type === "odai/route-applied"), false);
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/chunk",
+    data: { turn: 1, step: 1, chunk: { type: "block-start" } },
+  });
+  const startedScope = events.find((event) => event.type === "odai/responsibility-scope-started").data;
   const applied = events.find((event) => event.type === "odai/route-applied");
   assert.deepEqual(applied.data, {
     turn: 1,
     step: 1,
     responsibility: "frontend",
+    responsibilityScopeId: startedScope.scopeId,
     status: "applied",
     routeMode: "same-turn",
     routeSource: "deployment-config",
@@ -2685,7 +2864,13 @@ test("frontend incident upgrades in place, verifies its actual route, and overri
   const routingTool = ctx.captured.tools.find((tool) => tool.name === "odai_routing_config");
   const shown = await routingTool.execute({ action: "show" }, { agent });
   assert.deepEqual(shown.latestRoute, applied.data);
-  assert.match(routingTool.output.render({}, shown)[0].text, /actual=provider-frontend\/model-frontend/u);
+  assert.deepEqual(shown.responsibilityBudgets.frontend, { source: "responsibility-override", maxTokens: 4_096 });
+  const renderedRoute = routingTool.output.render({}, shown)[0].text;
+  assert.match(renderedRoute, /In-place responsibility ceilings: frontend=maxTokens=4096 \[responsibility-override\]/u);
+  assert.match(renderedRoute, /actual=provider-frontend\/model-frontend \(reasoningEffort=max, maxTokens=4096\)/u);
+  const outputTool = ctx.captured.tools.find((tool) => tool.name === "odai_output_config");
+  const shownOutput = await outputTool.execute({ action: "show" }, { agent });
+  assert.deepEqual(shownOutput.responsibilityBudgets.frontend, { source: "responsibility-override", maxTokens: 4_096 });
   const override = events.find((event) => event.type === "odai/output-budget-overridden");
   assert.deepEqual(override.data, {
     turn: 1,
@@ -2694,18 +2879,146 @@ test("frontend incident upgrades in place, verifies its actual route, and overri
     responsibilityMaxTokens: 4_096,
     configuredControllerMaxTokens: 500,
     effectiveMaxTokens: 4_096,
+    budgetSource: "responsibility-override",
     semantics: "explicit-responsibility-override",
   });
 
-  await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 2, step: 1, signal }, async () => ({
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/chunk",
+    data: { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 1_000, outputTokens: 4_096 } } },
+  });
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/message",
+    data: {
+      turn: 1,
+      step: 1,
+      usage: { inputTokens: 1_000, outputTokens: 4_096 },
+      message: { content: [{ type: "text", text: "truncated frontend result" }] },
+    },
+  });
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "turn/end",
+    data: { turn: 1, reason: { kind: "max-tokens" } },
+  });
+  const interruption = events.find((event) => event.type === "odai/responsibility-interrupted").data;
+  assert.equal(interruption.scopeId, startedScope.scopeId);
+  assert.equal(interruption.responsibility, "frontend");
+  assert.equal(interruption.reason, "max-tokens");
+  assert.equal(interruption.effectiveMaxTokens, 4_096);
+  assert.equal(interruption.outputTokens, 4_096);
+
+  const diagnosticMessage = { ...userMessage("又被截断，到底是什么问题？"), id: "user-diagnostic" };
+  events.push(
+    { type: "turn/start", seq: 100, data: { turn: 2 } },
+    { type: "user/message", seq: 101, data: diagnosticMessage },
+  );
+  const diagnosed = await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 2, step: 1, signal }, async () => ({
     kind: "enter",
-    messages: [userMessage("把普通按钮文案改清楚")],
+    messages: [diagnosticMessage],
   }));
+  assert.match(diagnosed.messages[1].content[0].text, /Odai verified output-limit interruption/u);
+  assert.match(diagnosed.messages[1].content[0].text, /responsibility: frontend/u);
+  assert.match(diagnosed.messages[1].content[0].text, /effective maxTokens: 4096/u);
+  assert.match(diagnosed.messages[1].content[0].text, /observed outputTokens: 4096/u);
+  assert.equal(events.findLast((event) => event.type === "odai/route-decided").data.action, "direct");
+  assert.equal(events.some((event) => event.type === "odai/responsibility-interruption-cleared"), false);
+  assert.equal(events.some((event) => event.type === "odai/responsibility-interruption-consumed"), false);
+  assert.equal(events.find((event) => event.type === "odai/responsibility-interruption-preserved").data.scopeId, startedScope.scopeId);
   assert.deepEqual(await request({ agent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller" })), {
     provider: "base",
     model: "controller",
     maxTokens: 500,
   });
+
+  const continuationMessage = { ...userMessage("继续"), id: "user-continuation" };
+  events.push(
+    { type: "turn/start", seq: 200, data: { turn: 3 } },
+    { type: "user/message", seq: 201, data: continuationMessage },
+  );
+  const resumed = await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 3, step: 1, signal }, async () => ({
+    kind: "enter",
+    messages: [continuationMessage],
+  }));
+  const resumedDecision = events.findLast((event) => event.type === "odai/route-decided").data;
+  assert.equal(resumedDecision.reasonCode, "RESPONSIBILITY_OUTPUT_LIMIT_CONTINUATION");
+  assert.equal(resumedDecision.targetRole, "frontend");
+  assert.equal(events.find((event) => event.type === "odai/responsibility-interruption-resume-requested").data.scopeId, startedScope.scopeId);
+  assert.match(resumed.messages[1].content[0].text, /RESPONSIBILITY_OUTPUT_LIMIT_CONTINUATION/u);
+  const resumedScope = events.findLast((event) => event.type === "odai/responsibility-scope-started").data;
+  assert.equal(resumedScope.role, "frontend");
+  assert.equal(resumedScope.resumeOfScopeId, startedScope.scopeId);
+  const resumedRequest = await request({ agent, turn: 3, step: 1 }, async () => ({ provider: "base", model: "controller" }));
+  assert.deepEqual(resumedRequest, effectiveRequest);
+  actualHeader = { config: resumedRequest };
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "request/header",
+    data: { turn: 3, step: 1, header: actualHeader },
+  });
+  const consumed = events.find((event) => event.type === "odai/responsibility-interruption-consumed").data;
+  assert.equal(consumed.scopeId, startedScope.scopeId);
+  assert.equal(consumed.resumedScopeId, resumedScope.scopeId);
+  assert.equal(events.findLast((event) => event.type === "odai/route-applied").data.responsibilityScopeId, resumedScope.scopeId);
+});
+
+test("a new authenticated task clears preserved interruption even when a plugin notice follows it", async () => {
+  const ctx = fakeContext();
+  apply(ctx, {
+    skillPath,
+    routing: { roles: { frontend: { provider: "provider-frontend", model: "model-frontend", maxTokens: 4_096 } } },
+  });
+  const newTask = { ...userMessage("告诉我现在几点"), id: "new-task" };
+  const events = [
+    {
+      type: "odai/responsibility-interrupted",
+      data: {
+        scopeId: "scope-old-frontend",
+        turn: 1,
+        step: 1,
+        responsibility: "frontend",
+        reason: "max-tokens",
+        requestedRoute: { provider: "provider-frontend", model: "model-frontend", maxTokens: 4_096 },
+        effectiveRoute: { provider: "provider-frontend", model: "model-frontend", maxTokens: 4_096 },
+        effectiveMaxTokens: 4_096,
+        outputTokens: 4_096,
+      },
+    },
+    { type: "turn/start", seq: 10, data: { turn: 2 } },
+    { type: "user/message", seq: 11, data: newTask },
+  ];
+  const agent = {
+    session: {
+      header: {},
+      events,
+      append(type, data) { events.push({ type, data }); },
+    },
+  };
+  const pluginNotice = {
+    id: "other-plugin-notice",
+    role: "user",
+    content: [{ type: "text", text: "继续" }],
+    source: { kind: "plugin", plugin: "other-plugin" },
+  };
+  const signal = new AbortController().signal;
+  const direct = await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 2, step: 1, signal },
+    async () => ({ kind: "enter", messages: [newTask, pluginNotice] }),
+  );
+  assert.equal(direct.messages.length, 2);
+  assert.equal(events.find((event) => event.type === "odai/responsibility-interruption-cleared").data.scopeId, "scope-old-frontend");
+  assert.equal(events.some((event) => event.type === "odai/responsibility-interruption-resume-requested"), false);
+
+  const continuation = { ...userMessage("继续"), id: "later-continuation" };
+  events.push(
+    { type: "turn/start", seq: 12, data: { turn: 3 } },
+    { type: "user/message", seq: 13, data: continuation },
+  );
+  const later = await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 3, step: 1, signal },
+    async () => ({ kind: "enter", messages: [continuation] }),
+  );
+  assert.equal(later.messages.length, 1);
+  assert.equal(events.some((event) => event.type === "odai/responsibility-scope-started"), false);
+  assert.equal(events.some((event) => event.type === "odai/responsibility-interruption-resume-requested"), false);
 });
 
 test("same-turn route mismatch emits an actual receipt and fails closed before tools", async () => {
@@ -2741,6 +3054,11 @@ test("same-turn route mismatch emits an actual receipt and fails closed before t
   ctx.captured.handlers.get("session/event")(agent.session, {
     type: "request/header",
     data: { header: actualHeader },
+  });
+  assert.equal(events.some((event) => event.type === "odai/route-applied"), false);
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/chunk",
+    data: { turn: 1, step: 1, chunk: { type: "block-start" } },
   });
 
   const receipt = events.find((event) => event.type === "odai/route-applied").data;
@@ -2782,6 +3100,7 @@ test("same-turn route mismatch emits an actual receipt and fails closed before t
 
 test("frontend missing mapping falls through and an omitted role budget keeps the global ceiling", async () => {
   const outputConfigPath = resolve(testDshHome, "frontend-fallback-output", "output.json");
+  const routingConfigPath = resolve(testDshHome, "frontend-fallback-output", "routing.json");
   mkdirSync(resolve(testDshHome, "frontend-fallback-output"), { recursive: true });
   writeFileSync(outputConfigPath, `${JSON.stringify({ schemaVersion: 1, policy: { concise: true, maxTokens: 500 } })}\n`, "utf8");
   const task = userMessage("整体改版这个运维仪表盘，覆盖移动端和交互状态，并用 Playwright 做浏览器验收。");
@@ -2802,7 +3121,14 @@ test("frontend missing mapping falls through and an omitted role budget keeps th
   apply(boundedCtx, {
     skillPath,
     output: { configPath: outputConfigPath },
-    routing: { roles: { frontend: { provider: "provider-frontend", model: "model-frontend", reasoningEffort: "max" } } },
+    routing: {
+      configPath: routingConfigPath,
+      roles: {
+        planner: { provider: "provider-planner", model: "model-planner", reasoningEffort: "high" },
+        executor: { provider: "provider-executor", model: "model-executor", reasoningEffort: "high" },
+        frontend: { provider: "provider-frontend", model: "model-frontend", reasoningEffort: "max" },
+      },
+    },
   });
   const boundedEvents = [];
   const boundedAgent = { session: { header: {}, events: boundedEvents, append(type, data) { boundedEvents.push({ type, data }); } } };
@@ -2820,6 +3146,54 @@ test("frontend missing mapping falls through and an omitted role budget keeps th
     maxTokens: 500,
   });
   assert.equal(boundedEvents.some((event) => event.type === "odai/output-budget-overridden"), false);
+  assert.deepEqual(boundedEvents.find((event) => event.type === "odai/output-budget-applied").data, {
+    turn: 1,
+    step: 1,
+    responsibility: "frontend",
+    configuredMaxTokens: 500,
+    priorMaxTokens: 8_000,
+    effectiveMaxTokens: 500,
+    budgetSource: "controller-policy",
+    semantics: "provider-request-ceiling",
+  });
+  const routingTool = boundedCtx.captured.tools.find((tool) => tool.name === "odai_routing_config");
+  const shownRouting = await routingTool.execute({ action: "show" }, { agent: boundedAgent });
+  const inheritedBudget = {
+    source: "controller-policy",
+    maxTokens: 500,
+    warning: "responsibility-inherits-controller-ceiling",
+  };
+  assert.deepEqual(shownRouting.responsibilityBudgets, {
+    planner: inheritedBudget,
+    executor: inheritedBudget,
+    frontend: inheritedBudget,
+  });
+  const renderedRouting = routingTool.output.render({}, shownRouting)[0].text;
+  assert.match(renderedRouting, /Warning: planner has no explicit maxTokens and inherits the controller ceiling/u);
+  assert.match(renderedRouting, /Warning: executor has no explicit maxTokens and inherits the controller ceiling/u);
+  assert.match(renderedRouting, /Warning: frontend has no explicit maxTokens and inherits the controller ceiling/u);
+  const configuredRouting = await routingTool.execute({
+    action: "set",
+    responsibility: "frontend",
+    provider: "provider-frontend",
+    model: "model-frontend",
+    reasoningEffort: "max",
+  }, { agent: boundedAgent, signal });
+  assert.equal(configuredRouting.requiresNextTurn, true);
+  assert.deepEqual(configuredRouting.responsibilityBudgets.frontend, shownRouting.responsibilityBudgets.frontend);
+  const outputTool = boundedCtx.captured.tools.find((tool) => tool.name === "odai_output_config");
+  const shownOutput = await outputTool.execute({ action: "show" }, { agent: boundedAgent });
+  assert.deepEqual(shownOutput.responsibilityBudgets, shownRouting.responsibilityBudgets);
+  assert.match(
+    outputTool.output.render({}, shownOutput)[0].text,
+    /Warning: frontend has no explicit maxTokens and inherits the controller ceiling/u,
+  );
+  const configuredOutput = await outputTool.execute({
+    action: "set",
+    mode: "economy",
+    maxTokens: 500,
+  }, { agent: boundedAgent });
+  assert.deepEqual(configuredOutput.responsibilityBudgets, shownRouting.responsibilityBudgets);
 });
 
 test("auto mode upgrades an implicit continuation of earlier high-impact context", async () => {
@@ -2878,6 +3252,7 @@ test("auto mode upgrades an implicit continuation of earlier high-impact context
     provider: "openai",
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
+    maxTokens: 2_048,
   });
 });
 
@@ -2972,6 +3347,7 @@ test("configured auto mode keeps an evidence-grounded planner gap in the current
     provider: "openai",
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
+    maxTokens: 2_048,
   });
 });
 
@@ -3049,7 +3425,7 @@ test("configured researcher compresses evidence before planner without replacing
     provider: "openai",
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
-    maxTokens: 8_000,
+    maxTokens: 2_048,
   });
 
   const mismatchCtx = fakeContext({
@@ -3499,6 +3875,11 @@ test("the model can persist every user-specified responsibility mapping", async 
 
   const shown = await tool.execute({ action: "show" }, execution);
   assert.deepEqual(shown.roles, mappings);
+  assert.deepEqual(shown.responsibilityBudgets, {
+    planner: { source: "responsibility-override", maxTokens: 2_048 },
+    executor: { source: "unbounded-by-odai" },
+    frontend: { source: "responsibility-override", maxTokens: 4_096 },
+  });
   assert.equal(shown.requiresNextTurn, false);
   const rendered = tool.output.render({}, shown)[0].text;
   assert.match(rendered, /researcher: provider-r\/model-research \(reasoningEffort=low, maxTokens=512\)/u);
@@ -3520,7 +3901,7 @@ test("the model can persist every user-specified responsibility mapping", async 
   const inherited = { provider: "base", model: "controller", reasoningEffort: "max" };
   assert.deepEqual(
     await secondRuntimeCtx.captured.handlers.get("agent/request")({ agent, turn: 1, step: 1 }, async () => inherited),
-    { provider: "provider-a", model: "model-plan", reasoningEffort: "high" },
+    { provider: "provider-a", model: "model-plan", reasoningEffort: "high", maxTokens: 2_048 },
   );
 
   const removed = await tool.execute({ action: "remove", responsibility: "executor" }, execution);

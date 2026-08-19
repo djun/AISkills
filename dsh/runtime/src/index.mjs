@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   classifyImplementationAuthorization,
+  classifyResponsibilityInterruptionText,
   decideResearchPrefetch,
   decideRoute,
   extractLatestUserText,
@@ -66,6 +67,8 @@ import {
   claimResponsibilityScope,
   createResponsibilityScope,
   latestDanglingResponsibilityScope,
+  latestStoppedResponsibilityScope,
+  pendingResponsibilityInterruption,
   pendingResponsibilityScopeRestoration,
   responsibilityScopeClaimedEvent,
   responsibilityScopeOwnsRequest,
@@ -84,7 +87,13 @@ import {
   readHumanSafetyContinuityStore,
   resolveHumanSafetyContinuityStorePath,
 } from "./human-safety-continuity-store.mjs";
-import { ROUTE_CARD_PROMPT, activeRouteCard, createRouteCardTool, unsettledRouteCard } from "./route-card.mjs";
+import {
+  ROUTE_CARD_PROMPT,
+  activeRouteCard,
+  createRouteCardTool,
+  routeCardById,
+  unsettledRouteCard,
+} from "./route-card.mjs";
 import { buildRoleContextPacket, renderRoleContextPacket } from "./routing-context.mjs";
 import {
   parseResearchPacket,
@@ -317,6 +326,20 @@ function pluginMessage(text, summary, extraBlocks = []) {
       summary: summary.length <= 120 ? summary : `${summary.slice(0, 119)}…`,
     },
   });
+}
+
+function renderOutputLimitInterruptionNotice(interruption) {
+  const route = interruption.effectiveRoute ?? interruption.requestedRoute;
+  return [
+    "Odai verified output-limit interruption",
+    `responsibility: ${interruption.responsibility}`,
+    `interrupted scope: ${interruption.scopeId}`,
+    `provider finish reason: ${interruption.reason}`,
+    ...(route ? [`effective route: ${route.provider}/${route.model}`] : []),
+    ...(interruption.effectiveMaxTokens === undefined ? [] : [`effective maxTokens: ${interruption.effectiveMaxTokens}`]),
+    ...(interruption.outputTokens === undefined ? [] : [`observed outputTokens: ${interruption.outputTokens}`]),
+    "This proves the responsibility output was interrupted, not that its task completed. Explain the verified cause without guessing. Resume only after an explicit user continuation.",
+  ].join("\n");
 }
 
 function loggerFor(ctx) {
@@ -552,6 +575,8 @@ function latestRouteReceipt(events) {
         turn: data.turn,
         step: data.step,
         responsibility: data.responsibility,
+        ...(data.responsibilityScopeId ? { responsibilityScopeId: data.responsibilityScopeId } : {}),
+        ...(data.routeCardId ? { routeCardId: data.routeCardId } : {}),
         status: "fallback",
         taskStatus: "fallback",
         routeMode: data.routeMode,
@@ -567,6 +592,8 @@ function latestRouteReceipt(events) {
         turn: data.turn,
         step: data.step,
         responsibility: data.responsibility,
+        ...(data.responsibilityScopeId ? { responsibilityScopeId: data.responsibilityScopeId } : {}),
+        ...(data.routeCardId ? { routeCardId: data.routeCardId } : {}),
         status: data.status,
         routeMode: data.routeMode,
         routeSource: data.routeSource,
@@ -1012,6 +1039,7 @@ export function apply(ctx, rawConfig) {
   const responsibilityScopeOwners = new WeakMap();
   const pendingRouteReceipts = new WeakMap();
   const pendingScopeRestorations = new WeakMap();
+  const outputUsageBySession = new WeakMap();
   const stopResponsibilityScope = (agent, reason, position = {}) => {
     const scope = responsibilityScopes.get(agent);
     if (!scope || (position.scopeId && position.scopeId !== scope.id)) return undefined;
@@ -1135,6 +1163,9 @@ export function apply(ctx, rawConfig) {
     latestRouteFor(agent) {
       return latestRouteReceipt(evidence.events(agent));
     },
+    outputPolicyFor() {
+      return selectOutputForAgent().policy;
+    },
     onConfigured(agent, data) {
       appendEvent(agent, "odai/routing-configured", data);
     },
@@ -1209,6 +1240,13 @@ export function apply(ctx, rawConfig) {
   }));
   ctx.tools.register(createOutputConfigTool(config.output.configPath, {
     isChild: isSubagent,
+    responsibilityRoutesFor() {
+      try {
+        return effectiveRoutingSnapshot(config.routing.configPath, config.routing.roles).roles;
+      } catch {
+        return undefined;
+      }
+    },
     onConfigured(agent, data) {
       appendEvent(agent, "odai/output-configured", data);
     },
@@ -1328,16 +1366,13 @@ export function apply(ctx, rawConfig) {
         : undefined;
     const routeSource = childRole ? childRoleState?.source : scope?.source;
     let routeMode = childRole ? "child" : sameRequestModelRoute(proposed, roleRoute) ? "inline" : "same-turn";
-    let scopedFrontendMaxTokens = upgradeRole === "frontend" ? roleRoute?.maxTokens : undefined;
+    let scopedResponsibilityMaxTokens = upgradeRole ? roleRoute?.maxTokens : undefined;
     const finalize = (finalRequest) => {
       if (roleRoute && agent?.session && Number.isSafeInteger(turn) && Number.isSafeInteger(step)) {
-        const expectedRoute = routeMode !== "child" && upgradeRole !== "frontend"
-          ? Object.freeze({
-              provider: roleRoute.provider,
-              model: roleRoute.model,
-              ...(roleRoute.reasoningEffort === undefined ? {} : { reasoningEffort: roleRoute.reasoningEffort }),
-            })
-          : roleRoute;
+        const expectedRoute = roleRoute;
+        const receiptScope = responsibilityScopeOwnsRequest(responsibilityScopes.get(agent), turn, step)
+          ? responsibilityScopes.get(agent)
+          : scope;
         pendingRouteReceipts.set(agent.session, Object.freeze({
           agent,
           turn,
@@ -1345,8 +1380,9 @@ export function apply(ctx, rawConfig) {
           responsibility: childRole ?? upgradeRole,
           routeMode,
           routeSource,
-          ...(scope?.id ? { responsibilityScopeId: scope.id } : {}),
-          ...(scope?.cardId ? { routeCardId: scope.cardId } : {}),
+          ...(receiptScope?.id ? { responsibilityScopeId: receiptScope.id } : {}),
+          ...(receiptScope?.cardId ? { routeCardId: receiptScope.cardId } : {}),
+          ...(receiptScope?.resumeOfScopeId ? { resumeOfScopeId: receiptScope.resumeOfScopeId } : {}),
           requestedRoute: expectedRoute,
           expectedRoute,
         }));
@@ -1361,7 +1397,7 @@ export function apply(ctx, rawConfig) {
         provider: roleRoute.provider,
         model: roleRoute.model,
         ...(roleRoute.reasoningEffort === undefined ? {} : { reasoningEffort: roleRoute.reasoningEffort }),
-        ...((childRole || scopedFrontendMaxTokens !== undefined) && roleRoute.maxTokens !== undefined
+        ...((childRole || scopedResponsibilityMaxTokens !== undefined) && roleRoute.maxTokens !== undefined
           ? { maxTokens: roleRoute.maxTokens }
           : {}),
       });
@@ -1396,6 +1432,8 @@ export function apply(ctx, rawConfig) {
           turn,
           step,
           responsibility,
+          ...(scope?.id ? { responsibilityScopeId: scope.id } : {}),
+          ...(scope?.cardId ? { routeCardId: scope.cardId } : {}),
           routeMode,
           routeSource,
           requestedRoute: roleRoute,
@@ -1426,7 +1464,7 @@ export function apply(ctx, rawConfig) {
         }
         roleRoute = undefined;
         routeMode = "same-turn";
-        scopedFrontendMaxTokens = undefined;
+        scopedResponsibilityMaxTokens = undefined;
         request = proposed;
       }
     }
@@ -1434,32 +1472,38 @@ export function apply(ctx, rawConfig) {
 
     const outputSelection = await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
     const configuredMaxTokens = outputSelection.policy.maxTokens;
-    if (scopedFrontendMaxTokens !== undefined) {
+    if (scopedResponsibilityMaxTokens !== undefined) {
       if (!hasSessionEvent(agent, "odai/output-budget-overridden", (data) => data?.turn === turn && data?.step === step)) {
         appendEvent(agent, "odai/output-budget-overridden", {
           turn,
           ...(step === undefined ? {} : { step }),
-          responsibility: "frontend",
-          responsibilityMaxTokens: scopedFrontendMaxTokens,
+          responsibility: upgradeRole,
+          responsibilityMaxTokens: scopedResponsibilityMaxTokens,
           ...(configuredMaxTokens === undefined ? {} : { configuredControllerMaxTokens: configuredMaxTokens }),
-          effectiveMaxTokens: scopedFrontendMaxTokens,
+          effectiveMaxTokens: scopedResponsibilityMaxTokens,
+          budgetSource: "responsibility-override",
           semantics: "explicit-responsibility-override",
         });
       }
-      return finalize(Object.freeze({ ...request, maxTokens: scopedFrontendMaxTokens }));
+      return finalize(Object.freeze({ ...request, maxTokens: scopedResponsibilityMaxTokens }));
     }
     if (configuredMaxTokens === undefined) return finalize(request);
     const priorMaxTokens = request.maxTokens;
     const effectiveMaxTokens = priorMaxTokens === undefined
       ? configuredMaxTokens
       : Math.min(priorMaxTokens, configuredMaxTokens);
+    const budgetSource = priorMaxTokens !== undefined && priorMaxTokens < configuredMaxTokens
+      ? "preexisting-request-ceiling"
+      : "controller-policy";
     if (!hasSessionEvent(agent, "odai/output-budget-applied", (data) => data?.turn === turn && data?.step === step)) {
       appendEvent(agent, "odai/output-budget-applied", {
         turn,
         ...(step === undefined ? {} : { step }),
+        ...(upgradeRole === undefined ? {} : { responsibility: upgradeRole }),
         configuredMaxTokens,
         ...(priorMaxTokens === undefined ? {} : { priorMaxTokens }),
         effectiveMaxTokens,
+        budgetSource,
         semantics: "provider-request-ceiling",
       });
     }
@@ -1496,6 +1540,8 @@ export function apply(ctx, rawConfig) {
       turn,
       step,
       responsibility: active.role,
+      ...(active.id ? { responsibilityScopeId: active.id } : {}),
+      ...(active.cardId ? { routeCardId: active.cardId } : {}),
       routeMode: childRole ? "child" : "same-turn",
       routeSource: active.source,
       requestedRoute: active.route,
@@ -1550,6 +1596,10 @@ export function apply(ctx, rawConfig) {
   ctx.on("session/event", (session, event) => {
     const owner = responsibilityScopeOwners.get(session);
     const activeScope = owner ? responsibilityScopes.get(owner) : undefined;
+    const eventMatchesRequestPosition = (position) => Number.isSafeInteger(event?.data?.turn)
+      && Number.isSafeInteger(event?.data?.step)
+      && event.data.turn === position?.turn
+      && event.data.step === position?.step;
     const scopeStopReason = responsibilityScopeStopReason(activeScope, event);
     if (scopeStopReason) {
       stopResponsibilityScope(owner, scopeStopReason, {
@@ -1558,8 +1608,65 @@ export function apply(ctx, rawConfig) {
       });
     }
 
+    if (event?.type === "assistant/chunk" && event.data?.chunk?.type === "usage") {
+      outputUsageBySession.set(session, {
+        turn: event.data.turn,
+        step: event.data.step,
+        usage: event.data.chunk.usage,
+      });
+    } else if (event?.type === "assistant/message" && event.data?.usage) {
+      outputUsageBySession.set(session, {
+        turn: event.data.turn,
+        step: event.data.step,
+        usage: event.data.usage,
+      });
+    }
+
+    if (event?.type === "turn/end") {
+      const usage = outputUsageBySession.get(session);
+      if (event.data?.reason?.kind === "max-tokens" && owner) {
+        const events = evidence.events(owner);
+        const stopped = latestStoppedResponsibilityScope(events, event.data?.turn);
+        const receipt = stopped && events.findLast((candidate) => (
+          candidate?.type === "odai/route-applied"
+            && candidate.data?.status === "applied"
+            && candidate.data?.responsibilityScopeId === stopped.scopeId
+        ))?.data;
+        const routeCard = stopped?.routeCardId ? routeCardById(events, stopped.routeCardId) : undefined;
+        const observedOutputTokens = usage?.turn === stopped?.turn
+          && usage?.step === stopped?.stopStep
+          && Number.isSafeInteger(usage.usage?.outputTokens)
+          ? usage.usage.outputTokens
+          : undefined;
+        if (stopped?.reason === "terminal-response"
+          && Number.isSafeInteger(stopped.stopStep)
+          && receipt?.step === stopped.stopStep
+          && Number.isSafeInteger(observedOutputTokens)
+          && ["planner", "executor", "frontend"].includes(receipt.responsibility)
+          && (receipt.responsibility !== "executor" || routeCard)) {
+          const effectiveRoute = receipt.actualRoute ?? receipt.requestedRoute;
+          appendEvent(owner, "odai/responsibility-interrupted", {
+            scopeId: stopped.scopeId,
+            turn: stopped.turn,
+            step: stopped.stopStep ?? stopped.startStep,
+            responsibility: receipt.responsibility,
+            reason: "max-tokens",
+            routeMode: receipt.routeMode,
+            routeSource: receipt.routeSource,
+            requestedRoute: receipt.requestedRoute,
+            ...(effectiveRoute ? { effectiveRoute } : {}),
+            ...(effectiveRoute?.maxTokens === undefined ? {} : { effectiveMaxTokens: effectiveRoute.maxTokens }),
+            outputTokens: observedOutputTokens,
+            ...(stopped.routeCardId ? { routeCardId: stopped.routeCardId } : {}),
+            ...(routeCard ? { routeCard } : {}),
+          }, logger);
+        }
+      }
+      outputUsageBySession.delete(session);
+    }
+
     const pendingRestoration = pendingScopeRestorations.get(session);
-    if (pendingRestoration && event?.type === "turn/end") {
+    if (pendingRestoration && event?.type === "turn/end" && event.data?.turn === pendingRestoration.turn) {
       appendEvent(pendingRestoration.agent, "odai/responsibility-scope-restored", {
         scopeId: pendingRestoration.scopeId,
         turn: pendingRestoration.turn,
@@ -1571,14 +1678,16 @@ export function apply(ctx, rawConfig) {
       });
       pendingScopeRestorations.delete(session);
     }
-    if (pendingRestoration && ["request/header", "assistant/chunk"].includes(event?.type)) {
+    if (pendingRestoration
+      && ["request/header", "assistant/chunk", "assistant/message"].includes(event?.type)
+      && eventMatchesRequestPosition(pendingRestoration)) {
       let actualRoute;
       try {
         actualRoute = event.type === "request/header"
           ? routeFromConfig(event.data?.header?.config)
           : routeFromConfig(session.requestHeader?.()?.config);
       } catch {}
-      if (actualRoute || event.type === "assistant/chunk") {
+      if (actualRoute || event.type !== "request/header") {
         const mismatch = routeMismatchFor(pendingRestoration.expectedRoute, actualRoute, "base-route restoration");
         appendEvent(pendingRestoration.agent, "odai/responsibility-scope-restored", {
           scopeId: pendingRestoration.scopeId,
@@ -1590,17 +1699,30 @@ export function apply(ctx, rawConfig) {
           ...(actualRoute ? { actualRoute } : {}),
           ...(mismatch ? { error: mismatch } : {}),
         });
+        if (mismatch) {
+          protectController(
+            pendingRestoration.agent,
+            pendingRestoration.turn,
+            pendingRestoration.step,
+            { reasonCode: "RESPONSIBILITY_BASE_ROUTE_RESTORATION_MISMATCH" },
+            "scope-restoration-mismatch",
+            mismatch,
+            pendingRestoration.scopeId,
+          );
+        }
         pendingScopeRestorations.delete(session);
       }
     }
 
     const pending = pendingRouteReceipts.get(session);
     if (!pending) return;
-    if (event?.type === "turn/end") {
+    if (event?.type === "turn/end" && event.data?.turn === pending.turn) {
       appendEvent(pending.agent, "odai/route-applied", {
         turn: pending.turn,
         step: pending.step,
         responsibility: pending.responsibility,
+        ...(pending.responsibilityScopeId ? { responsibilityScopeId: pending.responsibilityScopeId } : {}),
+        ...(pending.routeCardId ? { routeCardId: pending.routeCardId } : {}),
         status: "unverified",
         routeMode: pending.routeMode,
         routeSource: pending.routeSource,
@@ -1623,19 +1745,22 @@ export function apply(ctx, rawConfig) {
       pendingRouteReceipts.delete(session);
       return;
     }
-    if (!["request/header", "assistant/chunk"].includes(event?.type)) return;
+    if (!["request/header", "assistant/chunk", "assistant/message"].includes(event?.type)) return;
+    if (!eventMatchesRequestPosition(pending)) return;
     let actualRoute;
     try {
       actualRoute = event.type === "request/header"
         ? routeFromConfig(event.data?.header?.config)
         : routeFromConfig(session.requestHeader?.()?.config);
     } catch {}
-    if (!actualRoute && event.type !== "assistant/chunk") return;
+    if (!actualRoute && event.type === "request/header") return;
     const mismatch = routeMismatchFor(pending.expectedRoute, actualRoute, pending.routeMode);
     appendEvent(pending.agent, "odai/route-applied", {
       turn: pending.turn,
       step: pending.step,
       responsibility: pending.responsibility,
+      ...(pending.responsibilityScopeId ? { responsibilityScopeId: pending.responsibilityScopeId } : {}),
+      ...(pending.routeCardId ? { routeCardId: pending.routeCardId } : {}),
       status: mismatch ? "mismatch" : "applied",
       routeMode: pending.routeMode,
       routeSource: pending.routeSource,
@@ -1648,6 +1773,15 @@ export function apply(ctx, rawConfig) {
       stopResponsibilityScope(pending.agent, "route-mismatch", {
         scopeId: pending.responsibilityScopeId,
         step: pending.step,
+      });
+    }
+    if (!mismatch && pending.resumeOfScopeId) {
+      appendEvent(pending.agent, "odai/responsibility-interruption-consumed", {
+        scopeId: pending.resumeOfScopeId,
+        turn: pending.turn,
+        step: pending.step,
+        responsibility: pending.responsibility,
+        resumedScopeId: pending.responsibilityScopeId,
       });
     }
     if (pending.routeCardId) {
@@ -1701,17 +1835,69 @@ export function apply(ctx, rawConfig) {
       let downstream = await next();
       if (downstream.kind === "reject" || signal.aborted) return downstream;
       const responsibilityGap = subagentSession ? undefined : pendingResponsibilityGap(agent, turn, step);
-      const directMessage = latestDirectUserMessage(agent, downstream.messages, { turn });
-      const activation = contextActivationFor(agent, directMessage ? extractLatestUserText([directMessage]) : "", turn);
-      const routeCardNeeded = !subagentSession && (Boolean(activeRouteCard(evidence.events(agent)))
-        || ["planner", "executor"].includes(responsibilityGap?.responsibility));
+      const authenticatedDirectMessage = latestDirectUserMessage(agent, undefined, { turn });
+      const suppliedDirectMessages = Array.isArray(downstream.messages)
+        ? downstream.messages.filter((message) => message?.role === "user" && message?.source?.kind === "user")
+        : [];
+      const directMessage = latestDirectUserMessage(agent, suppliedDirectMessages, { turn });
+      const directText = directMessage ? extractLatestUserText([directMessage]) : "";
+      const authenticatedDirectText = authenticatedDirectMessage
+        ? extractLatestUserText([authenticatedDirectMessage])
+        : "";
+      const responsibilityEvents = subagentSession ? [] : evidence.events(agent);
+      const interruption = !subagentSession && step === 1
+        ? pendingResponsibilityInterruption(responsibilityEvents)
+        : undefined;
+      let responsibilityContinuation;
+      let interruptionNotice;
+      if (interruption && authenticatedDirectMessage) {
+        const disposition = classifyResponsibilityInterruptionText(authenticatedDirectText);
+        if (disposition === "continue" && directMessage) {
+          responsibilityContinuation = Object.freeze({ ...interruption, continuationText: authenticatedDirectText });
+          appendEvent(agent, "odai/responsibility-interruption-resume-requested", {
+            scopeId: interruption.scopeId,
+            turn,
+            step,
+            responsibility: interruption.responsibility,
+          });
+        } else if (disposition === "preserve") {
+          if (directMessage) {
+            interruptionNotice = pluginMessage(
+              renderOutputLimitInterruptionNotice(interruption),
+              `odai verified ${interruption.responsibility} output-limit interruption`,
+            );
+          }
+          appendEvent(agent, "odai/responsibility-interruption-preserved", {
+            scopeId: interruption.scopeId,
+            turn,
+            step,
+            responsibility: interruption.responsibility,
+            reason: "output-limit-diagnostic",
+          });
+        } else if (disposition === "clear") {
+          appendEvent(agent, "odai/responsibility-interruption-cleared", {
+            scopeId: interruption.scopeId,
+            turn,
+            step,
+            responsibility: interruption.responsibility,
+            reason: "superseded-by-user-task",
+          });
+        }
+      }
+      const activation = contextActivationFor(agent, directText, turn);
+      const routeCardNeeded = !subagentSession && (Boolean(activeRouteCard(responsibilityEvents))
+        || ["planner", "executor"].includes(responsibilityGap?.responsibility)
+        || responsibilityContinuation?.responsibility === "executor");
       syncToolExposure(agent, activation, { turn, step, routeCard: routeCardNeeded });
+      if (interruptionNotice) {
+        downstream = { ...downstream, messages: [...downstream.messages, interruptionNotice] };
+      }
       if (subagentSession) return downstream;
       if (step !== 1 && !responsibilityGap) return downstream;
 
       if (step === 1 && claimSemanticMemoryTurn(agent, turn, step)) {
         const settings = memorySettingsFor(agent, turn);
-        const message = latestDirectUserMessage(agent, downstream.messages, { turn });
+        const message = directMessage;
         const query = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
         let retrieved = [];
         let captured = [];
@@ -1883,8 +2069,13 @@ export function apply(ctx, rawConfig) {
         }
       }
 
-      const frozenCard = activeRouteCard(evidence.events(agent));
-      let decision = decideRoute({ text: taskText, routeCard: frozenCard, proposal: responsibilityGap });
+      const frozenCard = responsibilityContinuation?.routeCard ?? activeRouteCard(evidence.events(agent));
+      let decision = decideRoute({
+        text: taskText,
+        routeCard: frozenCard,
+        proposal: responsibilityGap,
+        interruption: responsibilityContinuation,
+      });
       let routeRole = decision.targetRole ?? decision.role;
       const roleTaskText = researchPacketText ? `${taskText}\n\n${researchPacketText}` : taskText;
       let roleContext = decision.action === "direct"
@@ -2130,6 +2321,7 @@ export function apply(ctx, rawConfig) {
           decision,
           routeValidated: rolePreflightVerified,
           ...(routeRole === "executor" && frozenCard ? { cardId: frozenCard.id } : {}),
+          ...(responsibilityContinuation ? { resumeOfScopeId: responsibilityContinuation.scopeId } : {}),
         });
         responsibilityScopes.set(agent, responsibilityScope);
         if (agent?.session) responsibilityScopeOwners.set(agent.session, agent);
@@ -2138,7 +2330,12 @@ export function apply(ctx, rawConfig) {
           protectController(agent, turn, step, decision, `responsibility-scope-${routeRole}`, undefined, responsibilityScope.id);
         }
         if (routeRole === "executor" && frozenCard) {
-          appendEvent(agent, "odai/route-card-claimed", { cardId: frozenCard.id, turn, step });
+          appendEvent(agent, "odai/route-card-claimed", {
+            cardId: frozenCard.id,
+            turn,
+            step,
+            ...(responsibilityContinuation ? { reason: "output-limit-continuation" } : {}),
+          });
         }
         appendEvent(agent, "odai/route-upgrade", {
           turn,
@@ -2147,6 +2344,7 @@ export function apply(ctx, rawConfig) {
           targetRole: routeRole,
           status: "requested",
           responsibilityScopeId: responsibilityScope.id,
+          ...(responsibilityContinuation ? { resumeOfScopeId: responsibilityContinuation.scopeId } : {}),
           continuationPolicy: responsibilityScope.continuationPolicy,
           stopPolicy: responsibilityScope.stopPolicy,
           routeSource: roleState.source,

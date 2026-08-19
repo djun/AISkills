@@ -2,6 +2,13 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-19 — DSH 0.2.2 责任预算与截断续作闭环
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.2`；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。planner、executor、frontend 的用户显式 `maxTokens` 现在都只在对应 controller 原地责任 scope 内覆盖 Controller ceiling；未显式配置时继续继承 Controller 策略并给出可见警告，researcher/reviewer child、compaction 和其他内部调用保持独立。
+- provider 只有在 `turn/end=max-tokens`、终止 scope、最终 step route receipt 与同 step usage 全部匹配时才生成可续作 interruption。诊断请求会获得实际责任、route、有效 ceiling 与 usage 证据而不消费凭据；纯直接用户“继续”恢复原 planner、executor 或 frontend，executor 复用同一张冻结 route card，不自动扩预算、重试或扩大授权；新认证任务会结清旧 interruption。
+- route receipt 与 base-route restoration 改为 turn/step 严格关联：无位置或错位置 header 不能提前消费责任、card 或 interruption；迟到 header 不能清除 durable restoration candidate，只有同 scope 的 applied restoration receipt 才能结清。restoration mismatch 进入只读保护并在后续 step/turn 重试；明确 cleared 的 route card 是永久终态，不会被迟到 release 复活。
+- Plugin/Runtime `181/181`、Agent `13/13`、canonical 与双包版本校验、双包 dry-run、Plugin legacy session compatibility、真实 DSH Plugin/Agent load 及独立聚焦复核均通过。当前 receipt/restoration 仍按 DSH 同 session 串行请求契约使用 session 单槽；若宿主未来支持同 session 并发，需升级为 request-id keyed。
+
 ## 2026-08-18 — DSH 0.2.1 有界责任作用域与早期情绪支持
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 的发布单元同步升为 `0.2.1`，内置 canonical skill 升为 `0.3.2`，runtime contract 保持 `3`。

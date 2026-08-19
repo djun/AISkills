@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ROUTE_CARD_PROMPT, activeRouteCard, createRouteCardTool, unsettledRouteCard } from "../src/route-card.mjs";
+import {
+  ROUTE_CARD_PROMPT,
+  activeRouteCard,
+  createRouteCardTool,
+  routeCardById,
+  unsettledRouteCard,
+} from "../src/route-card.mjs";
 
 function cardArgs() {
   return {
@@ -22,6 +28,9 @@ test("route-card guidance applies canonical reassessment without size routing", 
   assert.match(ROUTE_CARD_PROMPT, /Otherwise continue directly without a card/u);
   assert.match(ROUTE_CARD_PROMPT, /original current task already authorizes implementation/u);
   assert.match(ROUTE_CARD_PROMPT, /continues automatically/u);
+  assert.match(ROUTE_CARD_PROMPT, /verified provider max-token interruption/u);
+  assert.match(ROUTE_CARD_PROMPT, /direct user continuation/u);
+  assert.match(ROUTE_CARD_PROMPT, /explicit clear is terminal/u);
   assert.doesNotMatch(ROUTE_CARD_PROMPT, /task size alone never justifies delegation/u);
 });
 
@@ -73,9 +82,13 @@ test("route-card claims block duplicate attempts and release after receipt or pr
   events.push({ type: "odai/route-card-consumed", data: { cardId: card.id } });
   assert.equal(activeRouteCard(events), undefined);
   assert.equal(unsettledRouteCard(events), undefined);
+  assert.equal(routeCardById(events, card.id), card);
   events.push({ type: "odai/route-card-claim-released", data: { cardId: card.id } });
   assert.equal(activeRouteCard(events), card);
   events.push({ type: "odai/route-card-cleared", data: { cardId: card.id } });
+  assert.equal(activeRouteCard(events), undefined);
+  assert.equal(unsettledRouteCard(events), undefined);
+  events.push({ type: "odai/route-card-claim-released", data: { cardId: card.id, reason: "late-provider-failure" } });
   assert.equal(activeRouteCard(events), undefined);
   assert.equal(unsettledRouteCard(events), undefined);
 });

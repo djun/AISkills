@@ -28,11 +28,15 @@ export function createResponsibilityScope({
   decision,
   routeValidated = false,
   cardId,
+  resumeOfScopeId,
 }) {
   if (!Number.isSafeInteger(turn) || turn < 1) throw new TypeError("scope turn must be a positive integer");
   if (!Number.isSafeInteger(startStep) || startStep < 1) throw new TypeError("scope startStep must be a positive integer");
   const requestedRoute = routeSnapshot(route);
   if (!requestedRoute) throw new TypeError("scope route must contain provider and model");
+  if (resumeOfScopeId !== undefined && (typeof resumeOfScopeId !== "string" || resumeOfScopeId === "")) {
+    throw new TypeError("resumeOfScopeId must be a non-empty string");
+  }
   return Object.freeze({
     id: randomUUID(),
     state: "pending",
@@ -46,6 +50,7 @@ export function createResponsibilityScope({
     stopPolicy: "terminal-response-or-ownership-boundary",
     routeValidated: routeValidated === true,
     ...(cardId ? { cardId } : {}),
+    ...(resumeOfScopeId ? { resumeOfScopeId } : {}),
   });
 }
 
@@ -113,6 +118,7 @@ function scopeEventData(scope) {
     stopPolicy: scope.stopPolicy,
     ...(scope.source ? { routeSource: scope.source } : {}),
     ...(scope.cardId ? { routeCardId: scope.cardId } : {}),
+    ...(scope.resumeOfScopeId ? { resumeOfScopeId: scope.resumeOfScopeId } : {}),
     ...(scope.baseRoute ? { baseRoute: scope.baseRoute } : {}),
     ...(scope.temporaryRoute ? { temporaryRoute: scope.temporaryRoute } : {}),
     ...(scope.routeMode ? { routeMode: scope.routeMode } : {}),
@@ -148,6 +154,33 @@ export function latestDanglingResponsibilityScope(events) {
   return [...states.values()].findLast((entry) => entry.state === "claimed")?.data;
 }
 
+export function latestStoppedResponsibilityScope(events, turn) {
+  return (Array.isArray(events) ? events : []).findLast((event) => (
+    event?.type === "odai/responsibility-scope-stopped"
+      && event.data?.turn === turn
+      && typeof event.data?.scopeId === "string"
+  ))?.data;
+}
+
+export function pendingResponsibilityInterruption(events) {
+  const settled = new Set();
+  for (let index = (Array.isArray(events) ? events.length : 0) - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const scopeId = event?.data?.scopeId;
+    if (typeof scopeId !== "string") continue;
+    if (["odai/responsibility-interruption-consumed", "odai/responsibility-interruption-cleared"].includes(event.type)) {
+      settled.add(scopeId);
+      continue;
+    }
+    if (event.type === "odai/responsibility-interrupted") {
+      return event.data?.reason === "max-tokens" && !settled.has(scopeId)
+        ? event.data
+        : undefined;
+    }
+  }
+  return undefined;
+}
+
 export function pendingResponsibilityScopeRestoration(events) {
   let candidate;
   for (const event of Array.isArray(events) ? events : []) {
@@ -157,10 +190,10 @@ export function pendingResponsibilityScopeRestoration(events) {
       candidate = event.data;
       continue;
     }
-    if (candidate && event?.type === "request/header") candidate = undefined;
     if (candidate
       && event?.type === "odai/responsibility-scope-restored"
-      && event.data?.scopeId === candidate.scopeId) candidate = undefined;
+      && event.data?.scopeId === candidate.scopeId
+      && event.data?.status === "applied") candidate = undefined;
   }
   return candidate;
 }

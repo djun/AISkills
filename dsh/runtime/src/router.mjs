@@ -2,6 +2,7 @@ export const HIGH_IMPACT_PLANNER_REASON = "PLANNER_UNVERIFIED_HIGH_IMPACT_CHANGE
 export const RESEARCHER_EVIDENCE_REASON = "RESEARCHER_MULTI_SOURCE_DECISION_EVIDENCE";
 export const FRONTEND_SPECIALIST_REASON = "FRONTEND_SUBSTANTIAL_INTERFACE_WORK";
 export const EXECUTOR_ROUTE_CARD_REASON = "EXECUTOR_FROZEN_ROUTE_NET_BENEFIT";
+export const OUTPUT_LIMIT_CONTINUATION_REASON = "RESPONSIBILITY_OUTPUT_LIMIT_CONTINUATION";
 
 const RESPONSIBILITY_LABELS = Object.freeze({
   researcher: "多源事实调查",
@@ -73,6 +74,16 @@ const IRREVERSIBLE_ACTION_PATTERNS = [
 const CONTINUATION_PATTERNS = [
   /(?:继续|接着|进一步|深入|再(?:判断|分析|评估|检查|处理)|按(?:照)?(?:刚才|上面|上述|前面|这个|该)|那就|就按|能做不|能不能做|可以做不|可以做吗)/iu,
   /\b(?:continue|proceed|go ahead|follow up|dig deeper|based on (?:that|the previous|the above)|can you (?:do|handle|implement) (?:it|that))\b/iu,
+];
+
+const PURE_RESPONSIBILITY_CONTINUATION_PATTERNS = [
+  /^\s*(?:请)?(?:继续|接着|接下去|续上|恢复)(?:(?:执行|完成|处理|做|推进|设计|分析|规划))?(?:(?:刚才|之前|上次|这个|该|原来)的?)?(?:任务|工作|实现|方案|设计|分析|规划)?(?:下去|完成|吧)?[。！!]?\s*$/iu,
+  /^\s*(?:please\s+)?(?:continue|go on|resume|carry on|keep going)(?:\s+(?:the\s+)?(?:previous|interrupted|same)?\s*(?:task|work|implementation|plan|design|analysis))?[.!]?\s*$/iu,
+];
+const OUTPUT_LIMIT_DIAGNOSTIC_PATTERNS = [
+  /(?:截断|断掉|中断|输出[^。！？\n]{0,12}(?:上限|预算)|(?:上限|预算)[^。！？\n]{0,12}输出|max\s*[_-]?\s*tokens?)/iu,
+  /(?:token|令牌)[^。！？\n]{0,16}(?:limit|budget|上限|预算|截断)/iu,
+  /(?:为什么|为何|怎么)[^。！？\n]{0,20}(?:停|断|中断|没继续|不继续)/iu,
 ];
 
 const LOW_RISK_TRANSFORM_PATTERNS = [
@@ -196,6 +207,14 @@ function stripQuotedMaterial(text) {
     .replace(/^\s*>.*$/gmu, " ")
     .replace(/`[^`\n]*`/gu, " ")
     .replace(/“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|《[^》\n]*》|"[^"\n]*"/gu, " ");
+}
+
+export function classifyResponsibilityInterruptionText(text) {
+  const explicit = stripQuotedMaterial(String(text ?? "")).trim();
+  if (!explicit) return "clear";
+  if (matchesAny(explicit, PURE_RESPONSIBILITY_CONTINUATION_PATTERNS)) return "continue";
+  if (matchesAny(explicit, OUTPUT_LIMIT_DIAGNOSTIC_PATTERNS)) return "preserve";
+  return "clear";
 }
 
 function isExecutionContinuation(text) {
@@ -362,6 +381,19 @@ export function decideRoute(input = {}) {
   if (specificOperationalParameter) signals.push("specific-operational-parameter");
   if (urgencyPressure) signals.push("urgency-pressure");
   if (irreversibleAction) signals.push("irreversible-action");
+
+  const interruption = input.interruption;
+  if (["planner", "executor", "frontend"].includes(interruption?.responsibility)
+    && classifyResponsibilityInterruptionText(interruption?.continuationText) === "continue") {
+    return route(
+      "controller",
+      OUTPUT_LIMIT_CONTINUATION_REASON,
+      `The verified ${interruption.responsibility} responsibility was interrupted by the provider output limit and the user explicitly continued it.`,
+      ["verified-output-limit-interruption", "explicit-continuation"],
+      "upgrade",
+      interruption.responsibility,
+    );
+  }
 
   const executionAuthorizedByState = proposal?.responsibility === "executor"
     && input.routeCard?.authorization?.status === "authorized";
@@ -579,7 +611,7 @@ export function renderRouteNotice(decision, runtimeMode, actualRoute) {
       ? `The ${routeRole} gap was selected in observe mode; do not start a child automatically.`
       : `The ${routeRole} route was selected and executed as an independent child.`;
   const routeIdentity = actualRoute
-    ? [`${isUpgrade ? "requested controller route" : "verified child route"}: ${actualRoute.provider}/${actualRoute.model} (reasoning: ${actualRoute.reasoningEffort ?? "unspecified"})`]
+    ? [`${isUpgrade ? "requested controller route" : "verified child route"}: ${actualRoute.provider}/${actualRoute.model} (reasoning: ${actualRoute.reasoningEffort ?? "unspecified"}, maxTokens: ${actualRoute.maxTokens ?? (isUpgrade ? "inherited from Controller policy" : "provider default")})`]
     : [];
 
   return [
