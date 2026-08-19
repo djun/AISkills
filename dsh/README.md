@@ -84,6 +84,17 @@ No user-facing package depends on another Odai package:
 
 Users configure optional responsibilities by speaking normally, for example, `规划用 provider/model，推理档 high` or `验收模型改成 provider/model-review`. The controller calls `odai_routing_config`; it must not choose a model that the user did not specify. Mappings persist in `$DSH_HOME/odai/routing.json`, outside both managed package artifacts, and take effect on the next user turn. Users never edit that file directly. If the store is invalid, governance still loads; a needed route fails closed, and the next explicit natural-language `set` preserves the invalid copy and repairs the store.
 
+## Maintainer npm release helpers
+
+The repository includes double-clickable npm helpers under `dsh/` for maintainers:
+
+- macOS login: `npm-login-macos.command`
+- Windows login: `npm-login-windows.cmd`
+- macOS two-package release: `npm-publish-macos.command`
+- Windows two-package release: `npm-publish-windows.cmd`
+
+The two platform launchers call the shared `npm-publish.mjs` release core. It verifies that the npm account owns both packages, the Plugin/Agent versions match and do not move the `latest` tag backward, release-owned files are clean, and the current commit exactly matches `origin/main`. It requires the typed confirmation `publish <version>`, reruns both package test, dry-run packaging, and real DSH verification gates, then publishes and verifies `odai-dsh-plugin` followed by `odai-dsh-agent`. Registry verification also requires each package's `gitHead` to match the pushed commit. Rerunning after a partial registry success safely skips only a package version published from that exact commit. The helpers never change the global npm registry.
+
 ## Verification
 
 ```sh
