@@ -17,14 +17,22 @@ import {
 
 const noDshProcesses = () => [];
 
-test("Agent composition renders exact rc.6 and rc.7 Standard contracts", async () => {
-  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.6", "0.1.0-rc.7"]);
+test("Agent composition renders exact rc.6 through rc.8 Standard contracts", async () => {
+  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.6", "0.1.0-rc.7", "0.1.0-rc.8"]);
   const source = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
+  const rc8 = renderAgentCompositionForDsh(source, "0.1.0-rc.8");
+  assert.match(rc8, /Install the[\s\S]*matching Bundle[\s\S]*Host availability[\s\S]*alone grants no tool/u);
+  assert.match(rc8, /provider: codex[\s\S]*backgroundMode: one-shot/u);
+  assert.match(rc8, /provider: claude-code[\s\S]*backgroundMode: one-shot/u);
+  assert.doesNotMatch(rc8, /enableRunInBackground/u);
   const rc7 = renderAgentCompositionForDsh(source, "0.1.0-rc.7");
+  assert.match(rc7, /An opting-in[\s\S]*Profile mounts each provider once on the host plane/u);
+  assert.doesNotMatch(rc7, /matching Bundle|Host availability/u);
   assert.match(rc7, /provider: codex[\s\S]*backgroundMode: one-shot/u);
   assert.match(rc7, /provider: claude-code[\s\S]*backgroundMode: one-shot/u);
   assert.doesNotMatch(rc7, /enableRunInBackground/u);
   const rc6 = renderAgentCompositionForDsh(source, "0.1.0-rc.6");
+  assert.match(rc6, /Product providers are host-plane singletons/u);
   assert.match(rc6, /provider: codex[\s\S]*enableRunInBackground: false/u);
   assert.match(rc6, /provider: claude-code[\s\S]*enableRunInBackground: false/u);
   assert.doesNotMatch(rc6, /backgroundMode: one-shot/u);
@@ -45,8 +53,8 @@ test("managed preset installs, updates, reports status, and uninstalls", async (
     await writeFile(memorySentinel, "user-owned semantic memory\n", "utf8");
     const installed = await installAgentPreset({ dshHome, sourceRoot });
     assert.equal(installed.operation, "installed");
-    assert.equal(installed.dshVersion, "0.1.0-rc.7");
-    assert.equal((await inspectAgentInstallation({ dshHome })).dshVersion, "0.1.0-rc.7");
+    assert.equal(installed.dshVersion, "0.1.0-rc.8");
+    assert.equal((await inspectAgentInstallation({ dshHome })).dshVersion, "0.1.0-rc.8");
     assert.equal(installed.trust, "user");
     assert.match(installed.security, /same privileges as shell access/u);
     assert.equal((await inspectAgentInstallation({ dshHome })).status, "installed");

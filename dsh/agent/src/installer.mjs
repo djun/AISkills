@@ -31,7 +31,20 @@ export const SUPPORTED_DSH_VERSIONS = Object.freeze(
 if (SUPPORTED_DSH_VERSIONS.length === 0 || SUPPORTED_DSH_VERSIONS.some((version) => !DSH_VERSION_PATTERN.test(version))) {
   throw new Error("odai-dsh-agent peer dependency must list exact supported DSH versions");
 }
-export const SUPPORTED_DSH_VERSION = SUPPORTED_DSH_VERSIONS.at(-1);
+const SOURCE_DSH_VERSION = "0.1.0-rc.8";
+const OPTIONAL_PROVIDER_COMMENTS = Object.freeze({
+  "0.1.0-rc.6": "    # Product providers are host-plane singletons. Copy this preset, then\n    # remove `disabled` from either ordinary tool row to expose that product\n    # only to agents composed from the copy.",
+  "0.1.0-rc.7": "    # Production dsh does not install these optional providers. An opting-in\n    # Profile mounts each provider once on the host plane; copy this preset,\n    # then remove `disabled` from the matching tool row.",
+  "0.1.0-rc.8": "    # Production dsh does not install these optional providers. Install the\n    # matching Bundle in this Profile and restart the Host, then copy this\n    # preset and remove `disabled` from the matching tool row. Host availability\n    # alone grants no tool.",
+});
+const compositionVersions = Object.keys(OPTIONAL_PROVIDER_COMMENTS);
+if (JSON.stringify(SUPPORTED_DSH_VERSIONS) !== JSON.stringify(compositionVersions)) {
+  throw new Error(`Odai Agent peer versions ${SUPPORTED_DSH_VERSIONS.join(", ")} must exactly match composition contracts ${compositionVersions.join(", ")}`);
+}
+if (compositionVersions.at(-1) !== SOURCE_DSH_VERSION) {
+  throw new Error(`Odai Agent source composition targets ${SOURCE_DSH_VERSION}, not contract baseline ${compositionVersions.at(-1)}`);
+}
+export const SUPPORTED_DSH_VERSION = SOURCE_DSH_VERSION;
 const requiredFiles = Object.freeze([
   "agent.cordis.yml",
   "preset.yml",
@@ -50,7 +63,7 @@ const requiredFiles = Object.freeze([
 function replaceCompositionContract(composition, before, after, label) {
   const first = composition.indexOf(before);
   if (first < 0 || composition.indexOf(before, first + before.length) >= 0) {
-    throw new Error(`Odai Agent composition does not contain exactly one rc.7 ${label} contract`);
+    throw new Error(`Odai Agent source composition does not contain exactly one ${label} contract`);
   }
   return `${composition.slice(0, first)}${after}${composition.slice(first + before.length)}`;
 }
@@ -63,13 +76,16 @@ export function renderAgentCompositionForDsh(composition, dshVersion = SUPPORTED
     throw new Error(`unsupported DSH version ${dshVersion || "<empty>"}; expected one of ${SUPPORTED_DSH_VERSIONS.join(", ")}`);
   }
   let rendered = composition.replace(/\r\n/gu, "\n");
-  if (dshVersion === "0.1.0-rc.7") return rendered;
+  if (dshVersion === SOURCE_DSH_VERSION) return rendered;
+  const targetComment = OPTIONAL_PROVIDER_COMMENTS[dshVersion];
+  if (!targetComment) throw new Error(`missing Agent composition contract for DSH ${dshVersion}`);
   rendered = replaceCompositionContract(
     rendered,
-    "    # Production dsh does not install these optional providers. An opting-in\n    # Profile mounts each provider once on the host plane; copy this preset,\n    # then remove `disabled` from the matching tool row.",
-    "    # Product providers are host-plane singletons. Copy this preset, then\n    # remove `disabled` from either ordinary tool row to expose that product\n    # only to agents composed from the copy.",
+    OPTIONAL_PROVIDER_COMMENTS[SOURCE_DSH_VERSION],
+    targetComment,
     "optional-provider comment",
   );
+  if (dshVersion === "0.1.0-rc.7") return rendered;
   rendered = replaceCompositionContract(
     rendered,
     "        provider: codex\n        toolName: subagent_codex\n        backgroundMode: one-shot",

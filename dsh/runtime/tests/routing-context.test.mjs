@@ -89,13 +89,13 @@ test("reviewer packets require requirements, acceptance, diff, tests, and tool e
   assert.match(rendered, /kinds: tool, test/u);
 });
 
-test("rc.6 and rc.7 native tool call/result replays produce the same grounded coverage", () => {
-  for (const release of ["0.1.0-rc.6", "0.1.0-rc.7"]) {
+test("rc.6 through rc.8 native tool call/result replays produce the same grounded coverage", () => {
+  for (const release of ["0.1.0-rc.6", "0.1.0-rc.7", "0.1.0-rc.8"]) {
     const packet = buildRoleContextPacket(
       {
         session: {
           events: completeReviewEvents({
-            testCommand: release.endsWith("rc.7") ? "npm.cmd --prefix dsh/plugin test" : "node --test dsh/runtime/tests/router.test.mjs",
+            testCommand: release === "0.1.0-rc.6" ? "node --test dsh/runtime/tests/router.test.mjs" : "npm.cmd --prefix dsh/plugin test",
           }).map((event) => ({ ...event, fixtureRelease: release })),
         },
       },
