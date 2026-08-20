@@ -56,6 +56,7 @@ function fakeContext(extra = {}) {
         captured.guards.push(value);
       },
       schemas() {
+        if (typeof extra.toolSchemas === "function") return extra.toolSchemas(captured);
         return captured.tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
       },
     },
@@ -1349,6 +1350,45 @@ test("every gateway capability is executable when its next-step schema is snapsh
     assert.equal(restrictionAtSnapshot.deny.includes(toolName), false, `${toolName} must be executable at snapshot`);
     assert.equal(restrictionAtSnapshot.deny.includes("odai_context_capability"), false, "gateway must remain executable");
   }
+});
+
+test("outer runtime refreshes executable schemas after downstream restriction changes", async () => {
+  const visible = new Set(["odai_context_capability", "odai_responsibility_gap"]);
+  const ctx = fakeContext({
+    toolSchemas(captured) {
+      return captured.tools
+        .filter(({ name }) => visible.has(name))
+        .map(({ name, description, parameters }) => ({ name, description, parameters }));
+    },
+  });
+  apply(ctx, { skillPath, routing: { mode: "off" } });
+  const events = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "step/start", seq: 2, data: { turn: 1, step: 1 } },
+  ];
+  const agent = {
+    ctx: { tools: { restrict() { return () => {}; } } },
+    session: {
+      header: {},
+      events,
+      append(type, data) { events.push({ type, seq: events.length + 1, data }); },
+    },
+  };
+  const gateway = ctx.captured.tools.find((tool) => tool.name === "odai_context_capability");
+  await gateway.execute({ capability: "routing-config" }, { agent });
+  const assembly = {
+    sections: ctx.captured.sections,
+    tools: ctx.tools.schemas(agent),
+  };
+  const result = await ctx.captured.handlers.get("system-prompt/assemble")(
+    assembly,
+    { agent, signal: new AbortController().signal },
+    async () => {
+      visible.add("odai_routing_config");
+      return { ...assembly, tools: ctx.tools.schemas(agent) };
+    },
+  );
+  assert.equal(result.tools.some((tool) => tool.name === "odai_routing_config"), true);
 });
 
 test("capability gateway recovers a missed expression on the next step", async () => {

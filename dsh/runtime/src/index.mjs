@@ -995,7 +995,9 @@ export function apply(ctx, rawConfig) {
     const visibleAssembly = reconcileAdaptiveToolSchemas(assembly, activeToolNames, executableSchemas);
     if (visibleAssembly !== assembly) assembly.tools = visibleAssembly.tools;
 
-    const downstream = reconcileAdaptiveToolSchemas(await next(), activeToolNames, executableSchemas);
+    const downstream = await next();
+    const finalExecutableSchemas = typeof ctx.tools.schemas === "function" ? ctx.tools.schemas(agent) : [];
+    const reconciledDownstream = reconcileAdaptiveToolSchemas(downstream, activeToolNames, finalExecutableSchemas);
     const selection = await selectSharedSkillForTurn(agent, () => selectForAgent(agent, context));
     const outputSelection = childSession
       ? Object.freeze({ policy: DEFAULT_OUTPUT_POLICY, source: "default" })
@@ -1053,8 +1055,8 @@ export function apply(ctx, rawConfig) {
       });
     }
     return {
-      ...downstream,
-      sections: downstream.sections.map((section) => {
+      ...reconciledDownstream,
+      sections: reconciledDownstream.sections.map((section) => {
         if (section.name === "odai:canonical-governance") return { ...section, text: canonicalPrompt(selection) };
         if (section.name === "odai:routing-configuration") return { ...section, text: routingPrompt };
         if (section.name === "odai:human-safety-continuity") return { ...section, text: continuityPrompt };
