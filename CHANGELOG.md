@@ -6,7 +6,7 @@
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.3`，精确接受 `@deepseek-ai/dsh@0.1.0-rc.6`、`0.1.0-rc.7` 与 `0.1.0-rc.8`；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。
 - Agent composition 以 rc.8 Standard preset 为 source；安装 rc.7 时确定性还原旧 optional-provider host-plane 文案，安装 rc.6 时再还原两项 disabled provider 的 `enableRunInBackground: false` 字段。source baseline 与 peer baseline 被显式绑定，后续不能只扩 peer range 而静默复用错误 composition。
-- Plugin/Runtime `181/181`、Agent `13/13`、发布辅助脚本 `7/7`、canonical validator、双包与 provider-neutral CLI dry-run 均通过；隔离的 rc.6、rc.7、rc.8 环境分别通过 Plugin legacy-session/load、Agent 全量 Standard composition/load 与 Plugin/Agent coexistence。上游 rc.8 声明 SQLite 存储格式与旧版不兼容；本版本不改写宿主持有的 SQLite 数据，也不把隔离 HOME 验证表述为跨版本存储迁移证明。
+- Plugin/Runtime `181/181`、Agent `18/18`（含 rc.6→rc.8、rc.7→rc.8、rc.8→rc.6、rc.8→rc.7 四个 managed-preset 迁移格）、发布辅助脚本 `7/7`、canonical validator、双包与 provider-neutral CLI dry-run 均通过。递归依赖图证明 rc.6、rc.7 各 `186` 个、rc.8 `187` 个 DSH 安装实例全部严格同版；真实 `0.2.3` 双包 tarball 在三套纯版本图中分别通过 Plugin legacy-session/load、Agent 全量 Standard composition/load 与 Plugin/Agent coexistence，安装 tarball 后再次扫描仍无混版。上游 rc.8 声明 SQLite 存储格式与旧版不兼容；本版本不改写宿主持有的 SQLite 数据，也不把隔离 HOME 验证表述为跨版本存储迁移证明。
 
 ## 2026-08-19 — DSH 0.2.2 责任预算与截断续作闭环
 
