@@ -97,17 +97,9 @@ The two platform launchers call the shared `npm-publish.mjs` release core. It ve
 
 ## DSH compatibility
 
-[`compatibility.json`](./compatibility.json) is the machine-checked release map. The package version verifier requires the current Plugin and Agent peer ranges to match its exact DSH version list, so a future release may intentionally narrow support to one DSH version without leaving stale range prose or package metadata.
+See [`COMPATIBILITY.md`](./COMPATIBILITY.md) for the human-readable, version-by-version Plugin/Agent/DSH comparison table. [`compatibility.json`](./compatibility.json) is its machine-readable source of truth.
 
-| Odai package version | Published package surfaces | Exact supported DSH versions |
-| --- | --- | --- |
-| `0.0.1` - `0.0.8` | Plugin + Agent | `0.1.0-rc.6` |
-| `0.0.9` | Agent only | `0.1.0-rc.6` |
-| `0.0.10`, `0.1.0`, `0.1.1` | Plugin + Agent | `0.1.0-rc.6` |
-| `0.2.0` - `0.2.2` | Plugin + Agent | `0.1.0-rc.6`, `0.1.0-rc.7` |
-| `0.2.3` | Plugin + Agent | `0.1.0-rc.6`, `0.1.0-rc.7`, `0.1.0-rc.8` |
-
-These rows describe install/runtime compatibility, not migration compatibility for DSH-owned storage. Starting with Odai `0.0.10`, Plugin and Agent are one synchronized release unit; every new release must add one matrix entry, update both exact peer declarations, refresh the Agent composition contract when required, and verify every listed DSH release.
+The package version verifier requires the current Plugin and Agent peer ranges to match the matrix's exact DSH version list, so a future release may intentionally narrow support to one DSH version without leaving stale package metadata. These mappings describe install/runtime compatibility, not migration compatibility for DSH-owned storage. Starting with Odai `0.0.10`, Plugin and Agent are one synchronized release unit; every new release must add one matrix entry, update both exact peer declarations, refresh the Agent composition contract when required, and verify every listed DSH release.
 
 ## Verification
 
