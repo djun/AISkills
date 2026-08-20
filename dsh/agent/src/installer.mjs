@@ -33,7 +33,6 @@ if (SUPPORTED_DSH_VERSIONS.length === 0 || SUPPORTED_DSH_VERSIONS.some((version)
 }
 const SOURCE_DSH_VERSION = "0.1.0-rc.8";
 const OPTIONAL_PROVIDER_COMMENTS = Object.freeze({
-  "0.1.0-rc.6": "    # Product providers are host-plane singletons. Copy this preset, then\n    # remove `disabled` from either ordinary tool row to expose that product\n    # only to agents composed from the copy.",
   "0.1.0-rc.7": "    # Production dsh does not install these optional providers. An opting-in\n    # Profile mounts each provider once on the host plane; copy this preset,\n    # then remove `disabled` from the matching tool row.",
   "0.1.0-rc.8": "    # Production dsh does not install these optional providers. Install the\n    # matching Bundle in this Profile and restart the Host, then copy this\n    # preset and remove `disabled` from the matching tool row. Host availability\n    # alone grants no tool.",
 });
@@ -85,19 +84,7 @@ export function renderAgentCompositionForDsh(composition, dshVersion = SUPPORTED
     targetComment,
     "optional-provider comment",
   );
-  if (dshVersion === "0.1.0-rc.7") return rendered;
-  rendered = replaceCompositionContract(
-    rendered,
-    "        provider: codex\n        toolName: subagent_codex\n        backgroundMode: one-shot",
-    "        provider: codex\n        toolName: subagent_codex\n        enableRunInBackground: false",
-    "Codex provider",
-  );
-  return replaceCompositionContract(
-    rendered,
-    "        provider: claude-code\n        toolName: subagent_claude_code\n        backgroundMode: one-shot",
-    "        provider: claude-code\n        toolName: subagent_claude_code\n        enableRunInBackground: false",
-    "Claude Code provider",
-  );
+  return rendered;
 }
 
 export function resolveDshHome(configured, env = process.env) {

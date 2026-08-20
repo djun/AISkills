@@ -1194,7 +1194,7 @@ test("skill evolution activation preserves the current turn and changes the next
   assert.match(evolvedPrompt, /EVOLUTION_NEXT_TURN/u);
 });
 
-test("adaptive tool exposure is scoped per agent and refreshes from direct user intent", async () => {
+test("adaptive tool exposure is scoped per agent and applied before prompt tool snapshots", async () => {
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "off" } });
   const restrictions = [];
@@ -1219,29 +1219,71 @@ test("adaptive tool exposure is scoped per agent and refreshes from direct user 
     },
   };
   const signal = new AbortController().signal;
-  const preStep = ctx.captured.handlers.get("agent/pre-step");
-  await preStep({ agent, turn: 1, step: 1, signal }, async () => ({
-    kind: "enter",
-    messages: [userMessage("把按钮文案改清楚")],
-  }));
+  const assemble = ctx.captured.handlers.get("system-prompt/assemble");
+  let firstRestrictionAtSnapshot;
+  await assemble({}, { agent, signal }, async () => {
+    firstRestrictionAtSnapshot = restrictions.at(-1);
+    return { sections: ctx.captured.sections };
+  });
+  assert.equal(firstRestrictionAtSnapshot, restrictions[0]);
   assert.ok(restrictions[0].deny.includes("odai_human_care"));
   assert.ok(restrictions[0].deny.includes("odai_routing_config"));
   assert.ok(restrictions[0].deny.includes("odai_memory"));
   assert.equal(restrictions[0].deny.includes("odai_responsibility_gap"), false);
 
+  const careMessage = { ...userMessage("你能启动欧黛模式吗？"), id: "user-2" };
   events.push(
     { type: "turn/start", seq: events.length + 1, data: { turn: 2 } },
-    { type: "user/message", seq: events.length + 2, data: { ...userMessage("我很焦虑，总担心自己会犯错"), id: "user-2" } },
+    { type: "user/message", seq: events.length + 2, data: careMessage },
   );
-  await preStep({ agent, turn: 2, step: 1, signal }, async () => ({
-    kind: "enter",
-    messages: [{ ...userMessage("我很焦虑，总担心自己会犯错"), id: "user-2" }],
-  }));
+  let careRestrictionAtSnapshot;
+  await assemble({}, { agent, signal }, async () => {
+    careRestrictionAtSnapshot = restrictions.at(-1);
+    return { sections: ctx.captured.sections };
+  });
   assert.equal(disposed, 1);
+  assert.equal(careRestrictionAtSnapshot, restrictions[1]);
   assert.equal(restrictions[1].deny.includes("odai_human_care"), false);
   assert.ok(restrictions[1].deny.includes("odai_human_safety"));
   const selected = events.filter((event) => event.type === "odai/tool-exposure-selected");
   assert.deepEqual(selected.at(-1).data.activeTools, ["odai_context_capability", "odai_responsibility_gap", "odai_human_care"]);
+});
+
+test("cold first steps expose only executable core tools before gateway activation", async () => {
+  const ctx = fakeContext();
+  apply(ctx, { skillPath, routing: { mode: "off" } });
+  const restrictions = [];
+  const events = [{ type: "turn/start", seq: 1, data: { turn: 1 } }];
+  const agent = {
+    ctx: { tools: { restrict(filter) { restrictions.push(filter); return () => {}; } } },
+    session: {
+      header: {},
+      events,
+      append(type, data) { events.push({ type, seq: events.length + 1, data }); },
+    },
+  };
+  const signal = new AbortController().signal;
+  const assemble = ctx.captured.handlers.get("system-prompt/assemble");
+  let coldRestrictionAtSnapshot;
+  await assemble({}, { agent, signal }, async () => {
+    coldRestrictionAtSnapshot = restrictions.at(-1);
+    return { sections: ctx.captured.sections };
+  });
+  assert.equal(coldRestrictionAtSnapshot, restrictions[0]);
+  assert.ok(coldRestrictionAtSnapshot.deny.includes("odai_human_care"));
+  assert.equal(coldRestrictionAtSnapshot.deny.includes("odai_context_capability"), false);
+
+  agent.session.append("user/message", userMessage("你能启动欧黛模式吗？"));
+  agent.session.append("step/start", { turn: 1, step: 1 });
+  const gateway = ctx.captured.tools.find((tool) => tool.name === "odai_context_capability");
+  await gateway.execute({ capability: "human-care" }, { agent });
+  let activatedRestrictionAtSnapshot;
+  await assemble({}, { agent, signal }, async () => {
+    activatedRestrictionAtSnapshot = restrictions.at(-1);
+    return { sections: ctx.captured.sections };
+  });
+  assert.equal(activatedRestrictionAtSnapshot, restrictions[1]);
+  assert.equal(activatedRestrictionAtSnapshot.deny.includes("odai_human_care"), false);
 });
 
 test("capability gateway recovers a missed expression on the next step", async () => {
@@ -1272,11 +1314,6 @@ test("capability gateway recovers a missed expression on the next step", async (
     assembled.sections.find((section) => section.name === "odai:compaction-model-configuration").text,
     /compaction model configuration/u,
   );
-  const signal = new AbortController().signal;
-  await ctx.captured.handlers.get("agent/pre-step")({ agent, turn: 1, step: 2, signal }, async () => ({
-    kind: "enter",
-    messages: [userMessage("把那个相关设置给我看看")],
-  }));
   assert.equal(restrictions.at(-1).deny.includes("odai_compaction_config"), false);
 });
 
@@ -2221,8 +2258,10 @@ test("an authorized planner card and executor gap continue automatically without
     { type: "step/start", seq: 3, data: { step: 1 } },
   ];
   let actualHeader;
+  const restrictions = [];
   const agent = {
     phase: { turn: 1, step: 1 },
+    ctx: { tools: { restrict(filter) { restrictions.push(filter); return () => {}; } } },
     session: {
       header: {},
       events,
@@ -2311,7 +2350,15 @@ test("an authorized planner card and executor gap continue automatically without
     { type: "turn/start", seq: 100, data: { turn: 2 } },
     { type: "user/message", seq: 101, data: continuation },
   );
-  agent.phase = { turn: 2, step: 1 };
+  agent.phase = { turn: 2, step: 0 };
+  const resumedAssembly = await ctx.captured.handlers.get("system-prompt/assemble")(
+    {},
+    { agent, signal },
+    async () => ({ sections: ctx.captured.sections }),
+  );
+  assert.match(resumedAssembly.sections.find((section) => section.name === "odai:route-card").text, /route card/u);
+  assert.equal(restrictions.at(-1).deny.includes("odai_route_card"), false);
+  agent.phase.step = 1;
   const resumed = await ctx.captured.handlers.get("agent/pre-step")(
     { agent, turn: 2, step: 1, signal },
     async () => ({ kind: "enter", messages: [continuation] }),

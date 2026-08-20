@@ -17,8 +17,8 @@ import {
 
 const noDshProcesses = () => [];
 
-test("Agent composition renders exact rc.6 through rc.8 Standard contracts", async () => {
-  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.6", "0.1.0-rc.7", "0.1.0-rc.8"]);
+test("Agent composition renders exact rc.7 and rc.8 Standard contracts", async () => {
+  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.7", "0.1.0-rc.8"]);
   const source = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
   const rc8 = renderAgentCompositionForDsh(source, "0.1.0-rc.8");
   assert.match(rc8, /Install the[\s\S]*matching Bundle[\s\S]*Host availability[\s\S]*alone grants no tool/u);
@@ -31,20 +31,14 @@ test("Agent composition renders exact rc.6 through rc.8 Standard contracts", asy
   assert.match(rc7, /provider: codex[\s\S]*backgroundMode: one-shot/u);
   assert.match(rc7, /provider: claude-code[\s\S]*backgroundMode: one-shot/u);
   assert.doesNotMatch(rc7, /enableRunInBackground/u);
-  const rc6 = renderAgentCompositionForDsh(source, "0.1.0-rc.6");
-  assert.match(rc6, /Product providers are host-plane singletons/u);
-  assert.match(rc6, /provider: codex[\s\S]*enableRunInBackground: false/u);
-  assert.match(rc6, /provider: claude-code[\s\S]*enableRunInBackground: false/u);
-  assert.doesNotMatch(rc6, /backgroundMode: one-shot/u);
-  assert.throws(() => renderAgentCompositionForDsh(source, "0.1.0-rc.5"), /unsupported DSH version/u);
+  assert.throws(() => renderAgentCompositionForDsh(source, "0.1.0-rc.6"), /unsupported DSH version/u);
+  assert.throws(() => renderAgentCompositionForDsh(source, "0.1.0-rc.9"), /unsupported DSH version/u);
 });
 
-test("managed preset migrates across rc.6, rc.7, and rc.8 without touching external state", async (context) => {
+test("managed preset migrates between rc.7 and rc.8 without touching external state", async (context) => {
   const sourceComposition = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
   const transitions = [
-    ["0.1.0-rc.6", "0.1.0-rc.8"],
     ["0.1.0-rc.7", "0.1.0-rc.8"],
-    ["0.1.0-rc.8", "0.1.0-rc.6"],
     ["0.1.0-rc.8", "0.1.0-rc.7"],
   ];
   for (const [fromVersion, toVersion] of transitions) {

@@ -951,12 +951,23 @@ export function apply(ctx, rawConfig) {
     return state;
   };
   ctx.on("system-prompt/assemble", async (assembly, context, next) => {
-    const downstream = await next();
     const agent = context.agent;
-    if (!agent) return downstream;
-    const selection = await selectSharedSkillForTurn(agent, () => selectForAgent(agent, context));
+    if (!agent) return next();
     const turn = currentAgentTurn(agent);
-    const outputSelection = isSubagentSession(agent)
+    const childSession = isSubagentSession(agent);
+    const directMessage = latestDirectUserMessage(agent);
+    const activation = contextActivationFor(agent, directMessage ? extractLatestUserText([directMessage]) : "", turn);
+    const proposedStep = (currentAgentStep(agent) ?? 0) + 1;
+    const exposureEvents = evidence.events(agent);
+    const routeCardNeeded = !childSession && (Boolean(activeRouteCard(exposureEvents))
+      || ["planner", "executor"].includes(pendingResponsibilityGap(agent, turn, proposedStep)?.responsibility)
+      || pendingResponsibilityInterruption(exposureEvents)?.responsibility === "executor");
+    // DSH snapshots tool schemas while assembling the prompt, before agent/pre-step. Keep that snapshot and execution visibility identical.
+    syncToolExposure(agent, activation, { turn, step: proposedStep, routeCard: routeCardNeeded });
+
+    const downstream = await next();
+    const selection = await selectSharedSkillForTurn(agent, () => selectForAgent(agent, context));
+    const outputSelection = childSession
       ? Object.freeze({ policy: DEFAULT_OUTPUT_POLICY, source: "default" })
       : await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
     const selectionEvidence = {
@@ -986,12 +997,6 @@ export function apply(ctx, rawConfig) {
       logger.warn(`Odai skill source ${selection.mode} fell back to bundled governance (${selection.reasonCode})`);
     }
     const outputPrompt = renderOutputPolicyPrompt(outputSelection.policy);
-    const childSession = isSubagentSession(agent);
-    const directMessage = latestDirectUserMessage(agent);
-    const activation = contextActivationFor(agent, directMessage ? extractLatestUserText([directMessage]) : "", turn);
-    const proposedStep = (currentAgentStep(agent) ?? 0) + 1;
-    const routeCardNeeded = !childSession && (Boolean(activeRouteCard(evidence.events(agent)))
-      || ["planner", "executor"].includes(pendingResponsibilityGap(agent, turn, proposedStep)?.responsibility));
     const routingPrompt = !activation.routingConfig
       ? ""
       : childSession
@@ -1884,11 +1889,6 @@ export function apply(ctx, rawConfig) {
           });
         }
       }
-      const activation = contextActivationFor(agent, directText, turn);
-      const routeCardNeeded = !subagentSession && (Boolean(activeRouteCard(responsibilityEvents))
-        || ["planner", "executor"].includes(responsibilityGap?.responsibility)
-        || responsibilityContinuation?.responsibility === "executor");
-      syncToolExposure(agent, activation, { turn, step, routeCard: routeCardNeeded });
       if (interruptionNotice) {
         downstream = { ...downstream, messages: [...downstream.messages, interruptionNotice] };
       }
