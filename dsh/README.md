@@ -115,6 +115,6 @@ npm --prefix dsh/agent run pack:dry-run
 
 The coexistence probe uses a temporary `DSH_HOME`: it packs and installs the real Plugin into a temporary Web profile, installs the Agent preset into the same home, and proves an Agent-scoped non-bundled project skill atomically supplies both prompt governance and routing role contracts while the profile-wide Plugin remains bundled for Standard sessions.
 
-Both packages currently accept only `@deepseek-ai/dsh@0.1.0-rc.7` or `0.1.0-rc.8`; `0.2.4` no longer supports rc.6. The Agent package keeps rc.8 Standard as its source composition and restores rc.7's optional-provider wording when needed. A DSH version update must refresh this versioned composition and rerun Plugin, Agent, and coexistence probes against every supported release.
+Both packages currently accept only `@deepseek-ai/dsh@0.1.0-rc.7` or `0.1.0-rc.8`; `0.2.5` no longer supports rc.6. The Agent package keeps rc.8 Standard as its source composition and restores rc.7's optional-provider wording when needed. A DSH version update must refresh this versioned composition and rerun Plugin, Agent, and coexistence probes against every supported release.
 
 The upstream [rc.8 release](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.0-rc.8) declares its SQLite storage format incompatible with earlier releases. Odai's release matrix uses isolated homes and neither claims nor performs cross-release migration of DSH-owned SQLite data; back up that host data and follow upstream guidance when changing the installed DSH release.

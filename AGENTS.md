@@ -17,6 +17,11 @@
 - canonical references 按单一所有权维护：`references/planning.md` 只负责正式计划、可执行合同与跨轮续作，`references/craft.md` 只负责已决定结果的制作工艺，`references/leverage.md` 只负责能力与责任选择、调度和交接；角色合同只引用对应 owner，不复制另一层的清单或宿主机制。
 - 发布相关修改还需运行 `npm --prefix cli run pack:dry-run`，确认产物与当前声明的打包范围一致，且命令结束后没有遗留 `cli/skills/`。
 
+## 版本发布约束
+
+- 从本约束生效后的首个候选版本起，本仓库自有的任何新版本标识都不得包含数字字符 `4`；npm package version、skill version 与 runtime contract version 均受约束，版本序列遇到含 `4` 的候选值时必须直接跳过。已发布历史版本及其兼容记录必须按事实保留，不因本约束改写；上游依赖版本不属于本仓库自有版本，不受此规则限制。
+- 禁止只靠人工记忆执行本约束。所有发布入口与版本事实源必须调用仓库的统一版本策略校验；新增版本载体时必须同时纳入该校验，命中禁用字符即 fail-closed。
+
 ## DSH 集成修改边界
 
 - `odai-dsh-plugin` 与 `odai-dsh-agent` 的问题必须在本仓库内解决；修复实现、兼容层、配置、补丁、测试和文档只能落到本项目受版本控制的文件中。

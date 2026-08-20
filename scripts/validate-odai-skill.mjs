@@ -4,7 +4,10 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { assertRepositoryVersionPolicy } from "./version-policy.mjs";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+assertRepositoryVersionPolicy({ repoRoot });
 const skillRoot = path.join(repoRoot, "skills", "odai");
 const ribaoRoot = path.join(repoRoot, "skills", "ribao");
 const failures = [];

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "forbiddenDigits": [
+    "4"
+  ],
+  "managedVersions": [
+    {
+      "path": "cli/package.json",
+      "field": "version",
+      "label": "odai-cli package version"
+    },
+    {
+      "path": "dsh/plugin/package.json",
+      "field": "version",
+      "label": "odai-dsh-plugin package version"
+    },
+    {
+      "path": "dsh/agent/package.json",
+      "field": "version",
+      "label": "odai-dsh-agent package version"
+    },
+    {
+      "path": "skills/odai/manifest.json",
+      "field": "skillVersion",
+      "label": "Odai skill version"
+    },
+    {
+      "path": "skills/odai/manifest.json",
+      "field": "runtimeContract",
+      "label": "Odai runtime contract version"
+    }
+  ]
+}

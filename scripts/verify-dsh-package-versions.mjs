@@ -4,7 +4,10 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assertRepositoryVersionPolicy } from "./version-policy.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+assertRepositoryVersionPolicy({ repoRoot });
 const VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const packages = [
   readPackage("dsh/plugin/package.json", "odai-dsh-plugin", "plugin"),
