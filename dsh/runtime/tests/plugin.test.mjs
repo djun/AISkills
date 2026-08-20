@@ -55,6 +55,9 @@ function fakeContext(extra = {}) {
       guard(value) {
         captured.guards.push(value);
       },
+      schemas() {
+        return captured.tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
+      },
     },
     on(event, handler, options) {
       captured.handlers.set(event, handler);
@@ -1194,7 +1197,7 @@ test("skill evolution activation preserves the current turn and changes the next
   assert.match(evolvedPrompt, /EVOLUTION_NEXT_TURN/u);
 });
 
-test("adaptive tool exposure is scoped per agent and applied before prompt tool snapshots", async () => {
+test("adaptive tool exposure reconciles prebuilt prompt schemas with the scoped execution registry", async () => {
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "off" } });
   const restrictions = [];
@@ -1265,25 +1268,35 @@ test("cold first steps expose only executable core tools before gateway activati
   const signal = new AbortController().signal;
   const assemble = ctx.captured.handlers.get("system-prompt/assemble");
   let coldRestrictionAtSnapshot;
-  await assemble({}, { agent, signal }, async () => {
+  const coldAssembly = { sections: ctx.captured.sections, tools: ctx.captured.tools.map(({ name }) => ({ name })) };
+  const coldResult = await assemble(coldAssembly, { agent, signal }, async () => {
     coldRestrictionAtSnapshot = restrictions.at(-1);
-    return { sections: ctx.captured.sections };
+    return { sections: ctx.captured.sections, tools: ctx.captured.tools.map(({ name }) => ({ name })) };
   });
   assert.equal(coldRestrictionAtSnapshot, restrictions[0]);
   assert.ok(coldRestrictionAtSnapshot.deny.includes("odai_human_care"));
   assert.equal(coldRestrictionAtSnapshot.deny.includes("odai_context_capability"), false);
+  assert.deepEqual(
+    coldResult.tools.map((tool) => tool.name).filter((name) => name.startsWith("odai_")).sort(),
+    ["odai_context_capability", "odai_responsibility_gap"],
+  );
 
   agent.session.append("user/message", userMessage("你能启动欧黛模式吗？"));
   agent.session.append("step/start", { turn: 1, step: 1 });
   const gateway = ctx.captured.tools.find((tool) => tool.name === "odai_context_capability");
   await gateway.execute({ capability: "human-care" }, { agent });
   let activatedRestrictionAtSnapshot;
-  await assemble({}, { agent, signal }, async () => {
+  const activatedAssembly = { sections: ctx.captured.sections, tools: coldResult.tools.map(({ name }) => ({ name })) };
+  const activatedResult = await assemble(activatedAssembly, { agent, signal }, async () => {
     activatedRestrictionAtSnapshot = restrictions.at(-1);
-    return { sections: ctx.captured.sections };
+    return activatedAssembly;
   });
   assert.equal(activatedRestrictionAtSnapshot, restrictions[1]);
   assert.equal(activatedRestrictionAtSnapshot.deny.includes("odai_human_care"), false);
+  assert.deepEqual(
+    activatedResult.tools.map((tool) => tool.name).filter((name) => name.startsWith("odai_")).sort(),
+    ["odai_context_capability", "odai_human_care", "odai_responsibility_gap"],
+  );
 });
 
 test("every gateway capability is executable when its next-step schema is snapshotted", async () => {
@@ -1313,19 +1326,26 @@ test("every gateway capability is executable when its next-step schema is snapsh
     };
     const signal = new AbortController().signal;
     const assemble = ctx.captured.handlers.get("system-prompt/assemble");
-    await assemble({}, { agent, signal }, async () => ({ sections: ctx.captured.sections }));
+    const coldAssembly = { sections: ctx.captured.sections, tools: ctx.captured.tools.map(({ name }) => ({ name })) };
+    const coldResult = await assemble(coldAssembly, { agent, signal }, async () => ({
+      sections: ctx.captured.sections,
+      tools: ctx.captured.tools.map(({ name }) => ({ name })),
+    }));
     assert.ok(restrictions.at(-1).deny.includes(toolName), `${toolName} must start hidden`);
+    assert.equal(coldResult.tools.some((tool) => tool.name === toolName), false, `${toolName} must start outside the schema`);
 
     agent.session.append("user/message", userMessage("继续"));
     agent.session.append("step/start", { turn: 1, step: 1 });
     const gateway = ctx.captured.tools.find((tool) => tool.name === "odai_context_capability");
     await gateway.execute({ capability }, { agent });
     let restrictionAtSnapshot;
-    await assemble({}, { agent, signal }, async () => {
+    const activatedAssembly = { sections: ctx.captured.sections, tools: coldResult.tools.map(({ name }) => ({ name })) };
+    const activatedResult = await assemble(activatedAssembly, { agent, signal }, async () => {
       restrictionAtSnapshot = restrictions.at(-1);
-      return { sections: ctx.captured.sections };
+      return activatedAssembly;
     });
     assert.equal(ctx.captured.tools.some((tool) => tool.name === toolName), true, `${toolName} must be registered`);
+    assert.equal(activatedResult.tools.some((tool) => tool.name === toolName), true, `${toolName} must enter the next schema`);
     assert.equal(restrictionAtSnapshot.deny.includes(toolName), false, `${toolName} must be executable at snapshot`);
     assert.equal(restrictionAtSnapshot.deny.includes("odai_context_capability"), false, "gateway must remain executable");
   }
@@ -2396,12 +2416,19 @@ test("an authorized planner card and executor gap continue automatically without
     { type: "user/message", seq: 101, data: continuation },
   );
   agent.phase = { turn: 2, step: 0 };
+  const fullResumedAssembly = {
+    sections: ctx.captured.sections,
+    tools: ctx.captured.tools
+      .filter(({ name }) => ["odai_context_capability", "odai_responsibility_gap"].includes(name))
+      .map(({ name }) => ({ name })),
+  };
   const resumedAssembly = await ctx.captured.handlers.get("system-prompt/assemble")(
-    {},
+    fullResumedAssembly,
     { agent, signal },
-    async () => ({ sections: ctx.captured.sections }),
+    async () => fullResumedAssembly,
   );
   assert.match(resumedAssembly.sections.find((section) => section.name === "odai:route-card").text, /route card/u);
+  assert.equal(resumedAssembly.tools.some((tool) => tool.name === "odai_route_card"), true);
   assert.equal(restrictions.at(-1).deny.includes("odai_route_card"), false);
   agent.phase.step = 1;
   const resumed = await ctx.captured.handlers.get("agent/pre-step")(

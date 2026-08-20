@@ -53,6 +53,7 @@ import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evi
 import { classifyModelRouteFailure, probeModelRoute } from "./model-route.mjs";
 import { RESPONSIBILITY_GAP_PROMPT, createResponsibilityGapTool } from "./responsibility-gap.mjs";
 import {
+  ODAI_CONTEXTUAL_TOOL_NAMES,
   ODAI_CORE_TOOL_NAMES,
   activeOdaiToolNames,
   classifyContextActivation,
@@ -640,6 +641,32 @@ function routedRoleOf(agent) {
   return undefined;
 }
 
+const ODAI_ADAPTIVE_TOOL_NAMES = new Set([...ODAI_CONTEXTUAL_TOOL_NAMES, ...ODAI_CORE_TOOL_NAMES]);
+
+function reconcileAdaptiveToolSchemas(assembly, activeNames, executableSchemas = []) {
+  if (!assembly || !Array.isArray(assembly.tools)) return assembly;
+  const active = new Set(activeNames);
+  const executableByName = new Map(
+    (Array.isArray(executableSchemas) ? executableSchemas : [])
+      .filter((tool) => active.has(tool?.name))
+      .map((tool) => [tool.name, tool]),
+  );
+  const tools = assembly.tools.filter((tool) => !ODAI_ADAPTIVE_TOOL_NAMES.has(tool?.name)
+    || (active.has(tool.name) && executableByName.has(tool.name)));
+  const present = new Set(tools.map((tool) => tool?.name));
+  const missing = activeNames
+    .filter((name) => !present.has(name) && executableByName.has(name))
+    .map((name) => executableByName.get(name));
+  if (missing.length > 0) {
+    const lastAdaptiveIndex = tools.reduce(
+      (last, tool, index) => ODAI_ADAPTIVE_TOOL_NAMES.has(tool?.name) ? index : last,
+      -1,
+    );
+    tools.splice(lastAdaptiveIndex < 0 ? tools.length : lastAdaptiveIndex + 1, 0, ...missing);
+  }
+  return tools.length === assembly.tools.length && missing.length === 0 ? assembly : { ...assembly, tools };
+}
+
 export function apply(ctx, rawConfig) {
   const config = resolveConfig(rawConfig);
   const logger = loggerFor(ctx);
@@ -962,10 +989,13 @@ export function apply(ctx, rawConfig) {
     const routeCardNeeded = !childSession && (Boolean(activeRouteCard(exposureEvents))
       || ["planner", "executor"].includes(pendingResponsibilityGap(agent, turn, proposedStep)?.responsibility)
       || pendingResponsibilityInterruption(exposureEvents)?.responsibility === "executor");
-    // DSH snapshots tool schemas while assembling the prompt, before agent/pre-step. Keep that snapshot and execution visibility identical.
-    syncToolExposure(agent, activation, { turn, step: proposedStep, routeCard: routeCardNeeded });
+    // DSH builds assembly.tools before this middleware runs. Filter that snapshot and the execution registry together.
+    const activeToolNames = syncToolExposure(agent, activation, { turn, step: proposedStep, routeCard: routeCardNeeded });
+    const executableSchemas = typeof ctx.tools.schemas === "function" ? ctx.tools.schemas(agent) : [];
+    const visibleAssembly = reconcileAdaptiveToolSchemas(assembly, activeToolNames, executableSchemas);
+    if (visibleAssembly !== assembly) assembly.tools = visibleAssembly.tools;
 
-    const downstream = await next();
+    const downstream = reconcileAdaptiveToolSchemas(await next(), activeToolNames, executableSchemas);
     const selection = await selectSharedSkillForTurn(agent, () => selectForAgent(agent, context));
     const outputSelection = childSession
       ? Object.freeze({ policy: DEFAULT_OUTPUT_POLICY, source: "default" })
@@ -1312,7 +1342,7 @@ export function apply(ctx, rawConfig) {
         activeTools: activeNames,
       });
     } catch (error) {
-      logger.warn(`Odai adaptive tool exposure is unavailable; retaining the complete tool catalog: ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn(`Odai adaptive execution restriction is unavailable; prompt schemas remain limited while the executable catalog stays complete: ${error instanceof Error ? error.message : String(error)}`);
       toolExposureStates.set(agent, Object.freeze({ key: "fallback", dispose: undefined }));
     }
     return activeNames;

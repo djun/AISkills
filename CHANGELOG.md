@@ -6,9 +6,9 @@
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.5`，精确支持 `@deepseek-ai/dsh@0.1.0-rc.7` 与 `0.1.0-rc.8`，从本版本起不再支持 rc.6；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。
 - 版本序列从 `0.2.3` 直接进入 `0.2.5`。仓库新增统一版本策略：所有自有的新 package、skill 与 runtime contract 版本标识不得包含数字字符 `4`；历史记录与上游依赖版本保持事实原貌。DSH 校验、canonical validator、CLI prepack/prepublish 均 fail-closed 调用同一策略。
-- 修复 adaptive tool exposure 的同 step 时序：现在于 `system-prompt/assemble` 下游快照前，依据当前 open turn 的认证直接用户消息与 capability evidence 应用工具 restriction，禁止出现“模型 schema 可见、执行目录已隐藏”的 `unknown tool` 竞态。冷启动第一步只暴露可执行的 core gateway；真实反例“你能启动欧黛模式吗？”经 gateway 请求后，下一 step 在 schema 快照前暴露 `odai_human_care`。低频工具仍按需加载，不回退为全量常驻。
+- 修复 adaptive tool exposure 的 schema/执行时序：DSH 会在 `system-prompt/assemble` middleware 前预构造 `assembly.tools`，runtime 现在先更新 agent-scoped execution restriction，再用更新后的可执行 registry 双向 reconcile 当前 schema，既移除刚隐藏的工具，也补回刚激活的工具；下游返回后再次执行终态过滤。由此禁止“模型 schema 可见、执行目录已隐藏”的 `unknown tool`，也避免 gateway 或新一轮直接意图激活后延迟一个 step 才进入 schema。冷启动只暴露两个 core gateway；全部 9 个 gateway capability 与责任状态驱动的 route card 仍按需暴露，不回退为全量常驻。
 - Agent composition 继续以 rc.8 Standard 为 source，只为 rc.7 还原 optional-provider 文案；peer、renderer、安装入口、兼容矩阵与迁移格统一移除 rc.6，白名单外版本继续 fail-closed。
-- Plugin/Runtime `183/183`（含全部 9 个 gateway capability 与责任状态驱动的 route-card schema/执行可见性回归）、Agent `16/16`（含 rc.7↔rc.8 两个 managed-preset 迁移格）、发布辅助脚本 `7/7`、版本策略 `2/2`、canonical validator 与双包/CLI dry-run 均通过。隔离依赖图证明 rc.7 的 `186` 个与 rc.8 的 `187` 个 DSH 安装实例全部严格同版；两套图均通过 Plugin legacy-session/load、Agent 全量 Standard composition/load 与 Plugin/Agent coexistence。验证不改写宿主持有的 SQLite 数据，也不把隔离 HOME 结果表述为跨版本存储迁移证明。
+- Plugin/Runtime `183/183`（含全部 9 个 gateway capability 与责任状态驱动的 route-card schema/执行可见性回归）、Agent `16/16`（含 rc.7↔rc.8 两个 managed-preset 迁移格）、发布辅助脚本 `7/7`、版本策略 `2/2`、canonical validator 与双包/CLI dry-run 均通过。隔离依赖图证明 rc.7 的 `186` 个与 rc.8 的 `187` 个 DSH 安装实例全部严格同版；两套图均通过 Plugin legacy-session/load、Agent 全量 Standard composition/load 与 Plugin/Agent coexistence；Agent real-load 还逐一证明冷启动 core-only schema、隐藏工具不可执行、直接意图后的 schema 扩张及扩张工具可执行。验证不改写宿主持有的 SQLite 数据，也不把隔离 HOME 结果表述为跨版本存储迁移证明。
 
 ## 2026-08-20 — DSH 0.2.3 rc.8 精确兼容
 
