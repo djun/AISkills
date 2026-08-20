@@ -1286,6 +1286,51 @@ test("cold first steps expose only executable core tools before gateway activati
   assert.equal(activatedRestrictionAtSnapshot.deny.includes("odai_human_care"), false);
 });
 
+test("every gateway capability is executable when its next-step schema is snapshotted", async () => {
+  const cases = [
+    ["routing-config", "odai_routing_config"],
+    ["human-care", "odai_human_care"],
+    ["human-safety", "odai_human_safety"],
+    ["skill-source", "odai_skill_source_config"],
+    ["skill-evolution", "odai_skill_evolution"],
+    ["output-config", "odai_output_config"],
+    ["compaction-config", "odai_compaction_config"],
+    ["memory", "odai_memory"],
+    ["safety-continuity", "odai_human_safety_continuity"],
+  ];
+  for (const [capability, toolName] of cases) {
+    const ctx = fakeContext();
+    apply(ctx, { skillPath, routing: { mode: "off" } });
+    const restrictions = [];
+    const events = [{ type: "turn/start", seq: 1, data: { turn: 1 } }];
+    const agent = {
+      ctx: { tools: { restrict(filter) { restrictions.push(filter); return () => {}; } } },
+      session: {
+        header: {},
+        events,
+        append(type, data) { events.push({ type, seq: events.length + 1, data }); },
+      },
+    };
+    const signal = new AbortController().signal;
+    const assemble = ctx.captured.handlers.get("system-prompt/assemble");
+    await assemble({}, { agent, signal }, async () => ({ sections: ctx.captured.sections }));
+    assert.ok(restrictions.at(-1).deny.includes(toolName), `${toolName} must start hidden`);
+
+    agent.session.append("user/message", userMessage("继续"));
+    agent.session.append("step/start", { turn: 1, step: 1 });
+    const gateway = ctx.captured.tools.find((tool) => tool.name === "odai_context_capability");
+    await gateway.execute({ capability }, { agent });
+    let restrictionAtSnapshot;
+    await assemble({}, { agent, signal }, async () => {
+      restrictionAtSnapshot = restrictions.at(-1);
+      return { sections: ctx.captured.sections };
+    });
+    assert.equal(ctx.captured.tools.some((tool) => tool.name === toolName), true, `${toolName} must be registered`);
+    assert.equal(restrictionAtSnapshot.deny.includes(toolName), false, `${toolName} must be executable at snapshot`);
+    assert.equal(restrictionAtSnapshot.deny.includes("odai_context_capability"), false, "gateway must remain executable");
+  }
+});
+
 test("capability gateway recovers a missed expression on the next step", async () => {
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "off" } });
