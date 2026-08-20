@@ -95,6 +95,20 @@ The repository includes double-clickable npm helpers under `dsh/` for maintainer
 
 The two platform launchers call the shared `npm-publish.mjs` release core. It verifies that the npm account owns both packages, the Plugin/Agent versions match and do not move the `latest` tag backward, release-owned files are clean, and the current commit exactly matches `origin/main`. It requires the typed confirmation `publish <version>`, reruns both package test, dry-run packaging, and real DSH verification gates, then publishes and verifies `odai-dsh-plugin` followed by `odai-dsh-agent`. Registry verification also requires each package's `gitHead` to match the pushed commit. Rerunning after a partial registry success safely skips only a package version published from that exact commit. The helpers never change the global npm registry.
 
+## DSH compatibility
+
+[`compatibility.json`](./compatibility.json) is the machine-checked release map. The package version verifier requires the current Plugin and Agent peer ranges to match its exact DSH version list, so a future release may intentionally narrow support to one DSH version without leaving stale range prose or package metadata.
+
+| Odai package version | Published package surfaces | Exact supported DSH versions |
+| --- | --- | --- |
+| `0.0.1` - `0.0.8` | Plugin + Agent | `0.1.0-rc.6` |
+| `0.0.9` | Agent only | `0.1.0-rc.6` |
+| `0.0.10`, `0.1.0`, `0.1.1` | Plugin + Agent | `0.1.0-rc.6` |
+| `0.2.0` - `0.2.2` | Plugin + Agent | `0.1.0-rc.6`, `0.1.0-rc.7` |
+| `0.2.3` | Plugin + Agent | `0.1.0-rc.6`, `0.1.0-rc.7`, `0.1.0-rc.8` |
+
+These rows describe install/runtime compatibility, not migration compatibility for DSH-owned storage. Starting with Odai `0.0.10`, Plugin and Agent are one synchronized release unit; every new release must add one matrix entry, update both exact peer declarations, refresh the Agent composition contract when required, and verify every listed DSH release.
+
 ## Verification
 
 ```sh

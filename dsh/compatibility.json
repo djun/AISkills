@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "packageNames": {
+    "plugin": "odai-dsh-plugin",
+    "agent": "odai-dsh-agent"
+  },
+  "compatibility": [
+    {
+      "packageVersions": [
+        "0.0.1",
+        "0.0.2",
+        "0.0.3",
+        "0.0.4",
+        "0.0.5",
+        "0.0.6",
+        "0.0.7",
+        "0.0.8"
+      ],
+      "surfaces": [
+        "plugin",
+        "agent"
+      ],
+      "dshVersions": [
+        "0.1.0-rc.6"
+      ]
+    },
+    {
+      "packageVersions": [
+        "0.0.9"
+      ],
+      "surfaces": [
+        "agent"
+      ],
+      "dshVersions": [
+        "0.1.0-rc.6"
+      ]
+    },
+    {
+      "packageVersions": [
+        "0.0.10",
+        "0.1.0",
+        "0.1.1"
+      ],
+      "surfaces": [
+        "plugin",
+        "agent"
+      ],
+      "dshVersions": [
+        "0.1.0-rc.6"
+      ]
+    },
+    {
+      "packageVersions": [
+        "0.2.0",
+        "0.2.1",
+        "0.2.2"
+      ],
+      "surfaces": [
+        "plugin",
+        "agent"
+      ],
+      "dshVersions": [
+        "0.1.0-rc.6",
+        "0.1.0-rc.7"
+      ]
+    },
+    {
+      "packageVersions": [
+        "0.2.3"
+      ],
+      "surfaces": [
+        "plugin",
+        "agent"
+      ],
+      "dshVersions": [
+        "0.1.0-rc.6",
+        "0.1.0-rc.7",
+        "0.1.0-rc.8"
+      ]
+    }
+  ]
+}
