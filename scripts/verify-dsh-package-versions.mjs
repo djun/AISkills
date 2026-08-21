@@ -37,6 +37,10 @@ const expectedDshVersion = release.dshVersions.join(" || ");
 if (packages[0].dshVersion !== expectedDshVersion) {
   throw new Error(`DSH package ${packageVersion} peer must match compatibility matrix: expected ${expectedDshVersion}, found ${packages[0].dshVersion}`);
 }
+const releaseContracts = readReleaseContracts();
+if (JSON.stringify(releaseContracts) !== JSON.stringify(release.dshVersions)) {
+  throw new Error(`dsh/release-contracts.json must exactly cover ${release.dshVersions.join(", ")}`);
+}
 
 process.stdout.write(`DSH package versions match: ${packageVersion}; peer @deepseek-ai/dsh ${expectedDshVersion}; compatibility matrix verified\n`);
 
@@ -55,6 +59,28 @@ function readPackage(relativePath, expectedName, surface) {
     throw new Error(`${relativePath} must list exact @deepseek-ai/dsh versions joined by ||, found: ${dshVersion || "(missing)"}`);
   }
   return { name: packageJson.name, version: packageJson.version, dshVersion, surface };
+}
+
+function readReleaseContracts() {
+  const relativePath = "dsh/release-contracts.json";
+  const document = JSON.parse(readFileSync(resolve(repoRoot, relativePath), "utf8"));
+  if (document.schemaVersion !== 1 || !Array.isArray(document.releases) || document.releases.length === 0) {
+    throw new Error(`${relativePath} must declare schemaVersion 1 and non-empty releases`);
+  }
+  const versions = document.releases.map((release, index) => {
+    const label = `${relativePath} releases[${index}]`;
+    if (!release || !VERSION_PATTERN.test(release.version)
+      || typeof release.publishedBefore !== "string"
+      || !Number.isSafeInteger(release.expectedDshPackages)
+      || release.expectedDshPackages <= 0
+      || typeof release.standardCompositionSha256 !== "string"
+      || !/^[a-f0-9]{64}$/u.test(release.standardCompositionSha256)) {
+      throw new Error(`${label} is invalid`);
+    }
+    return release.version;
+  });
+  if (new Set(versions).size !== versions.length) throw new Error(`${relativePath} must list unique releases`);
+  return versions;
 }
 
 function readCompatibilityMatrix() {

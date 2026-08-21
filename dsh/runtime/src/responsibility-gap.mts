@@ -8,6 +8,8 @@ export const RESPONSIBILITY_GAP_PROMPT = [
   "## Odai responsibility gaps",
   "Users provide goals, constraints, materials, and acceptance; they never need to request internal roles or handoffs.",
   "Keep work direct when the controller can close it reliably. Call odai_responsibility_gap only when current evidence shows an independent capability or user-decision gap that can change a concrete result; keywords, complexity, risk, configured models, and price are insufficient. The runtime decides direct, inline, same-turn, child, or user-question handling.",
+  "Independently deployed contracts, authentication or state-machine changes, rollout-order compatibility, and rollback boundaries are concrete planner gaps when a separate plan can change implementation or acceptance; do not reduce them to task complexity.",
+  "evidenceRefs identify the proposal state for audit and deduplication; they never replace native acceptance, write, diff, or test evidence required by a routed reviewer.",
   "Use responsibility=user only for a missing user-owned choice, priority, or unacceptable outcome, then ask exactly the accepted concise question. Do not ask users for repository facts or implementation details the project can determine. Do not resubmit unchanged state.",
 ].join("\n");
 
@@ -24,7 +26,7 @@ export interface ResponsibilityGapProposal {
 }
 
 export interface ResponsibilityGapResult {
-  accepted: true;
+  recorded: true;
   responsibility: Responsibility;
   stateDigest: string;
   next: string;
@@ -96,9 +98,9 @@ export function createResponsibilityGapTool(
       schema: {
         type: "object",
         additionalProperties: false,
-        required: ["accepted", "responsibility", "stateDigest", "next"],
+        required: ["recorded", "responsibility", "stateDigest", "next"],
         properties: {
-          accepted: { type: "boolean" },
+          recorded: { type: "boolean" },
           responsibility: { type: "string", enum: [...RESPONSIBILITIES] },
           stateDigest: { type: "string" },
           next: { type: "string" },
@@ -107,7 +109,7 @@ export function createResponsibilityGapTool(
       render(_arguments, value) {
         return [{
           type: "text",
-          text: `Accepted ${value.responsibility} gap (${value.stateDigest}). ${value.next}`,
+          text: `Recorded ${value.responsibility} gap (${value.stateDigest}); this responsibility has not been routed or started. ${value.next}`,
         }];
       },
     },
@@ -117,12 +119,12 @@ export function createResponsibilityGapTool(
       const proposal = resolveResponsibilityGap(arguments_);
       onProposed(execution.agent, proposal, execution);
       return Promise.resolve({
-        accepted: true,
+        recorded: true,
         responsibility: proposal.responsibility,
         stateDigest: proposal.stateDigest,
         next: proposal.responsibility === "user"
           ? "Ask exactly the accepted concise question and wait for the user's decision."
-          : "The runtime will reassess this responsibility before the next affected model step.",
+          : "The runtime will reassess the recorded proposal before the next affected model step and will report separately whether it routed or started.",
       });
     },
   };

@@ -48,6 +48,7 @@ jobs:
           node --check scripts/run-package-pack.mjs
           node --check scripts/run-package-pack.test.mjs
           node --check scripts/verify-dsh-packed-artifacts.mjs
+          node --check scripts/verify-dsh-release-matrix.mjs
           node --check cli/scripts/package-skill-bundle.mjs
           node --check dsh/runtime/build/governance.mjs
           node --check dsh/runtime/build/router.mjs

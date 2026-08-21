@@ -227,6 +227,12 @@ const NEW_TASK_PATTERNS = [
   /(?:另一个|另一项|另一件|另外(?:一个|一项|一件)|新(?:的)?(?:问题|任务|需求|工作))/iu,
   /\b(?:another|(?:a )?new|different|separate)\s+(?:task|issue|problem|request|change|project)\b/iu,
 ];
+const REVIEWER_PENDING_CONTEXT_PATTERNS = [
+  /(?:验收条件|证据包|前述|上述|刚才|之前|原任务)/iu,
+  /(?:补充|更新|新增|修改|还有|同时)[^。！？\n]{0,28}(?:验收|审查|复核|证据|测试|差异|改动)/iu,
+  /\b(?:A\d+|acceptance criteria|evidence packet|previous|above|same task)\b/iu,
+  /\b(?:add|update|clarify|also|additionally)\b[^.!?\n]{0,36}\b(?:acceptance|review|evidence|tests?|diff|patch)\b/iu,
+];
 
 const FRONTEND_SCOPE_PATTERNS = [
   /(?:前端|界面|页面|网页|网站|着陆页|应用界面|仪表盘|控制台|组件|交互界面|移动端|桌面端|游戏界面|3D场景)/iu,
@@ -285,6 +291,16 @@ export function classifyResponsibilityInterruptionText(text: unknown): "continue
   if (matchesAny(explicit, PURE_RESPONSIBILITY_CONTINUATION_PATTERNS)) return "continue";
   if (matchesAny(explicit, OUTPUT_LIMIT_DIAGNOSTIC_PATTERNS)) return "preserve";
   return "clear";
+}
+
+export function classifyPendingReviewerText(text: unknown): "continue" | "supersede" | "dormant" {
+  const explicit = stripQuotedMaterial(String(text ?? "")).trim();
+  if (!explicit) return "dormant";
+  if (matchesAny(explicit, NEW_TASK_PATTERNS)) return "supersede";
+  if (matchesAny(explicit, PURE_RESPONSIBILITY_CONTINUATION_PATTERNS)
+    || matchesAny(explicit, CONTINUATION_PATTERNS)
+    || matchesAny(explicit, REVIEWER_PENDING_CONTEXT_PATTERNS)) return "continue";
+  return "dormant";
 }
 
 function isExecutionContinuation(text: string): boolean {

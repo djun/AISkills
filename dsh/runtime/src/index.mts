@@ -19,6 +19,7 @@ import {
   latestDanglingResponsibilityScope,
   responsibilityScopeStoppedEvent,
 } from "./responsibility-scope.mjs";
+import { classifyPendingReviewerText, extractLatestUserText } from "./router.mjs";
 import { invalidatePersistedRoleRoute } from "./routing-config.mjs";
 import {
   inheritCompactionReasoning,
@@ -34,6 +35,7 @@ import {
 } from "./runtime-support.mjs";
 import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
 import { currentAgentTurn } from "./skill-selection-state.mjs";
+import { latestDirectUserMessage } from "./semantic-memory.mjs";
 import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
 import { installToolRuntime } from "./tool-runtime.mjs";
 import { resolveHumanSafetyContinuityStorePath } from "./human-safety-continuity-store.mjs";
@@ -180,22 +182,50 @@ export function apply(ctx: DshRuntimeContext, rawConfig: unknown): void {
     turn: number | undefined,
     step: number,
   ): ResponsibilityGapProposal | undefined => {
-    const consumed = new Set<unknown>();
     const events = evidence.events(agent);
+    const consumed = new Set(events.flatMap((event) => (
+      event.type === "odai/responsibility-gap-consumed" ? [event.data?.stateDigest] : []
+    )));
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index];
-      if (event.data?.turn !== turn) continue;
-      if (event.type === "odai/responsibility-gap-consumed") {
-        consumed.add(event.data.stateDigest);
-        continue;
-      }
-      if (event.type !== "odai/responsibility-gap"
+      if (event.data?.turn !== turn
+        || event.type !== "odai/responsibility-gap"
         || typeof event.data?.step !== "number"
         || !Number.isSafeInteger(event.data.step)
         || event.data.step >= step
         || consumed.has(event.data.stateDigest)
         || !isResponsibilityGapProposal(event.data)) continue;
       return event.data;
+    }
+    if (turn === undefined) return undefined;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.type !== "odai/responsibility-gap"
+        || event.data?.responsibility !== "reviewer"
+        || typeof event.data.turn !== "number"
+        || event.data.turn >= turn
+        || consumed.has(event.data.stateDigest)
+        || !isResponsibilityGapProposal(event.data)) continue;
+      const deferred = events.slice(index + 1).some((candidate) => (
+        candidate.type === "odai/responsibility-gap-deferred"
+        && candidate.data?.stateDigest === event.data.stateDigest
+      ));
+      if (!deferred) continue;
+      const message = latestDirectUserMessage(agent);
+      const transition = message
+        ? classifyPendingReviewerText(extractLatestUserText([message]))
+        : "dormant";
+      if (transition === "continue") return event.data;
+      if (transition === "supersede") {
+        appendEvent(agent, "odai/responsibility-gap-consumed", {
+          turn,
+          step,
+          responsibility: "reviewer",
+          stateDigest: event.data.stateDigest,
+          reason: "SUPERSEDED_BY_DIRECT_USER_TASK",
+        });
+      }
+      return undefined;
     }
     return undefined;
   };

@@ -1,19 +1,23 @@
 import { createHash } from "node:crypto";
 
+import { classifyResponsibilityInterruptionText } from "./router.mjs";
 import type { DshEvent, RuntimeEventData, UnknownRecord } from "./runtime-types.mjs";
 import { isUnknownRecord } from "./runtime-types.mjs";
 
 const DEFAULT_MAX_CHARS = 12_000;
 const DEFAULT_MAX_EVENTS = 80;
+const DEFAULT_MAX_ENTRY_CHARS = 4_000;
 const REQUIREMENT_PATTERNS = [/requirement/iu, /acceptance/iu, /需求/u, /要求/u, /目标/u, /验收/u];
-const ACCEPTANCE_PATTERNS = [/\bA\d+\b/u, /accept(?:ance)?/iu, /验收/u, /通过条件/u, /完成条件/u];
 const DIFF_OUTPUT_PATTERNS = [/diff --git/iu, /^---\s+a\/[^\n]+\n\+\+\+\s+b\//imu];
 const DIFF_COMMAND_PATTERNS = [/^\s*git(?:\.exe)?\s+diff(?:\s|$)/iu];
 const TEST_COMMAND_PATTERNS = [
   /^\s*(?:&\s*)?(?:"[^"\r\n]*[\\/]node(?:\.exe)?"|[A-Za-z]:\\[^\s"\r\n]*[\\/]node(?:\.exe)?|\/[^\s"\r\n]*\/node|node(?:\.exe)?)\s+--test(?:\s|$)/iu,
-  /^\s*(?:npm|pnpm|yarn)(?:\.cmd)?(?:\s+--(?:prefix|dir)\s+(?:"[^"]+"|\S+))?\s+(?:run\s+)?test(?:\s|$)/iu,
+  /^\s*(?:npm|pnpm|yarn)(?:\.cmd)?(?:\s+--(?:prefix|dir)\s+(?:"[^"]+"|\S+))?\s+(?:run\s+)?test(?:[:.][\w.-]+)?(?:\s|$)/iu,
+  /^\s*(?:(?:npx|pnpm\s+exec|yarn\s+exec)(?:\.cmd)?|npm(?:\.cmd)?\s+exec(?:\s+--)?)\s+(?:--yes\s+)?(?:pytest|vitest|jest|mocha)(?:\.cmd)?(?:\s|$)/iu,
   /^\s*(?:pytest|vitest|jest|mocha)(?:\.cmd)?(?:\s|$)/iu,
   /^\s*(?:go|cargo|dotnet)\s+test(?:\s|$)/iu,
+  /^\s*(?:(?:\.\/)?(?:[\w.-]+\/)*mvnw(?:\.cmd)?|mvn(?:\.cmd)?)\s+(?:[^\r\n]*\s)?(?:test|verify)(?:\s|$)/iu,
+  /^\s*(?:\.\/)?gradlew(?:\.bat)?\s+(?:[^\r\n]*\s)?test(?:\s|$)/iu,
 ];
 const TEST_SUCCESS_PATTERNS = [
   /exit code:\s*0/iu,
@@ -33,7 +37,8 @@ const SHELL_CONTROL_PATTERN = /[;&|<>]/u;
 const READ_ONLY_SHELL_COMMAND_PATTERNS = [
   /^\s*git(?:\.exe)?\s+(?:status|log|show|rev-parse|ls-files|branch)(?:\s|$)/iu,
   /^\s*(?:Get-[A-Za-z]+|Select-String|Test-Path)(?:\s|$)/iu,
-  /^\s*(?:rg|grep|find|ls|pwd|cat|head|tail|wc|where|which)(?:\.exe)?(?:\s|$)/iu,
+  /^\s*(?:rg|grep|find|ls|pwd|cat|head|tail|wc|where|which|lsof|ps|netstat|ss)(?:\.exe)?(?:\s|$)/iu,
+  /^\s*(?:npx(?:\.cmd)?|pnpm(?:\.cmd)?\s+exec|yarn(?:\.cmd)?\s+exec|npm(?:\.cmd)?\s+exec(?:\s+--)?)?\s*prettier(?:\.cmd)?\s+--check(?:\s|$)/iu,
   /^\s*node(?:\.exe)?\s+--check(?:\s|$)/iu,
 ];
 const WRITE_COMMAND_PATTERNS = [
@@ -66,14 +71,32 @@ export interface RoleContextCoverage {
   readonly currentEvidence: boolean;
 }
 
+export interface RoleContextDiagnostics {
+  readonly rawEventCount: number;
+  readonly evidenceEventCount: number;
+  readonly selectedEvidenceCount: number;
+  readonly omittedEvidenceCount: number;
+  readonly nativeToolCallCount: number;
+  readonly linkedToolResultCount: number;
+  readonly malformedToolResultCount: number;
+  readonly unlinkedToolResultCount: number;
+  readonly unparsedToolArgumentsCount: number;
+  readonly unclassifiedShellResultCount: number;
+  readonly diffWithoutPatchCount: number;
+  readonly testWithoutVerdictCount: number;
+  readonly hostEvidenceAvailable: boolean;
+}
+
 export interface RoleContextPacket {
   readonly schemaVersion: 1;
   readonly role: string;
   readonly currentTask: string;
   readonly entries: readonly RoleContextEntry[];
   readonly coverage: RoleContextCoverage;
+  readonly diagnostics: RoleContextDiagnostics;
   readonly truncated: boolean;
   readonly digest: string;
+  readonly evidenceDigest: string;
   readonly evidenceCount: number;
   readonly toolEvidenceCount: number;
   readonly sufficient: boolean;
@@ -110,6 +133,17 @@ function matchesAny(text: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
+function directUserMessage(event: DshEvent): UnknownRecord | undefined {
+  const message = isUnknownRecord(event.data?.message) ? event.data.message : event.data;
+  const source = isUnknownRecord(message?.source) ? message.source : undefined;
+  if (typeof message?.role === "string" && message.role !== "user") return undefined;
+  return source?.kind === "user" ? message : undefined;
+}
+
+function isDirectUserEvent(event: DshEvent): boolean {
+  return directUserMessage(event) !== undefined;
+}
+
 function toolResultBlocks(value: unknown, depth = 0): UnknownRecord[] {
   if (depth > 5 || value === null || value === undefined) return [];
   if (Array.isArray(value)) return value.flatMap((item) => toolResultBlocks(item, depth + 1));
@@ -136,14 +170,44 @@ function nativeToolResult(data: RuntimeEventData): NativeToolResult | undefined 
   });
 }
 
-function commandFromCall(call: NativeToolCall): string {
-  const arguments_ = call?.arguments;
-  if (typeof arguments_ === "string") return arguments_;
-  if (!isUnknownRecord(arguments_)) return "";
-  for (const field of ["command", "cmd", "script"]) {
-    if (typeof arguments_[field] === "string") return arguments_[field];
+interface MutableDiagnostics {
+  rawEventCount: number;
+  evidenceEventCount: number;
+  selectedEvidenceCount: number;
+  omittedEvidenceCount: number;
+  nativeToolCallCount: number;
+  linkedToolResultCount: number;
+  malformedToolResultCount: number;
+  unlinkedToolResultCount: number;
+  unparsedToolArgumentsCount: number;
+  unclassifiedShellResultCount: number;
+  diffWithoutPatchCount: number;
+  testWithoutVerdictCount: number;
+}
+
+function commandFromArguments(value: unknown): Readonly<{ command: string; parsed: boolean }> {
+  let arguments_ = value;
+  if (typeof arguments_ === "string") {
+    const trimmed = arguments_.trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+      return Object.freeze({ command: arguments_, parsed: true });
+    }
+    try {
+      arguments_ = JSON.parse(trimmed) as unknown;
+    } catch {
+      return Object.freeze({ command: "", parsed: false });
+    }
   }
-  return "";
+  if (!isUnknownRecord(arguments_)) return Object.freeze({ command: "", parsed: false });
+  for (const field of ["command", "cmd", "script"]) {
+    if (typeof arguments_[field] === "string") return Object.freeze({ command: arguments_[field], parsed: true });
+  }
+  return Object.freeze({ command: "", parsed: true });
+}
+
+function normalizedToolName(name: string): string {
+  const segments = name.split(/[.:/]/u).filter(Boolean);
+  return segments.at(-1) ?? name;
 }
 
 function resultReferencesCall(event: DshEvent, call: NativeToolCall): boolean {
@@ -153,10 +217,10 @@ function resultReferencesCall(event: DshEvent, call: NativeToolCall): boolean {
     && event.sourceEventSeqs[0] === call.seq;
 }
 
-function nativeToolCalls(events: readonly DshEvent[], startIndex: number): Map<string, NativeToolCall> {
+function nativeToolCalls(events: readonly DshEvent[]): Map<string, NativeToolCall> {
   const calls = new Map<string, NativeToolCall>();
   const duplicates = new Set<string>();
-  for (let index = startIndex; index < events.length; index += 1) {
+  for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     if (event?.type !== "tool/call") continue;
     const callId = event.data?.callId;
@@ -173,47 +237,78 @@ function eventEvidence(
   event: DshEvent,
   index: number,
   calls: ReadonlyMap<string, NativeToolCall>,
+  directUserMessageIds: ReadonlySet<string>,
+  diagnostics: MutableDiagnostics,
 ): Omit<RoleContextEntry, "kinds"> & { kinds: string[] } | undefined {
   if (event?.type === "user/message") {
+    if (!isDirectUserEvent(event)) return undefined;
     const text = textBlocks(event.data).join("\n").trim();
-    return text ? { index, source: "user", kinds: ["requirement"], label: "earlier user requirement", text } : undefined;
+    if (!text) return undefined;
+    if (classifyResponsibilityInterruptionText(text) === "continue") {
+      return { index, source: "user", kinds: ["continuation"], label: "direct-user continuation", text };
+    }
+    return { index, source: "user", kinds: ["requirement", "acceptance"], label: "user-owned requirement and acceptance", text };
   }
   if (["assistant/message", "agent/message", "message/assistant"].includes(event?.type)) {
     const text = textBlocks(event.data).join("\n").trim();
     if (!text) return undefined;
     const kinds = ["assistant-claim"];
     if (matchesAny(text, REQUIREMENT_PATTERNS)) kinds.push("requirement");
-    if (matchesAny(text, ACCEPTANCE_PATTERNS)) kinds.push("acceptance");
     return { index, source: "assistant", kinds, label: "controller claim", text };
   }
-  if (event?.type === "odai/route-card-frozen" && event.data?.card) {
+  if (event?.type === "odai/route-card-frozen" && isUnknownRecord(event.data?.card)) {
+    const authorization = isUnknownRecord(event.data.card.authorization) ? event.data.card.authorization : undefined;
+    const userMessageId = typeof authorization?.userMessageId === "string" ? authorization.userMessageId : undefined;
+    if (authorization?.status !== "authorized"
+      || !userMessageId
+      || !directUserMessageIds.has(userMessageId)
+      || !Array.isArray(event.data.card.accept)
+      || event.data.card.accept.length === 0) return undefined;
     return {
       index, source: "route-card", kinds: ["acceptance"],
-      label: `frozen route card ${typeof event.data.card.id === "string" ? event.data.card.id : "(unknown)"}`,
+      label: `authorized frozen route card ${typeof event.data.card.id === "string" ? event.data.card.id : "(unknown)"}`,
       text: JSON.stringify(event.data.card),
     };
   }
   if (event?.type === "tool/result") {
     const result = nativeToolResult(event.data);
-    if (!result) return undefined;
+    if (!result) {
+      diagnostics.malformedToolResultCount += 1;
+      return undefined;
+    }
     const call = calls.get(result.callId);
-    if (!call || call.index >= index || !resultReferencesCall(event, call)) return undefined;
-    const command = commandFromCall(call);
-    const simpleCommand = !SHELL_CONTROL_PATTERN.test(command);
+    if (!call || call.index >= index || !resultReferencesCall(event, call)) {
+      diagnostics.unlinkedToolResultCount += 1;
+      return undefined;
+    }
+    diagnostics.linkedToolResultCount += 1;
+    const decoded = commandFromArguments(call.arguments);
+    if (!decoded.parsed) diagnostics.unparsedToolArgumentsCount += 1;
+    const command = decoded.command;
+    const toolName = normalizedToolName(call.name);
+    const simpleCommand = command !== "" && !SHELL_CONTROL_PATTERN.test(command);
     const diffCommand = simpleCommand && matchesAny(command, DIFF_COMMAND_PATTERNS);
     const testCommand = simpleCommand && matchesAny(command, TEST_COMMAND_PATTERNS);
-    const explicitWrite = WRITE_TOOL_NAMES.has(call.name) || matchesAny(command, WRITE_COMMAND_PATTERNS);
-    const unknownShellMutation = SHELL_TOOL_NAMES.has(call.name)
+    const explicitWrite = WRITE_TOOL_NAMES.has(toolName) || matchesAny(command, WRITE_COMMAND_PATTERNS);
+    const unknownShellMutation = SHELL_TOOL_NAMES.has(toolName)
       && !diffCommand && !testCommand
       && (SHELL_CONTROL_PATTERN.test(command) || !matchesAny(command, READ_ONLY_SHELL_COMMAND_PATTERNS));
+    if (SHELL_TOOL_NAMES.has(toolName) && !diffCommand && !testCommand && !explicitWrite
+      && !matchesAny(command, READ_ONLY_SHELL_COMMAND_PATTERNS)) diagnostics.unclassifiedShellResultCount += 1;
     const writeCommand = explicitWrite || unknownShellMutation;
     if (!result.successful && !testCommand && !writeCommand) return undefined;
     const output = textBlocks(event.data).join("\n").trim();
     const kinds: string[] = result.successful ? ["tool"] : [];
-    if (result.successful && diffCommand && matchesAny(output, DIFF_OUTPUT_PATTERNS)) kinds.push("diff");
+    if (result.successful && diffCommand) {
+      if (matchesAny(output, DIFF_OUTPUT_PATTERNS)) kinds.push("diff");
+      else diagnostics.diffWithoutPatchCount += 1;
+    }
     if (writeCommand) kinds.push("write");
     if (testCommand) {
       const testPassed = result.successful && matchesAny(output, TEST_SUCCESS_PATTERNS) && !matchesAny(output, TEST_FAILURE_PATTERNS);
+      if (result.successful && !matchesAny(output, TEST_SUCCESS_PATTERNS) && !matchesAny(output, TEST_FAILURE_PATTERNS)) {
+        diagnostics.testWithoutVerdictCount += 1;
+      }
       kinds.push(testPassed ? "test" : "test-failed");
     }
     const identity = `tool-call:${result.callId}`;
@@ -223,8 +318,9 @@ function eventEvidence(
   if (event?.type === "odai/tool-observed" && event.data?.isError === false) {
     const identity = typeof event.data.callId === "string" ? `tool-call:${event.data.callId}` : undefined;
     const tool = typeof event.data.tool === "string" ? event.data.tool : "unknown";
+    const normalized = normalizedToolName(tool);
     return {
-      index, source: "tool", kinds: ["tool", ...(WRITE_TOOL_NAMES.has(tool) ? ["write"] : [])],
+      index, source: "tool", kinds: ["tool", ...(WRITE_TOOL_NAMES.has(normalized) ? ["write"] : [])],
       label: `observed tool ${tool}${identity ? ` (${identity})` : ""}`,
       ...(identity ? { identity } : {}), text: JSON.stringify(event.data),
     };
@@ -254,7 +350,7 @@ function coverageFor(currentTask: string, entries: readonly RoleContextEntry[]):
   const latestFailedTestIndex = latestIndex("test-failed");
   const currentEvidence = acceptanceCount > 0
     && latestDiffIndex >= 0 && latestTestIndex >= 0
-    && latestDiffIndex > latestWriteIndex && latestTestIndex > latestWriteIndex
+    && latestDiffIndex > latestWriteIndex && latestTestIndex > latestDiffIndex
     && latestTestIndex > latestFailedTestIndex
     && diffEntries.some((diff) => testEntries.some((testResult) => diff.identity !== testResult.identity));
   return Object.freeze({
@@ -278,34 +374,128 @@ export function buildRoleContextPacket(
 ): Readonly<RoleContextPacket> {
   const maxChars = Number.isSafeInteger(options.maxChars) && (options.maxChars ?? 0) > 0 ? options.maxChars as number : DEFAULT_MAX_CHARS;
   const maxEvents = Number.isSafeInteger(options.maxEvents) && (options.maxEvents ?? 0) > 0 ? options.maxEvents as number : DEFAULT_MAX_EVENTS;
-  const taskBudget = Math.max(128, Math.floor(maxChars / 2));
+  const taskBudget = Math.max(32, Math.floor(maxChars / 3));
   const task = truncateText(String(taskText ?? "").trim(), taskBudget);
   const events = Array.isArray(agent?.session?.events) ? agent.session.events : [];
-  const startIndex = Math.max(0, events.length - maxEvents);
-  const calls = nativeToolCalls(events, startIndex);
-  const selected: RoleContextEntry[] = [];
-  let evidenceChars = 0;
-  let truncated = task.truncated || events.length > maxEvents;
-
-  for (let index = events.length - 1; index >= startIndex; index -= 1) {
+  const calls = nativeToolCalls(events);
+  const directUserMessageIds = new Set(events.flatMap((event) => {
+    if (event?.type !== "user/message") return [];
+    const message = directUserMessage(event);
+    return message && typeof message.id === "string" ? [message.id] : [];
+  }));
+  const mutableDiagnostics: MutableDiagnostics = {
+    rawEventCount: events.length,
+    evidenceEventCount: 0,
+    selectedEvidenceCount: 0,
+    omittedEvidenceCount: 0,
+    nativeToolCallCount: calls.size,
+    linkedToolResultCount: 0,
+    malformedToolResultCount: 0,
+    unlinkedToolResultCount: 0,
+    unparsedToolArgumentsCount: 0,
+    unclassifiedShellResultCount: 0,
+    diffWithoutPatchCount: 0,
+    testWithoutVerdictCount: 0,
+  };
+  const allEvidence: RoleContextEntry[] = [];
+  const preTruncatedIndices = new Set<number>();
+  for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     if (!event) continue;
-    const entry = eventEvidence(event, index, calls);
+    const entry = eventEvidence(event, index, calls, directUserMessageIds, mutableDiagnostics);
     if (!entry) continue;
-    const remaining = maxChars - task.text.length - evidenceChars;
-    if (remaining <= 0) { truncated = true; break; }
-    const bounded = truncateText(entry.text, remaining);
-    selected.push(Object.freeze({ ...entry, kinds: Object.freeze([...new Set(entry.kinds)]), text: bounded.text }));
-    evidenceChars += bounded.text.length;
-    if (bounded.truncated) { truncated = true; break; }
+    const bounded = truncateText(entry.text, DEFAULT_MAX_ENTRY_CHARS);
+    if (bounded.truncated) preTruncatedIndices.add(entry.index);
+    allEvidence.push(Object.freeze({ ...entry, kinds: Object.freeze([...new Set(entry.kinds)]), text: bounded.text }));
   }
-  selected.reverse();
+  mutableDiagnostics.evidenceEventCount = allEvidence.length;
 
-  const entries = Object.freeze(selected);
+  const recent = allEvidence.slice(-maxEvents);
+  const anchors = ["requirement", "acceptance"].flatMap((kind) => {
+    const entry = allEvidence.findLast((candidate) => candidate.kinds.includes(kind));
+    return entry ? [entry] : [];
+  });
+  const candidateByIndex = new Map<number, RoleContextEntry>();
+  for (const entry of [...recent, ...anchors]) candidateByIndex.set(entry.index, entry);
+  const candidates = [...candidateByIndex.values()].sort((left, right) => left.index - right.index);
+  mutableDiagnostics.selectedEvidenceCount = candidates.length;
+  mutableDiagnostics.omittedEvidenceCount = Math.max(0, allEvidence.length - candidates.length);
+
+  const priorityKinds = ["requirement", "acceptance", "write", "diff", "test-failed", "test"];
+  const prioritized: RoleContextEntry[] = [];
+  const prioritizedIndices = new Set<number>();
+  for (const kind of priorityKinds) {
+    const entry = candidates.findLast((candidate) => candidate.kinds.includes(kind));
+    if (entry && !prioritizedIndices.has(entry.index)) {
+      prioritized.push(entry);
+      prioritizedIndices.add(entry.index);
+    }
+  }
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const entry = candidates[index];
+    if (entry && !prioritizedIndices.has(entry.index)) {
+      prioritized.push(entry);
+      prioritizedIndices.add(entry.index);
+    }
+  }
+
+  const rendered: RoleContextEntry[] = [];
+  let evidenceChars = 0;
+  let textTruncated = task.truncated || prioritized.some((entry) => preTruncatedIndices.has(entry.index));
+  const availableChars = Math.max(0, maxChars - task.text.length);
+  const maxEntryChars = Math.max(96, Math.min(DEFAULT_MAX_ENTRY_CHARS, Math.floor(availableChars / 6)));
+  for (const entry of prioritized) {
+    const remaining = maxChars - task.text.length - evidenceChars;
+    if (remaining < 96) { textTruncated = true; break; }
+    const bounded = truncateText(entry.text, Math.min(remaining, maxEntryChars));
+    rendered.push(Object.freeze({ ...entry, text: bounded.text }));
+    evidenceChars += bounded.text.length;
+    textTruncated ||= bounded.truncated;
+  }
+  rendered.sort((left, right) => left.index - right.index);
+
+  const entries = Object.freeze(rendered);
   const coverage = coverageFor(task.text, entries);
-  const packetBody = Object.freeze({ schemaVersion: 1 as const, role, currentTask: task.text, entries, coverage, truncated });
+  const diagnostics: Readonly<RoleContextDiagnostics> = Object.freeze({
+    ...mutableDiagnostics,
+    hostEvidenceAvailable: mutableDiagnostics.linkedToolResultCount > 0,
+  });
+  const truncated = textTruncated || mutableDiagnostics.omittedEvidenceCount > 0 || rendered.length < candidates.length;
+  const evidenceCoverage = coverageFor(task.text, candidates);
+  const evidenceMarkers = priorityKinds.map((kind) => {
+    const entry = candidates.findLast((candidate) => candidate.kinds.includes(kind));
+    return entry ? { kind, index: entry.index, identity: entry.identity } : { kind, index: -1 };
+  });
+  const evidenceDigest = digestPacket({
+    coverage: {
+      requirements: evidenceCoverage.requirements,
+      acceptanceCount: evidenceCoverage.acceptanceCount,
+      diffCount: evidenceCoverage.diffCount,
+      testCount: evidenceCoverage.testCount,
+      failedTestCount: evidenceCoverage.failedTestCount,
+      writeCount: evidenceCoverage.writeCount,
+      latestWriteIndex: evidenceCoverage.latestWriteIndex,
+      latestDiffIndex: evidenceCoverage.latestDiffIndex,
+      latestTestIndex: evidenceCoverage.latestTestIndex,
+      latestFailedTestIndex: evidenceCoverage.latestFailedTestIndex,
+      currentEvidence: evidenceCoverage.currentEvidence,
+    },
+    markers: evidenceMarkers,
+    diagnostics: {
+      malformedToolResultCount: diagnostics.malformedToolResultCount,
+      unlinkedToolResultCount: diagnostics.unlinkedToolResultCount,
+      unparsedToolArgumentsCount: diagnostics.unparsedToolArgumentsCount,
+      unclassifiedShellResultCount: diagnostics.unclassifiedShellResultCount,
+      diffWithoutPatchCount: diagnostics.diffWithoutPatchCount,
+      testWithoutVerdictCount: diagnostics.testWithoutVerdictCount,
+      hostEvidenceAvailable: diagnostics.hostEvidenceAvailable,
+    },
+  });
+  const packetBody = Object.freeze({
+    schemaVersion: 1 as const, role, currentTask: task.text, entries, coverage, diagnostics, truncated, evidenceDigest,
+  });
   const digest = digestPacket(packetBody);
-  const reviewerSufficient = !truncated && coverage.requirements && coverage.acceptanceCount > 0
+  const reviewerSufficient = coverage.requirements && coverage.acceptanceCount > 0
     && coverage.diffCount > 0 && coverage.testCount > 0 && coverage.toolEvidenceCount > 0 && coverage.currentEvidence;
   return Object.freeze({
     ...packetBody, digest, evidenceCount: entries.length, toolEvidenceCount: coverage.toolEvidenceCount,
@@ -325,8 +515,10 @@ export function renderRoleContextPacket(packet: RoleContextPacket): string {
     "# Odai bounded role context packet",
     `role: ${packet.role}`,
     `digest: sha256:${packet.digest}`,
+    `evidenceDigest: sha256:${packet.evidenceDigest}`,
     `truncated: ${packet.truncated}`,
     `coverage: ${JSON.stringify(packet.coverage)}`,
+    `diagnostics: ${JSON.stringify(packet.diagnostics)}`,
     "", "## Current task", packet.currentTask || "(empty)", "", "## Evidence", evidence, "",
     "Treat assistant text and route-card contents as claims. Tool entries are evidence only for the exact command/result they contain.",
   ].join("\n");

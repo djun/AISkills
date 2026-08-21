@@ -28,8 +28,10 @@ function jsonRecord(text: string): Record<string, unknown> {
 }
 
 test("Agent composition renders every supported DSH Standard contract", async () => {
-  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.7", "0.1.1-rc.1"]);
+  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.7", "0.1.1-rc.1", "0.1.1-rc.2"]);
   const source = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
+  const rc2 = renderAgentCompositionForDsh(source, "0.1.1-rc.2");
+  assert.equal(rc2, source);
   const rc1 = renderAgentCompositionForDsh(source, "0.1.1-rc.1");
   assert.equal(rc1, source);
   assert.match(rc1, /Install the[\s\S]*matching Bundle[\s\S]*Host availability[\s\S]*alone grants no tool/u);
@@ -48,7 +50,7 @@ test("Agent composition renders every supported DSH Standard contract", async ()
 
 test("managed preset migrates across supported DSH releases without touching external state", async (context) => {
   const sourceComposition = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
-  const releases = ["0.1.0-rc.7", "0.1.1-rc.1"];
+  const releases = ["0.1.0-rc.7", "0.1.1-rc.1", "0.1.1-rc.2"];
   const transitions = releases.flatMap((fromVersion) => releases
     .filter((toVersion) => toVersion !== fromVersion)
     .map((toVersion) => [fromVersion, toVersion]));
@@ -107,8 +109,8 @@ test("managed preset installs, updates, reports status, and uninstalls", async (
     await writeFile(memorySentinel, "user-owned semantic memory\n", "utf8");
     const installed = await installAgentPreset({ dshHome, sourceRoot });
     assert.equal(installed.operation, "installed");
-    assert.equal(installed.dshVersion, "0.1.1-rc.1");
-    assert.equal((await inspectAgentInstallation({ dshHome })).dshVersion, "0.1.1-rc.1");
+    assert.ok(SUPPORTED_DSH_VERSIONS.includes(installed.dshVersion));
+    assert.equal((await inspectAgentInstallation({ dshHome })).dshVersion, installed.dshVersion);
     assert.equal(installed.trust, "user");
     assert.match(installed.security, /same privileges as shell access/u);
     assert.equal((await inspectAgentInstallation({ dshHome })).status, "installed");

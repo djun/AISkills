@@ -2979,6 +2979,7 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
   assert.match(mismatchRendered, /taskError=provider cleanup failed: reviewer cleanup failed/u);
 
   let fallbackResolutions = 0;
+  let fallbackStarts = 0;
   const fallbackCtx = fakeContext({
     llm: {
       async resolveCallConfig(config: UnknownRecord) {
@@ -2986,13 +2987,32 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
         return { config };
       },
     },
-    subagents: { async start() { throw new Error("incomplete reviewer packet must not start a child"); } },
+    subagents: {
+      async start() {
+        fallbackStarts += 1;
+        return {
+          localAgent: {
+            session: {
+              events: [{
+                type: "request/header",
+                data: { header: { config: { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "max" } } },
+              }],
+            },
+          },
+          result: Promise.resolve({ stopReason: "completed", output: [{ type: "text", text: "reviewed after evidence refresh" }] }),
+          async dispose() {},
+        };
+      },
+    },
   });
   apply(fallbackCtx, {
     skillPath,
     routing: { roles: { reviewer: { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "max" } } },
   });
-  const fallbackEvents: DshEvent[] = [responsibilityGapEvent("reviewer")];
+  const fallbackEvents: DshEvent[] = [
+    { type: "user/message", data: userMessage("实现请求：保持默认行为并修复路由。") },
+    responsibilityGapEvent("reviewer"),
+  ];
   const fallbackAgent = {
     session: {
       header: {},
@@ -3006,7 +3026,7 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
   );
   assert.equal(fallbackResolutions, 0);
   assert.match(messageText(fallback.messages[1]), /Remain on the current controller route/u);
-  assert.match(messageText(fallback.messages[1]), /continue the authorized task/u);
+  assert.match(messageText(fallback.messages[1]), /only to gather or fix that evidence/u);
   assert.match(messageText(fallback.messages[1]), /not independent acceptance/u);
   assert.equal(fallbackEvents.some((event) => event.type === "odai/route-upgrade"), false);
   assert.equal(fallbackEvents.some((event) => event.type === "odai/route-protection"), false);
@@ -3018,6 +3038,51 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
   const fallbackResult = findEvent(fallbackEvents, (event) => event.type === "odai/route-result").data;
   assert.equal(fallbackResult.stopReason, "evidence-packet-missing");
   assert.equal(fallbackResult.independent, false);
+  assert.equal(fallbackEvents.some((event) => event.type === "odai/responsibility-gap-consumed"), false);
+  const deferredGap = findEvent(fallbackEvents, (event) => event.type === "odai/responsibility-gap-deferred").data;
+  assert.equal(deferredGap.responsibility, "reviewer");
+  assert.match(String(deferredGap.evidenceDigest), /^[a-f0-9]{64}$/u);
+  assert.match(messageText(fallback.messages[1]), /remains pending/u);
+  assert.match(messageText(fallback.messages[1]), /Evidence diagnostics/u);
+  const repeatedFallback = await fallbackCtx.captured.handlers.get("agent/pre-step")(
+    { agent: fallbackAgent, turn: 1, step: 2, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("请独立审查这次实现")] }),
+  );
+  assert.equal(repeatedFallback.messages.length, 1);
+  assert.equal(fallbackStarts, 0);
+  assert.equal(fallbackEvents.filter((event) => event.type === "odai/responsibility-gap-deferred").length, 1);
+  fallbackEvents.push(
+    { type: "turn/start", seq: 300, data: { turn: 2 } },
+    { type: "user/message", seq: 301, data: userMessage("继续") },
+  );
+  const carriedFallback = await fallbackCtx.captured.handlers.get("agent/pre-step")(
+    { agent: fallbackAgent, turn: 2, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("继续")] }),
+  );
+  assert.equal(carriedFallback.messages.length, 1);
+  assert.equal(fallbackStarts, 0);
+  assert.equal(fallbackEvents.filter((event) => event.type === "odai/responsibility-gap-deferred").length, 1);
+  fallbackEvents.push(
+    { type: "turn/start", seq: 310, data: { turn: 3 } },
+    { type: "user/message", seq: 311, data: userMessage("继续；A1 还必须覆盖回滚") },
+  );
+  const clarifiedFallback = await fallbackCtx.captured.handlers.get("agent/pre-step")(
+    { agent: fallbackAgent, turn: 3, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("继续；A1 还必须覆盖回滚")] }),
+  );
+  assert.equal(clarifiedFallback.messages.length, 2);
+  assert.equal(fallbackStarts, 0);
+  assert.equal(fallbackEvents.filter((event) => event.type === "odai/responsibility-gap-deferred").length, 2);
+  fallbackEvents.push(
+    ...nativeToolEvents("diff-after-deferral", "git diff -- dsh/runtime/src/router.mts", "diff --git a/router.mjs b/router.mjs\n+bounded change", { callSeq: 201 }),
+    ...nativeToolEvents("test-after-deferral", "node --test dsh/runtime/tests/router.test.mts", "tests 14 pass 14 fail 0 exit code: 0", { callSeq: 211 }),
+  );
+  await fallbackCtx.captured.handlers.get("agent/pre-step")(
+    { agent: fallbackAgent, turn: 3, step: 2, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("继续；A1 还必须覆盖回滚")] }),
+  );
+  assert.equal(fallbackStarts, 1);
+  assert.equal(fallbackEvents.some((event) => event.type === "odai/responsibility-gap-consumed"), true);
   const reviewerRequest = await fallbackCtx.captured.handlers.get("agent/request")(
     { agent: fallbackAgent, turn: 1, step: 1 },
     async () => ({ provider: "base", model: "controller", reasoningEffort: "high" }),
@@ -3054,7 +3119,33 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
   );
   assert.equal(executeStarts, 0);
   assert.match(executeFallback.messages[1].content[0].text, /bounded packet is incomplete/u);
+  assert.match(executeFallback.messages[1].content[0].text, /remains pending/u);
   assert.equal(findEvent(executeEvents, (event) => event.type === "odai/route-result").data.stopReason, "evidence-packet-missing");
+  assert.equal(executeEvents.some((event) => event.type === "odai/responsibility-gap-consumed"), false);
+  assert.equal(executeEvents.some((event) => event.type === "odai/responsibility-gap-deferred"), true);
+  executeEvents.push(
+    { type: "turn/start", seq: 320, data: { turn: 2 } },
+    { type: "user/message", seq: 321, data: userMessage("现在几点？") },
+  );
+  await executeCtx.captured.handlers.get("agent/pre-step")(
+    { agent: executeAgent, turn: 2, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("现在几点？")] }),
+  );
+  assert.equal(executeEvents.some((event) => event.type === "odai/responsibility-gap-consumed"), false);
+  assert.equal(executeStarts, 0);
+  executeEvents.push(
+    { type: "turn/start", seq: 330, data: { turn: 3 } },
+    { type: "user/message", seq: 331, data: userMessage("改做一个无关的新任务") },
+  );
+  await executeCtx.captured.handlers.get("agent/pre-step")(
+    { agent: executeAgent, turn: 3, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("改做一个无关的新任务")] }),
+  );
+  const supersededGap = findEvent(executeEvents, (event) => (
+    event.type === "odai/responsibility-gap-consumed" && event.data?.reason === "SUPERSEDED_BY_DIRECT_USER_TASK"
+  ));
+  assert.equal(supersededGap.data.responsibility, "reviewer");
+  assert.equal(executeStarts, 0);
 
   let failedStarts = 0;
   const failedCtx = fakeContext({ subagents: { async start() { failedStarts += 1; throw new Error("failed tests must block reviewer children"); } } });

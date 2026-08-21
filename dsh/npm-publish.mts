@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { SpawnSyncReturns } from "node:child_process";
 import { createInterface } from "node:readline/promises";
-import { stdin, stdout } from "node:process";
+import { execPath, stdin, stdout } from "node:process";
 
 const REGISTRY = "https://registry.npmjs.org/";
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -147,6 +148,23 @@ function packageMetadata(directory: string): PackageMetadata {
 function cleanArtifacts(): void {
   npm(["--prefix", PLUGIN_DIR, "run", "clean:artifact"], { capture: true, allowFailure: true });
   npm(["--prefix", AGENT_DIR, "run", "clean:artifact"], { capture: true, allowFailure: true });
+}
+
+function verifyReleaseMatrices(plugin: PackageMetadata, agent: PackageMetadata): void {
+  const runner = resolve(REPO_ROOT, "scripts/verify-dsh-release-matrix.mjs");
+  run(execPath, [runner], { label: "source DSH release matrix" });
+  const packDirectory = mkdtempSync(resolve(tmpdir(), "odai-dsh-publish-matrix-"));
+  try {
+    npm(["pack", "--pack-destination", packDirectory, "--silent"], { cwd: PLUGIN_DIR, label: "Plugin release tarball" });
+    npm(["pack", "--pack-destination", packDirectory, "--silent"], { cwd: AGENT_DIR, label: "Agent release tarball" });
+    const pluginTgz = resolve(packDirectory, `${plugin.name}-${plugin.version}.tgz`);
+    const agentTgz = resolve(packDirectory, `${agent.name}-${agent.version}.tgz`);
+    run(execPath, [runner, "--plugin-tgz", pluginTgz, "--agent-tgz", agentTgz], {
+      label: "installed-artifact DSH release matrix",
+    });
+  } finally {
+    rmSync(packDirectory, { recursive: true, force: true });
+  }
 }
 
 async function ask(question: string): Promise<string> {
@@ -291,8 +309,7 @@ async function main(): Promise<void> {
   npm(["--prefix", AGENT_DIR, "test"], { label: "Agent tests" });
   npm(["--prefix", PLUGIN_DIR, "run", "pack:dry-run"], { label: "Plugin dry-run packaging" });
   npm(["--prefix", AGENT_DIR, "run", "pack:dry-run"], { label: "Agent dry-run packaging" });
-  npm(["--prefix", PLUGIN_DIR, "run", "verify:dsh"], { label: "Plugin DSH verification" });
-  npm(["--prefix", AGENT_DIR, "run", "verify:dsh"], { label: "Agent DSH verification" });
+  verifyReleaseMatrices(plugin, agent);
 
   await publishIfMissing(plugin, PLUGIN_DIR, gitHead);
   await publishIfMissing(agent, AGENT_DIR, gitHead);

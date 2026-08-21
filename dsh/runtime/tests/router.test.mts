@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   OUTPUT_LIMIT_CONTINUATION_REASON,
   classifyImplementationAuthorization,
+  classifyPendingReviewerText,
   classifyResponsibilityInterruptionText,
   decideResearchPrefetch,
   decideRoute,
@@ -88,6 +89,18 @@ test("output-limit interruption text only resumes on a pure continuation", () =>
   }
 });
 
+test("pending reviewer text distinguishes continuation, supersession, and dormancy", () => {
+  for (const text of ["继续", "继续；A1 还必须覆盖回滚", "补充验收证据：目标测试已经通过", "continue with the previous review; add rollback acceptance"]) {
+    assert.equal(classifyPendingReviewerText(text), "continue", text);
+  }
+  for (const text of ["开始另一个任务", "改做一个无关的新问题", "start a separate task", "review another project"]) {
+    assert.equal(classifyPendingReviewerText(text), "supersede", text);
+  }
+  for (const text of ["现在几点？", "解释一下这个术语", "为 API 添加测试", "审查 API", "把『开始另一个任务』改短"]) {
+    assert.equal(classifyPendingReviewerText(text), "dormant", text);
+  }
+});
+
 test("verified output-limit interruptions restore each in-place responsibility", () => {
   for (const responsibility of ["planner", "executor", "frontend"]) {
     const decision = decideRoute({
@@ -162,6 +175,34 @@ test("planning language is only a candidate until task state proves a planner ga
   assert.equal(decision.action, "upgrade");
   assert.equal(decision.targetRole, "planner");
   assert.equal(decision.reasonCode, "PLANNER_EVIDENCE_STATE_GAP");
+});
+
+test("cross-contract planner branches require an evidence-grounded proposal", () => {
+  const branches = [
+    "Frontend and backend deploy independently, and rollout order changes which compatibility shim is required.",
+    "The authentication state machine has two externally observable transition contracts with different rollback behavior.",
+    "The rollback boundary differs depending on whether old and new API clients coexist during release.",
+  ];
+  for (const text of branches) {
+    const direct = decideRoute({ text });
+    assert.equal(direct.action, "direct", text);
+    const planned = decideRoute({
+      text,
+      proposal: gap("planner", {
+        gap: "Two independently valid contract branches change implementation order and acceptance.",
+        evidenceRefs: ["deployment-contract", "rollback-contract"],
+      }),
+    });
+    assert.equal(planned.action, "upgrade", text);
+    assert.equal(planned.targetRole, "planner", text);
+    assert.equal(planned.reasonCode, "PLANNER_EVIDENCE_STATE_GAP", text);
+  }
+  for (const text of [
+    "This rollout is complicated but its compatibility contract and order are already frozen.",
+    "Shorten the quoted example: ‘rollback order may require a planner’. ",
+  ]) {
+    assert.equal(decideRoute({ text }).action, "direct", text);
+  }
 });
 
 test("planner meta questions trigger state explanation rather than becoming a role password", () => {

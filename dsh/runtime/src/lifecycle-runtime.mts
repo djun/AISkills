@@ -89,6 +89,15 @@ function isSubagentsService(value: unknown): value is SubagentsService {
   return value !== null && typeof value === "object" && "start" in value && typeof value.start === "function";
 }
 
+function latestReviewerDeferral(events: readonly DshEvent[], stateDigest: string): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== "odai/responsibility-gap-deferred" || event.data?.stateDigest !== stateDigest) continue;
+    return typeof event.data.evidenceDigest === "string" ? event.data.evidenceDigest : undefined;
+  }
+  return undefined;
+}
+
 interface LifecycleDependencies {
   appendEvent(agent: DshAgent, type: string, data: object): void;
   bundled: SkillBundle;
@@ -900,6 +909,9 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       let roleContext = decision.action === "direct"
         ? undefined
         : buildRoleContextPacket(agent, routeRole, roleTaskText);
+      const priorReviewerEvidenceDigest = responsibilityGap?.responsibility === "reviewer"
+        ? latestReviewerDeferral(evidence.events(agent), responsibilityGap.stateDigest)
+        : undefined;
       let localReviewerCoverage;
       if (config.routing.mode === "auto"
         && routeRole === "reviewer"
@@ -917,6 +929,13 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         });
         routeRole = "reviewer";
       }
+      const reviewerCanAwaitEvidence = config.routing.mode === "auto"
+        || (config.routing.mode === "execute"
+          && Boolean(routeRole === "reviewer" ? configuredRole(agent, routeRole, turn).route : undefined));
+      const reviewerEvidenceIncomplete = routeRole === "reviewer" && roleContext !== undefined
+        && !roleContext.sufficient && reviewerCanAwaitEvidence;
+      const reviewerEvidenceUnchanged = reviewerEvidenceIncomplete
+        && priorReviewerEvidenceDigest === roleContext?.evidenceDigest;
       appendEvent(agent, "odai/route-decided", {
         turn,
         step,
@@ -934,7 +953,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         } : {}),
         ...(decision.considerations ? { considerations: decision.considerations } : {}),
       });
-      if (responsibilityGap) {
+      if (responsibilityGap && !reviewerEvidenceIncomplete) {
         appendEvent(agent, "odai/responsibility-gap-consumed", {
           turn,
           step,
@@ -948,17 +967,20 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       if (decision.action === "direct") {
         if (!localReviewerCoverage) return routedDownstream;
         if (!roleContext) throw new Error("reviewer fallback is missing its context packet");
+        if (reviewerEvidenceUnchanged) return routedDownstream;
         appendEvent(agent, "odai/route-context", {
           turn,
           step,
           role: "reviewer",
           mode: "controller-local",
           digest: roleContext.digest,
+          evidenceDigest: roleContext.evidenceDigest,
           evidenceCount: roleContext.evidenceCount,
           toolEvidenceCount: roleContext.toolEvidenceCount,
           acceptanceCount: localReviewerCoverage.acceptanceCount,
           diffCount: localReviewerCoverage.diffCount,
           testCount: localReviewerCoverage.testCount,
+          diagnostics: roleContext.diagnostics,
           truncated: roleContext.truncated,
           sufficient: false,
         });
@@ -971,6 +993,17 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
           stopReason: "evidence-packet-missing",
           independent: false,
         });
+        if (responsibilityGap?.responsibility === "reviewer") {
+          appendEvent(agent, "odai/responsibility-gap-deferred", {
+            turn,
+            step,
+            responsibility: "reviewer",
+            stateDigest: responsibilityGap.stateDigest,
+            contextDigest: roleContext.digest,
+            evidenceDigest: roleContext.evidenceDigest,
+            reasonCode: "REVIEWER_EVIDENCE_PACKET_PENDING",
+          });
+        }
         return {
           kind: "enter",
           messages: [
@@ -978,8 +1011,11 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
             pluginMessage(
               [
                 `An independent reviewer was not started because the bounded packet is incomplete (${JSON.stringify(localReviewerCoverage)}).`,
-                "Remain on the current controller route and continue the authorized task. Gather project-available requirements, acceptance conditions, diff, tests, and matching tool evidence before resubmitting a changed reviewer gap.",
-                "A controller-local read-only check may guide the work, but it is not independent acceptance. Do not stop solely to ask the user for review artifacts the project can produce, and do not claim the reviewer approved release.",
+                `Evidence diagnostics: ${JSON.stringify(roleContext.diagnostics)}.`,
+                responsibilityGap?.responsibility === "reviewer"
+                  ? "The recorded reviewer gap remains pending and will be reassessed once new acceptance, write, diff, test, failure, or host-evidence diagnostics change the evidence state; do not resubmit it unchanged."
+                  : "Gather project-available acceptance, diff, tests, and matching native tool evidence before submitting a reviewer gap.",
+                "Remain on the current controller route only to gather or fix that evidence. A controller-local read-only check is not independent acceptance; do not claim reviewer approval or release on its basis.",
               ].join("\n"),
               "odai reviewer evidence is incomplete; controller continues locally",
             ),
@@ -1100,16 +1136,19 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         role: routeRole,
         mode: contextMode,
         digest: roleContext.digest,
+        evidenceDigest: roleContext.evidenceDigest,
         evidenceCount: roleContext.evidenceCount,
         toolEvidenceCount: roleContext.toolEvidenceCount,
         acceptanceCount: roleContext.coverage.acceptanceCount,
         diffCount: roleContext.coverage.diffCount,
         testCount: roleContext.coverage.testCount,
+        diagnostics: roleContext.diagnostics,
         truncated: roleContext.truncated,
         sufficient: roleContext.sufficient,
       });
 
       if (routeRole === "reviewer" && decision.action === "delegate" && !roleContext.sufficient) {
+        if (reviewerEvidenceUnchanged) return routedDownstream;
         appendEvent(agent, "odai/route-result", {
           turn,
           step,
@@ -1119,12 +1158,30 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
           stopReason: "evidence-packet-missing",
           contextDigest: roleContext.digest,
         });
+        if (responsibilityGap?.responsibility === "reviewer") {
+          appendEvent(agent, "odai/responsibility-gap-deferred", {
+            turn,
+            step,
+            responsibility: "reviewer",
+            stateDigest: responsibilityGap.stateDigest,
+            contextDigest: roleContext.digest,
+            evidenceDigest: roleContext.evidenceDigest,
+            reasonCode: "REVIEWER_EVIDENCE_PACKET_PENDING",
+          });
+        }
         return {
           kind: "enter",
           messages: [
             ...routedDownstream.messages,
             pluginMessage(
-              `odai reviewer child was not started because the bounded packet is incomplete (${JSON.stringify(roleContext.coverage)}). Gather requirements, acceptance conditions, actual diff, tests, and matching tool evidence first; do not claim independent acceptance.`,
+              [
+                `odai reviewer child was not started because the bounded packet is incomplete (${JSON.stringify(roleContext.coverage)}).`,
+                `Evidence diagnostics: ${JSON.stringify(roleContext.diagnostics)}.`,
+                responsibilityGap?.responsibility === "reviewer"
+                  ? "The recorded reviewer gap remains pending for reassessment after the evidence state changes; do not resubmit it unchanged."
+                  : "Gather acceptance, an actual patch diff, successful tests, and matching native tool evidence before submitting a reviewer gap.",
+                "Do not claim independent acceptance.",
+              ].join("\n"),
               "odai reviewer evidence packet is incomplete",
             ),
           ],

@@ -51,6 +51,8 @@ export interface RuntimeEventData extends UnknownRecord {
   responsibility?: string;
   stateDigest?: string;
   digest?: string;
+  evidenceDigest?: string;
+  diagnostics?: UnknownRecord;
   continuationPolicy?: string;
   scopeId?: string;
   responsibilityScopeId?: string;

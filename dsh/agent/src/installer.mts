@@ -94,10 +94,11 @@ export const SUPPORTED_DSH_VERSIONS = Object.freeze(
 if (SUPPORTED_DSH_VERSIONS.length === 0 || SUPPORTED_DSH_VERSIONS.some((version) => !DSH_VERSION_PATTERN.test(version))) {
   throw new Error("odai-dsh-agent peer dependency must list exact supported DSH versions");
 }
-const SOURCE_DSH_VERSION = "0.1.1-rc.1";
+const SOURCE_DSH_VERSION = "0.1.1-rc.2";
 const OPTIONAL_PROVIDER_COMMENTS: Readonly<Record<string, string>> = Object.freeze({
   "0.1.0-rc.7": "    # Production dsh does not install these optional providers. An opting-in\n    # Profile mounts each provider once on the host plane; copy this preset,\n    # then remove `disabled` from the matching tool row.",
   "0.1.1-rc.1": "    # Production dsh does not install these optional providers. Install the\n    # matching Bundle in this Profile and restart the Host, then copy this\n    # preset and remove `disabled` from the matching tool row. Host availability\n    # alone grants no tool.",
+  "0.1.1-rc.2": "    # Production dsh does not install these optional providers. Install the\n    # matching Bundle in this Profile and restart the Host, then copy this\n    # preset and remove `disabled` from the matching tool row. Host availability\n    # alone grants no tool.",
 });
 const compositionVersions = Object.keys(OPTIONAL_PROVIDER_COMMENTS);
 if (JSON.stringify(SUPPORTED_DSH_VERSIONS) !== JSON.stringify(compositionVersions)) {
