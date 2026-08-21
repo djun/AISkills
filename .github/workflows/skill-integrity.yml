@@ -17,10 +17,8 @@ jobs:
           node-version: 22.16.0
       - name: Install runtime build dependencies
         run: npm ci
-      - name: Typecheck and build DSH runtime
-        run: |
-          npm run typecheck:dsh-runtime
-          npm run build:dsh-runtime
+      - name: Typecheck and build all DSH packages
+        run: npm run typecheck:dsh
       - name: Validate canonical skill
         run: node scripts/validate-odai-skill.mjs
       - name: Check maintenance scripts
@@ -51,15 +49,13 @@ jobs:
           node --check scripts/run-package-pack.test.mjs
           node --check scripts/verify-dsh-packed-artifacts.mjs
           node --check cli/scripts/package-skill-bundle.mjs
-          node --check dsh/runtime/src/governance.mjs
-          node --check dsh/runtime/src/router.mjs
+          node --check dsh/runtime/build/governance.mjs
+          node --check dsh/runtime/build/router.mjs
           node --check dsh/runtime/build/index.mjs
-          node --check dsh/plugin/scripts/verify-dsh-load.mjs
-          node --check dsh/plugin/scripts/live-routing-smoke.mjs
-          node --check dsh/plugin/tests/package.test.mjs
-          node --check dsh/agent/src/installer.mjs
-          node --check dsh/agent/bin/odai-dsh-agent.mjs
-          node --check dsh/agent/scripts/verify-agent-load.mjs
+          node --check dsh/plugin/build/bin/odai-dsh-plugin.mjs
+          node --check dsh/agent/build/src/installer.mjs
+          node --check dsh/agent/build/bin/odai-dsh-agent.mjs
+          node --check dsh/build/npm-publish.mjs
       - name: Test optional hook adapters
         run: node scripts/test-odai-hooks.mjs
       - name: Test optional capability-routing adapter

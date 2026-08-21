@@ -10,6 +10,8 @@ import {
   renderRouteNotice,
   requiresFailClosedProtection,
 } from "./router.mjs";
+import type { RouteDecision } from "./router.mjs";
+import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
 import { classifyModelRouteFailure, probeModelRoute } from "./model-route.mjs";
 import { selectSharedOutputPolicyForTurn } from "./output-policy-state.mjs";
 import {
@@ -29,6 +31,8 @@ import {
   responsibilityScopeStartedEvent,
   responsibilityScopeStopReason,
 } from "./responsibility-scope.mjs";
+import type { InPlaceResponsibility, ResponsibilityScope } from "./responsibility-scope.mjs";
+export type { ResponsibilityScope } from "./responsibility-scope.mjs";
 import {
   activeRouteCard,
   routeCardById,
@@ -41,6 +45,8 @@ import {
 } from "./research-packet.mjs";
 import { dshRoleContract } from "./role-overlays.mjs";
 import { sharedSkillSelection } from "./skill-selection-state.mjs";
+import type { SkillBundle } from "./skill-bundle.mjs";
+import type { SkillSelection } from "./runtime-support.mjs";
 import {
   captureAutomaticMemories,
   claimSemanticMemoryTurn,
@@ -49,6 +55,7 @@ import {
   renderSemanticMemoryPacket,
   retrieveSemanticMemories,
 } from "./semantic-memory.mjs";
+import type { SemanticMemorySummary } from "./semantic-memory.mjs";
 import type {
   DshAgent,
   DshEvent,
@@ -67,55 +74,24 @@ interface AgentRequestErrorEvent extends AgentRequestEvent { provider: string; f
 interface AgentTurnEvent { agent: DshAgent; turn: number }
 interface RequestOptions extends UnknownRecord, Partial<ModelRoute> { messages?: readonly DshMessage[] }
 interface StepResult extends UnknownRecord { kind: string; messages: readonly DshMessage[] }
-interface RouteDecision extends UnknownRecord {
-  role: string;
-  targetRole?: string;
-  mode: string;
-  reasonCode: string;
-  reason: string;
-  action: string;
-  signals: readonly string[];
-  considerations?: readonly string[];
-}
 interface RouteFailure { kind: string; code: string; message: string }
 interface RoleState { route?: ModelRoute; source?: string; error?: string; detail?: string; id?: string; cardId?: string; baseRoute?: ModelRoute }
-export interface ResponsibilityScope extends UnknownRecord { id: string; role: string; turn: number; route: ModelRoute; source?: string; cardId?: string; decision?: RouteDecision; continuationPolicy?: string; stopPolicy?: string; routeValidated?: boolean; state?: string; baseRoute?: ModelRoute; resumeOfScopeId?: string }
 export interface RouteProtection extends UnknownRecord { scopeId?: string }
 export interface PendingRouteReceipt extends UnknownRecord { agent: DshAgent; turn: number; step: number; responsibility: string; responsibilityScopeId?: string; routeCardId?: string; routeMode: string; routeSource?: string; requestedRoute: ModelRoute; expectedRoute: ModelRoute; resumeOfScopeId?: string }
 export interface PendingRestoration extends UnknownRecord { agent: DshAgent; scopeId: string; turn: number; step: number; role: string; expectedRoute: ModelRoute }
 export interface OutputUsage extends UnknownRecord { turn?: number; usage?: { outputTokens?: number } }
 interface MemorySettings { mode: "auto" | "off"; source: string }
-interface ResponsibilityScopeInput {
-  turn: number;
-  startStep: number;
-  role: string;
-  route: ModelRoute;
-  source?: string;
-  decision: RouteDecision;
-  routeValidated?: boolean;
-  cardId?: string;
-  resumeOfScopeId?: string;
+function isInPlaceResponsibility(value: unknown): value is InPlaceResponsibility {
+  return value === "planner" || value === "reviewer" || value === "executor" || value === "frontend";
 }
-
-const createTypedResponsibilityScope = createResponsibilityScope as unknown as (
-  input: ResponsibilityScopeInput,
-) => ResponsibilityScope;
-const retrieveTypedSemanticMemories = retrieveSemanticMemories as unknown as (input: {
-  storePath: string;
-  query: string;
-  cwd?: string;
-  limit?: number;
-  maxChars?: number;
-  excludeMessageHash?: string;
-}) => readonly UnknownRecord[];
 
 function isSubagentsService(value: unknown): value is SubagentsService {
   return value !== null && typeof value === "object" && "start" in value && typeof value.start === "function";
 }
 
 interface LifecycleDependencies {
-  appendEvent(agent: DshAgent, type: string, data: RuntimeEventData): void;
-  bundled: import("./runtime-support.mjs").SkillBundle;
+  appendEvent(agent: DshAgent, type: string, data: object): void;
+  bundled: SkillBundle;
   config: RuntimeConfig;
   configuredRole(agent: DshAgent, role: string, turn?: number): RoleState;
   ctx: DshRuntimeContext;
@@ -125,7 +101,7 @@ interface LifecycleDependencies {
   logger: RuntimeLogger;
   memorySettingsFor(agent: DshAgent, turn?: number): MemorySettings;
   outputUsageBySession: WeakMap<DshSession, OutputUsage>;
-  pendingResponsibilityGap(agent: DshAgent, turn: number | undefined, step: number): RuntimeEventData | undefined;
+  pendingResponsibilityGap(agent: DshAgent, turn: number | undefined, step: number): ResponsibilityGapProposal | undefined;
   pendingRouteReceipts: WeakMap<DshSession, PendingRouteReceipt>;
   pendingScopeRestorations: WeakMap<DshSession, PendingRestoration>;
   responsibilityScopeOwners: WeakMap<DshSession, DshAgent>;
@@ -225,12 +201,15 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
           : {}),
       });
       if (!childRole && scope?.state === "pending") {
+        const baseRoute = routeFromConfig(proposed);
+        const temporaryRoute = routeFromConfig(request);
+        if (!baseRoute || !temporaryRoute) throw new Error("responsibility scope claim requires complete request routes");
         scope = claimResponsibilityScope(scope, {
           step,
-          baseRoute: proposed,
-          temporaryRoute: request,
+          baseRoute,
+          temporaryRoute,
           routeMode,
-        }) as ResponsibilityScope;
+        });
         responsibilityScopes.set(agent, scope);
         appendEvent(agent, "odai/responsibility-scope-claimed", responsibilityScopeClaimedEvent(scope));
       }
@@ -238,7 +217,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         ? Object.freeze({ status: "verified" })
         : await probeModelRoute(
             (candidate: ModelRoute, candidateSignal?: AbortSignal) => ctx.llm.resolveCallConfig(candidate, candidateSignal),
-            request,
+            routeFromConfig(request) ?? roleRoute,
             signal,
           );
       if (validation.status === "rejected") {
@@ -480,8 +459,11 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         if (stopped?.reason === "terminal-response"
           && Number.isSafeInteger(stopped.stopStep)
           && receipt?.step === stopped.stopStep
+          && typeof observedOutputTokens === "number"
           && Number.isSafeInteger(observedOutputTokens)
-          && ["planner", "executor", "frontend"].includes(receipt.responsibility)
+          && isInPlaceResponsibility(receipt?.responsibility)
+          && receipt.responsibility !== "reviewer"
+          && receipt.requestedRoute
           && (receipt.responsibility !== "executor" || routeCard)) {
           const effectiveRoute = receipt.actualRoute ?? receipt.requestedRoute;
           appendEvent(owner, "odai/responsibility-interrupted", {
@@ -735,12 +717,12 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         const settings = memorySettingsFor(agent, turn);
         const message = directMessage;
         const query = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
-        let retrieved: readonly UnknownRecord[] = [];
+        let retrieved: readonly SemanticMemorySummary[] = [];
         let captured: readonly UnknownRecord[] = [];
         let error;
         if (settings.mode === "auto" && message) {
           try {
-            retrieved = retrieveTypedSemanticMemories({
+            retrieved = retrieveSemanticMemories({
               storePath: config.memory.storePath,
               query,
               cwd: agent?.session?.header?.cwd,
@@ -837,7 +819,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
               ...(researchState.error ? { error: researchState.detail } : {}),
             });
           } else {
-            const researchBundle = sharedSkillSelection(agent, turn)?.bundle ?? bundled;
+            const researchBundle = sharedSkillSelection<SkillSelection>(agent, turn)?.bundle ?? bundled;
             const researchContract = dshRoleContract(
               "researcher",
               researchBundle.roleContracts.researcher,
@@ -889,7 +871,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
               ...(packet ? { packetDigest: packet.digest, sourceCount: packet.sourceCount } : {}),
               ...(packetError ? { error: packetError } : result.taskError ? { error: result.taskError } : {}),
             });
-            if (completed) {
+            if (completed && packet) {
               researchPacketText = renderResearchPacket(packet);
               routedDownstream = {
                 ...downstream,
@@ -912,7 +894,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         routeCard: frozenCard,
         proposal: responsibilityGap,
         interruption: responsibilityContinuation,
-      }) as RouteDecision;
+      });
       let routeRole = decision.targetRole ?? decision.role;
       const roleTaskText = researchPacketText ? `${taskText}\n\n${researchPacketText}` : taskText;
       let roleContext = decision.action === "direct"
@@ -1056,7 +1038,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         };
       }
 
-      const roleBundle = sharedSkillSelection(agent, turn)?.bundle ?? bundled;
+      const roleBundle = sharedSkillSelection<SkillSelection>(agent, turn)?.bundle ?? bundled;
       const canonicalRoleContract = roleBundle.roleContracts[routeRole];
       const roleContract = dshRoleContract(routeRole, canonicalRoleContract, roleBundle.referenceContracts);
       let rolePreflightVerified = false;
@@ -1150,8 +1132,9 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       }
 
       if (inPlaceUpgrade) {
+        if (!isInPlaceResponsibility(routeRole)) throw new Error(`unsupported in-place responsibility: ${routeRole}`);
         stopResponsibilityScope(agent, "superseded", { step });
-        const responsibilityScope = createTypedResponsibilityScope({
+        const responsibilityScope = createResponsibilityScope({
           turn,
           startStep: step,
           role: routeRole,

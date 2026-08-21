@@ -1,29 +1,14 @@
 {
+  "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2023",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
     "rootDir": "src",
-    "outDir": "build",
-    "strict": true,
-    "noImplicitAny": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "useUnknownInCatchVariables": true,
-    "allowJs": true,
-    "checkJs": false,
-    "noEmitOnError": true,
-    "verbatimModuleSyntax": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "skipLibCheck": true,
-    "types": [
-      "node"
-    ]
+    "outDir": "build"
   },
   "include": [
-    "src/**/*.mts",
-    "src/**/*.mjs"
+    "src/**/*.mts"
+  ],
+  "exclude": [
+    "build",
+    "tests"
   ]
 }

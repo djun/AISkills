@@ -685,7 +685,7 @@ async function validateSkillManifest() {
   }
 
   try {
-    const bundleModule = await import(pathToFileURL(path.join(repoRoot, "dsh", "runtime", "src", "skill-bundle.mjs")));
+    const bundleModule = await import(pathToFileURL(path.join(repoRoot, "dsh", "runtime", "build", "skill-bundle.mjs")));
     const bundle = bundleModule.loadSkillBundle(skillFile);
     if (bundle.manifest.runtimeContract !== bundleModule.ODAI_RUNTIME_CONTRACT) {
       fail("manifest.json: runtimeContract is not supported by the shared DSH runtime");

@@ -15,8 +15,8 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { installAgentPreset } from "../dsh/agent/src/installer.mjs";
-import { readDshVersion, spawnDsh } from "../dsh/agent/src/dsh-version.mjs";
+import { installAgentPreset } from "../dsh/agent/build/src/installer.mjs";
+import { readDshVersion, spawnDsh } from "../dsh/agent/build/src/dsh-version.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = resolve(repoRoot, "dsh/plugin");

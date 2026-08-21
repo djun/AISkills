@@ -88,7 +88,7 @@ dsh plugin --profile web add odai-dsh-plugin
 npx odai-dsh-agent install
 ```
 
-Plugin 安装命令要求 `pnpm` 已在 `PATH` 中；Agent 安装器当前严格支持 `dsh@0.1.0-rc.7` 与 `dsh@0.1.0-rc.8`。两个包都已经包含 canonical Odai skill 与共享 DSH runtime，既有安装继续默认使用各自包内的 bundled skill。Agent 完整保留所固定 DSH Standard preset 的全部能力，再以 scoped 扩展叠加 Odai。Plugin 无需另装 skill 或 Agent；Agent 也无需另装 skill 或 Plugin。需要 profile-wide 行为就选 Plugin，需要可选择的专用 preset 就选 Agent。两者同时安装通常是重复的，只适合刻意组合这两种作用域。现有 provider-neutral `odai-cli` 继续作为独立产品。
+Plugin 安装命令要求 `pnpm` 已在 `PATH` 中；Agent 安装器当前严格支持 `dsh@0.1.0-rc.7` 与 `dsh@0.1.1-rc.1`。两个包都已经包含 canonical Odai skill 与共享 DSH runtime，既有安装继续默认使用各自包内的 bundled skill。Agent 完整保留所固定 DSH Standard preset 的全部能力，再以 scoped 扩展叠加 Odai。Plugin 无需另装 skill 或 Agent；Agent 也无需另装 skill 或 Plugin。需要 profile-wide 行为就选 Plugin，需要可选择的专用 preset 就选 Agent。两者同时安装通常是重复的，只适合刻意组合这两种作用域。现有 provider-neutral `odai-cli` 继续作为独立产品。
 
 两个 DSH 包都默认使用**软精简**输出。用户可以显式切换到正常模式，或启用可选的**经济模式**：它在软精简基础上增加可调的 provider 输出 ceiling；用户只说“经济模式”而未给其他值时默认使用 `500`。该 ceiling 不会影响子代理、compaction、checkpoint 或内部上下文预算，provider 仍可能超过或忽略它。完整三档契约见 [`dsh/README.md`](dsh/README.md#install-and-use)。
 

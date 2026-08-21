@@ -10,6 +10,7 @@ import { SKILL_SOURCE_MODES, loadSkillBundle } from "./skill-bundle.mjs";
 import { resolveSkillEvolutionRoot } from "./skill-evolution.mjs";
 import { MEMORY_MODES, resolveMemoryStorePath } from "./semantic-memory-store.mjs";
 import type { ModelRoute, RuntimeConfig, UnknownRecord } from "./runtime-types.mjs";
+import { isUnknownRecord } from "./runtime-types.mjs";
 
 interface CompactionRequestOptions extends UnknownRecord {
   purpose?: string;
@@ -37,7 +38,7 @@ function isRoutingMode(value: unknown): value is RuntimeConfig["routing"]["mode"
 }
 
 function isMemoryMode(value: unknown): value is RuntimeConfig["memory"]["mode"] {
-  return typeof value === "string" && MEMORY_MODES.includes(value);
+  return typeof value === "string" && (MEMORY_MODES as readonly string[]).includes(value);
 }
 
 function isCacheRetention(value: unknown): value is RuntimeConfig["compaction"]["cacheRetention"] {
@@ -45,15 +46,13 @@ function isCacheRetention(value: unknown): value is RuntimeConfig["compaction"][
 }
 
 function isSkillSource(value: unknown): value is RuntimeConfig["governance"]["skillSource"] {
-  return typeof value === "string" && SKILL_SOURCE_MODES.includes(value);
+  return typeof value === "string" && (SKILL_SOURCE_MODES as readonly string[]).includes(value);
 }
 
 function assertPlainObject(value: unknown, field: string): UnknownRecord {
   if (value === undefined) return {};
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as UnknownRecord;
+  if (!isUnknownRecord(value)) throw new TypeError(`${field} must be an object`);
+  return value;
 }
 
 export function resolveConfig(rawConfig: unknown = {}): RuntimeConfig {
@@ -80,7 +79,7 @@ export function resolveConfig(rawConfig: unknown = {}): RuntimeConfig {
   const compactionCacheRetention = compaction.cacheRetention
     ?? process.env.ODAI_COMPACTION_CACHE_RETENTION
     ?? "provider-default";
-  const unknownRoles = Object.keys(roles).filter((role) => !ROUTED_ROLES.includes(role));
+  const unknownRoles = Object.keys(roles).filter((role) => !(ROUTED_ROLES as readonly string[]).includes(role));
   const unknownOutputFields = Object.keys(output).filter((field) => field !== "configPath");
   const unknownCompactionFields = Object.keys(compaction).filter((field) => !["cacheRetention", "configPath"].includes(field));
   const unknownMemoryFields = Object.keys(memory).filter((field) => !["mode", "storePath", "maxRetrieved"].includes(field));

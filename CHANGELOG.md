@@ -4,10 +4,10 @@
 
 ## 2026-08-21 — DSH 0.2.6 TypeScript runtime
 
-- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.6`，继续精确支持 `@deepseek-ai/dsh@0.1.0-rc.7` 与 `0.1.0-rc.8`；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`，本版本不改变路由、治理、记忆、会话兼容或工具暴露行为。
-- DSH runtime 的集成层迁移为 strict TypeScript `.mts`，启用 `noImplicitAny`、`noUnusedLocals`、`noUnusedParameters` 与 `useUnknownInCatchVariables`，以 Agent、Session、Event、Route、Tool、Prompt Assembly 等结构合同替代宽泛 `any`。约 2500 行的原 composition root 收敛为约 250 行，并按配置、prompt、工具、compaction、生命周期与共享支持职责拆分；动态领域模块继续保留原 `.mjs`，避免无合同的机械改名。
-- NodeNext 构建在每次 emit 前清理输出目录，将 `.mts` 编译为 DSH 可直接加载的 `.mjs`，同时完整复制仍属运行时依赖和公开入口的 legacy `.mjs`；Plugin 与 Agent 的发布运行时入口继续是可直接加载的 ESM，CLI 包装不变，消费者无需安装 TypeScript。
-- strict typecheck、Plugin/Runtime `184/184`、Agent `16/16`、版本策略与 canonical validator 全部通过；Plugin、Agent 与 CLI dry-run 包结束后均无生成目录残留。真实 Plugin/Agent tgz 清单覆盖全部 37 个 runtime `.mjs` 与 30 个 canonical 文件，同一 tgz 分别安装到只含 DSH rc.7 或 rc.8 的隔离图后，公开 ESM 导入、Plugin legacy/load、Agent Standard/load 均通过；两版的源码态 Plugin/Agent/coexistence 也通过，Agent 与 coexistence 的动态工具暴露保持同步。
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.6`，精确支持 `@deepseek-ai/dsh@0.1.0-rc.7` 与 `0.1.1-rc.1`，不再接受 rc.8；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`，本版本不改变路由、治理、记忆、会话兼容或工具暴露行为。
+- DSH Runtime、Plugin 与 Agent 的仓库自有实现、CLI、测试、验证/烟测脚本及 `npm-publish` 发布入口全部迁移为 strict TypeScript `.mts`；测试统一归入各包 `tests/`。统一启用 `noImplicitAny`、`noUnusedLocals`、`noUnusedParameters`、`useUnknownInCatchVariables` 与 `noEmitOnError`，以 Agent、Session、Event、Route、Tool、Prompt Assembly、安装器、CLI 和发布结果等结构合同替代宽泛 `any`，不保留 `allowJs`、`@ts-ignore` 或 `@ts-nocheck` 逃生口。
+- NodeNext 构建在每次 emit 前清理 Runtime、Plugin、Agent 与发布工具输出目录，将 `.mts` 编译为 DSH/Node 可直接加载的 `.mjs`、声明与 source map。Plugin 与 Agent 只发布 `build/bin`、`build/src` 或打包期生成的 Runtime/skill 制品，不发布测试和可编辑 TypeScript 源码；两个平台发布启动器先编译 `npm-publish.mts` 再执行生成入口，消费者无需安装 TypeScript。
+- 全仓 strict typecheck、Plugin/Runtime `184/184`、Agent `16/16`、版本策略与 canonical validator 全部通过；Plugin、Agent 与 CLI dry-run 包结束后均无生成目录残留。真实 Plugin/Agent tgz 清单覆盖全部 37 个 Runtime `.mjs` 与 30 个 canonical 文件；同一 tgz 分别安装到只含 DSH rc.7 或 `0.1.1-rc.1` 的隔离依赖图后，公开 ESM 导入、CLI、Plugin legacy/load、Agent install/status/Standard/load 均通过。两版的源码态 Plugin、Agent 与 coexistence 也全部通过，且未执行 npm publish。
 
 ## 2026-08-20 — DSH 0.2.5 工具暴露一致性
 

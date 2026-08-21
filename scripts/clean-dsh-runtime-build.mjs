@@ -5,4 +5,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-await rm(resolve(repoRoot, "dsh/runtime/build"), { recursive: true, force: true });
+await Promise.all([
+  "dsh/build",
+  "dsh/runtime/build",
+  "dsh/plugin/build",
+  "dsh/agent/build",
+].map((path) => rm(resolve(repoRoot, path), { recursive: true, force: true })));

@@ -34,6 +34,7 @@ import {
 } from "./runtime-support.mjs";
 import { createSessionEvidence, resolveSessionEvidenceRoot } from "./session-evidence.mjs";
 import { currentAgentTurn } from "./skill-selection-state.mjs";
+import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
 import { installToolRuntime } from "./tool-runtime.mjs";
 import { resolveHumanSafetyContinuityStorePath } from "./human-safety-continuity-store.mjs";
 import type {
@@ -56,6 +57,16 @@ interface RouteFailure {
   message: string;
 }
 
+function isResponsibilityGapProposal(data: RuntimeEventData): data is RuntimeEventData & ResponsibilityGapProposal {
+  return typeof data.responsibility === "string"
+    && ["researcher", "planner", "executor", "reviewer", "frontend", "user"].includes(data.responsibility)
+    && typeof data.gap === "string"
+    && Array.isArray(data.evidenceRefs)
+    && data.evidenceRefs.every((value) => typeof value === "string")
+    && typeof data.expectedChange === "string"
+    && typeof data.stateDigest === "string";
+}
+
 interface RouteInvalidation extends UnknownRecord {
   invalidated: boolean;
   reason?: string;
@@ -71,7 +82,7 @@ export function apply(ctx: DshRuntimeContext, rawConfig: unknown): void {
     root: resolveSessionEvidenceRoot(config.routing.configPath),
     logger,
   });
-  const appendEvent = (agent: DshAgent, type: string, data: RuntimeEventData) => {
+  const appendEvent = (agent: DshAgent, type: string, data: object) => {
     try {
       evidence.append(agent, type, data);
     } catch (error) {
@@ -82,11 +93,7 @@ export function apply(ctx: DshRuntimeContext, rawConfig: unknown): void {
     agent: DshAgent,
     type: string,
     predicate: (data: RuntimeEventData) => boolean,
-  ): boolean => (evidence.has as unknown as (
-    target: DshAgent,
-    eventType: string,
-    test: (data: RuntimeEventData) => boolean,
-  ) => boolean)(agent, type, predicate);
+  ): boolean => evidence.has(agent, type, predicate);
   installCompactionRuntime({
     appendEvent,
     applyCompactionStateProtocol,
@@ -172,7 +179,7 @@ export function apply(ctx: DshRuntimeContext, rawConfig: unknown): void {
     agent: DshAgent,
     turn: number | undefined,
     step: number,
-  ): RuntimeEventData | undefined => {
+  ): ResponsibilityGapProposal | undefined => {
     const consumed = new Set<unknown>();
     const events = evidence.events(agent);
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -183,9 +190,11 @@ export function apply(ctx: DshRuntimeContext, rawConfig: unknown): void {
         continue;
       }
       if (event.type !== "odai/responsibility-gap"
-        || !Number.isSafeInteger(event.data?.step)
+        || typeof event.data?.step !== "number"
+        || !Number.isSafeInteger(event.data.step)
         || event.data.step >= step
-        || consumed.has(event.data.stateDigest)) continue;
+        || consumed.has(event.data.stateDigest)
+        || !isResponsibilityGapProposal(event.data)) continue;
       return event.data;
     }
     return undefined;

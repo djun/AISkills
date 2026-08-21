@@ -80,8 +80,7 @@
     },
     {
       "packageVersions": [
-        "0.2.5",
-        "0.2.6"
+        "0.2.5"
       ],
       "surfaces": [
         "plugin",
@@ -90,6 +89,19 @@
       "dshVersions": [
         "0.1.0-rc.7",
         "0.1.0-rc.8"
+      ]
+    },
+    {
+      "packageVersions": [
+        "0.2.6"
+      ],
+      "surfaces": [
+        "plugin",
+        "agent"
+      ],
+      "dshVersions": [
+        "0.1.0-rc.7",
+        "0.1.1-rc.1"
       ]
     }
   ]

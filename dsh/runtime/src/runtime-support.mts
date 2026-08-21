@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
 import { renderDelegationPrompt } from "./router.mjs";
+import type { RouteDecision } from "./router.mjs";
+import type { SkillBundle } from "./skill-bundle.mjs";
+import type { ResponsibilityInterruption } from "./responsibility-scope.mjs";
 import { CONFIGURABLE_ROLES } from "./routing-config.mjs";
 import { ODAI_CONTEXTUAL_TOOL_NAMES, ODAI_CORE_TOOL_NAMES } from "./context-activation.mjs";
 import { ROUTED_ROLES } from "./runtime-config.mjs";
@@ -16,21 +19,18 @@ import type {
   UnknownRecord,
 } from "./runtime-types.mjs";
 
-interface RouteDecision extends UnknownRecord {
-  role: string;
-  reasonCode: string;
-  reason: string;
-  signals: readonly string[];
-}
-
 interface RoutedRunResult {
   stopReason: string;
   output?: readonly DshContentBlock[];
 }
 
+interface RequestRouteAgent {
+  session?: { events?: readonly DshEvent[] };
+}
+
 interface RoutedRun {
   result: Promise<RoutedRunResult>;
-  localAgent: DshAgent;
+  localAgent?: RequestRouteAgent;
   dispose(): Promise<void>;
 }
 
@@ -47,19 +47,6 @@ export interface RoutedRoleOutcome extends UnknownRecord {
   actualRoute?: ModelRoute;
   error?: string;
   taskError?: string;
-}
-
-export interface SkillBundle {
-  source: string;
-  provider: string;
-  manifest: {
-    skillVersion: string;
-    runtimeContract: number;
-  };
-  digest: string;
-  skillText: string;
-  roleContracts: Readonly<Record<string, string>>;
-  referenceContracts: Readonly<Record<string, string>>;
 }
 
 export interface SkillSelection {
@@ -85,16 +72,6 @@ export interface RoutingSnapshotState {
     roles: Readonly<Record<string, ModelRoute | undefined>>;
     sources: Readonly<Record<string, string>>;
   };
-}
-
-interface OutputInterruption extends UnknownRecord {
-  responsibility: string;
-  scopeId: string;
-  reason: string;
-  effectiveRoute?: ModelRoute;
-  requestedRoute?: ModelRoute;
-  effectiveMaxTokens?: number;
-  outputTokens?: number;
 }
 
 function isUnknownRecord(value: unknown): value is UnknownRecord {
@@ -127,7 +104,7 @@ export function pluginMessage(
   });
 }
 
-export function renderOutputLimitInterruptionNotice(interruption: OutputInterruption): string {
+export function renderOutputLimitInterruptionNotice(interruption: ResponsibilityInterruption): string {
   const route = interruption.effectiveRoute ?? interruption.requestedRoute;
   return [
     "Odai verified output-limit interruption",
@@ -203,7 +180,7 @@ export function routeFromConfig(config: unknown): ModelRoute | undefined {
   });
 }
 
-export function latestRequestRoute(localAgent: DshAgent): ModelRoute | undefined {
+export function latestRequestRoute(localAgent: RequestRouteAgent | undefined): ModelRoute | undefined {
   const events = localAgent?.session?.events;
   if (!Array.isArray(events)) return undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -242,10 +219,10 @@ export async function runRoutedRole({
 }: {
   subagents: SubagentsService;
   provider: string;
-  decision: RouteDecision;
+  decision: Pick<RouteDecision, "role">;
   taskText: string;
   roleContract: string;
-  agent: DshAgent;
+  agent: unknown;
   signal: AbortSignal;
   roleRoute?: ModelRoute;
 }): Promise<Readonly<RoutedRoleOutcome>> {
@@ -460,12 +437,12 @@ export function routedRoleOf(agent: DshAgent): string | undefined {
     const label = event.data?.label;
     if (typeof label !== "string") return undefined;
     const match = /^odai-(researcher|planner|executor|reviewer|frontend)(?:$|[\s:])/u.exec(label.trim());
-    return match && ROUTED_ROLES.includes(match[1]) ? match[1] : undefined;
+    return match && (ROUTED_ROLES as readonly string[]).includes(match[1]) ? match[1] : undefined;
   }
   return undefined;
 }
 
-const ODAI_ADAPTIVE_TOOL_NAMES = new Set([...ODAI_CONTEXTUAL_TOOL_NAMES, ...ODAI_CORE_TOOL_NAMES]);
+const ODAI_ADAPTIVE_TOOL_NAMES = new Set<string>([...ODAI_CONTEXTUAL_TOOL_NAMES, ...ODAI_CORE_TOOL_NAMES]);
 
 export function reconcileAdaptiveToolSchemas(
   assembly: PromptAssembly,

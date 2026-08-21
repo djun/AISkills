@@ -24,14 +24,14 @@ const pluginEntries = await tarEntries(resolve(pluginTarballArg));
 const agentEntries = await tarEntries(resolve(agentTarballArg));
 verifyPackage("Plugin", pluginEntries, [
   "package/package.json",
-  "package/bin/odai-dsh-plugin.mjs",
+  "package/build/bin/odai-dsh-plugin.mjs",
   ...runtimeModules.map((path) => `package/runtime/${path}`),
   ...canonicalFiles.map((path) => `package/skills/odai/${path}`),
 ]);
 verifyPackage("Agent", agentEntries, [
   "package/package.json",
-  "package/bin/odai-dsh-agent.mjs",
-  "package/src/installer.mjs",
+  "package/build/bin/odai-dsh-agent.mjs",
+  "package/build/src/installer.mjs",
   "package/preset/odai/agent.cordis.yml",
   "package/preset/odai/preset.yml",
   ...runtimeModules.map((path) => `package/preset/odai/runtime/${path}`),

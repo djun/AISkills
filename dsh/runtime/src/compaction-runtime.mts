@@ -1,4 +1,5 @@
 import type {
+  DshMessage,
   DshSession,
   ModelRoute,
   RuntimeConfig,
@@ -13,7 +14,7 @@ interface CompactionRequest extends UnknownRecord {
   model?: string;
   reasoningEffort?: string;
   cacheRetention?: string;
-  messages?: readonly unknown[];
+  messages?: DshMessage[];
   signal?: AbortSignal;
 }
 
@@ -52,7 +53,7 @@ interface RuntimeSessions {
 
 interface CompactionDependencies {
   appendEvent(agent: { session: DshSession }, type: string, data: UnknownRecord): void;
-  applyCompactionStateProtocol(options: CompactionRequest, target?: ModelRoute): boolean;
+  applyCompactionStateProtocol(options: CompactionRequest, target: ModelRoute | undefined): boolean;
   applyCompactionTarget(options: CompactionRequest, target: ModelRoute | undefined, sessions?: RuntimeSessions): boolean;
   classifyModelRouteFailure(failure: unknown): RouteFailure;
   config: RuntimeConfig;

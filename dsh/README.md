@@ -14,7 +14,7 @@ Both published DSH surfaces default routing to `auto` while keeping the governan
 
 ## Install and use
 
-Choose one surface for the scope you need. The Plugin manager requires `pnpm` on `PATH`; the Agent installer currently supports exactly `dsh@0.1.0-rc.7` and `dsh@0.1.0-rc.8`.
+Choose one surface for the scope you need. The Plugin manager requires `pnpm` on `PATH`; the Agent installer currently supports exactly `dsh@0.1.0-rc.7` and `dsh@0.1.1-rc.1`.
 
 ```sh
 # Profile-wide: every agent preset in this DSH profile
@@ -93,7 +93,7 @@ The repository includes double-clickable npm helpers under `dsh/` for maintainer
 - macOS two-package release: `npm-publish-macos.command`
 - Windows two-package release: `npm-publish-windows.cmd`
 
-The two platform launchers call the shared `npm-publish.mjs` release core. It verifies that the npm account owns both packages, the Plugin/Agent versions match and do not move the `latest` tag backward, release-owned files are clean, and the current commit exactly matches `origin/main`. It requires the typed confirmation `publish <version>`, reruns both package test, dry-run packaging, and real DSH verification gates, then publishes and verifies `odai-dsh-plugin` followed by `odai-dsh-agent`. Registry verification also requires each package's `gitHead` to match the pushed commit. Rerunning after a partial registry success safely skips only a package version published from that exact commit. The helpers never change the global npm registry.
+The two platform launchers compile the shared `npm-publish.mts` release core and run `build/npm-publish.mjs`. It verifies that the npm account owns both packages, the Plugin/Agent versions match and do not move the `latest` tag backward, release-owned files are clean, and the current commit exactly matches `origin/main`. It requires the typed confirmation `publish <version>`, reruns both package test, dry-run packaging, and real DSH verification gates, then publishes and verifies `odai-dsh-plugin` followed by `odai-dsh-agent`. Registry verification also requires each package's `gitHead` to match the pushed commit. Rerunning after a partial registry success safely skips only a package version published from that exact commit. The helpers never change the global npm registry.
 
 ## DSH compatibility
 
@@ -104,7 +104,7 @@ The package version verifier requires the current Plugin and Agent peer ranges t
 ## Verification
 
 ```sh
-node --test dsh/runtime/tests/*.test.mjs
+npx tsx --test dsh/runtime/tests/*.test.mts
 npm --prefix dsh/plugin run verify:dsh
 npm --prefix dsh/agent test
 npm --prefix dsh/agent run verify:dsh
@@ -115,6 +115,6 @@ npm --prefix dsh/agent run pack:dry-run
 
 The coexistence probe uses a temporary `DSH_HOME`: it packs and installs the real Plugin into a temporary Web profile, installs the Agent preset into the same home, and proves an Agent-scoped non-bundled project skill atomically supplies both prompt governance and routing role contracts while the profile-wide Plugin remains bundled for Standard sessions.
 
-Both packages currently accept only `@deepseek-ai/dsh@0.1.0-rc.7` or `0.1.0-rc.8`; `0.2.6` no longer supports rc.6. The Agent package keeps rc.8 Standard as its source composition and restores rc.7's optional-provider wording when needed. A DSH version update must refresh this versioned composition and rerun Plugin, Agent, and coexistence probes against every supported release.
+Both packages currently accept only `@deepseek-ai/dsh@0.1.0-rc.7` or `0.1.1-rc.1`; `0.2.6` supports neither rc.6 nor rc.8. The Agent package keeps `0.1.1-rc.1` Standard as its source composition; that composition is byte-identical to the historical rc.8 composition, while rc.7's optional-provider wording is restored when needed. A DSH version update must refresh this versioned composition and rerun Plugin, Agent, and coexistence probes against every supported release.
 
 The upstream [rc.8 release](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.0-rc.8) declares its SQLite storage format incompatible with earlier releases. Odai's release matrix uses isolated homes and neither claims nor performs cross-release migration of DSH-owned SQLite data; back up that host data and follow upstream guidance when changing the installed DSH release.

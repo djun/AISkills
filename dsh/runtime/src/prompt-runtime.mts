@@ -1,10 +1,13 @@
 import { extractLatestUserText } from "./router.mjs";
 import { ROUTING_CONFIG_PROMPT, effectiveRoutingSnapshot } from "./routing-config.mjs";
 import { DEFAULT_OUTPUT_POLICY, effectiveOutputPolicy, renderOutputPolicyPrompt } from "./output-config.mjs";
+import type { OutputPolicy } from "./output-config.mjs";
 import { selectSharedOutputPolicyForTurn } from "./output-policy-state.mjs";
 import { COMPACTION_CONFIG_PROMPT } from "./compaction-config.mjs";
 import { RESPONSIBILITY_GAP_PROMPT } from "./responsibility-gap.mjs";
+import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
 import { classifyContextActivation } from "./context-activation.mjs";
+import type { ContextActivation } from "./context-activation.mjs";
 import { activateRequestedCapabilities, requestedContextCapabilities } from "./context-capability.mjs";
 import { pendingResponsibilityInterruption } from "./responsibility-scope.mjs";
 import {
@@ -30,7 +33,6 @@ import {
 } from "./runtime-support.mjs";
 import type {
   RoutingSnapshotState,
-  SkillBundle,
   SkillSelection,
 } from "./runtime-support.mjs";
 import type {
@@ -42,7 +44,6 @@ import type {
   RuntimeEventData,
   RuntimeLogger,
   SkillRegistry,
-  UnknownRecord,
 } from "./runtime-types.mjs";
 
 interface PromptContext {
@@ -52,7 +53,7 @@ interface PromptContext {
 }
 
 interface OutputSelection {
-  policy: UnknownRecord;
+  policy: OutputPolicy;
   source: string;
   status?: string;
   reasonCode?: string;
@@ -63,18 +64,8 @@ interface MemorySettings {
   source: string;
 }
 
-interface ContextActivation extends UnknownRecord {
-  care?: boolean;
-  safety?: boolean;
-  continuity?: boolean;
-  routingConfig?: boolean;
-  skillSource?: boolean;
-  compactionConfig?: boolean;
-  memory?: boolean;
-}
-
 interface PromptDependencies {
-  appendEvent(agent: DshAgent, type: string, data: RuntimeEventData): void;
+  appendEvent(agent: DshAgent, type: string, data: object): void;
   config: RuntimeConfig;
   ctx: DshRuntimeContext;
   evidence: { events(agent: DshAgent): DshEvent[] };
@@ -92,7 +83,7 @@ function isSkillRegistry(value: unknown): value is SkillRegistry {
 }
 
 interface PromptInstallDependencies {
-  pendingResponsibilityGap(agent: DshAgent, turn: number | undefined, step: number): RuntimeEventData | undefined;
+  pendingResponsibilityGap(agent: DshAgent, turn: number | undefined, step: number): ResponsibilityGapProposal | undefined;
   syncToolExposure(
     agent: DshAgent,
     activation: ContextActivation,
@@ -116,7 +107,7 @@ export function createPromptRuntime(deps: PromptDependencies) {
   const bundled = loadSkillBundle(skillPath, {
     source: explicitSkillPath ? "path" : "bundled",
     provider: explicitSkillPath ? "odai-explicit-path" : "odai-dsh-runtime",
-  }) as SkillBundle;
+  });
   if (bundled.manifest.runtimeContract !== ODAI_RUNTIME_CONTRACT) {
     throw new Error(`Odai canonical runtimeContract ${bundled.manifest.runtimeContract} is incompatible with this runtime`);
   }
@@ -207,15 +198,15 @@ export function createPromptRuntime(deps: PromptDependencies) {
       scope: context.scope,
       signal: context.signal,
       skills: optionalSkillRegistry(),
-    }) as SkillSelection;
+    });
   };
   const selectForAgent = async (agent: DshAgent, context: PromptContext): Promise<SkillSelection> => {
     const upstream = await selectUpstreamForAgent(agent, context);
-    return applySkillEvolutionSelection(upstream, config.governance.evolutionRoot, { disabled: evolutionDisabled }) as SkillSelection;
+    return applySkillEvolutionSelection(upstream, config.governance.evolutionRoot, { disabled: evolutionDisabled });
   };
   const selectOutputForAgent = (): OutputSelection => {
     try {
-      return effectiveOutputPolicy(config.output.configPath) as OutputSelection;
+      return effectiveOutputPolicy(config.output.configPath);
     } catch (error) {
       logger.warn(`Odai output configuration is invalid; using the default policy: ${error instanceof Error ? error.message : String(error)}`);
       return Object.freeze({

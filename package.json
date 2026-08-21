@@ -3,32 +3,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:dsh-runtime": "npm run clean:dsh-runtime && tsc -p dsh/runtime/tsconfig.json",
-    "typecheck:dsh-runtime": "tsc -p dsh/runtime/tsconfig.json --noEmit",
-    "clean:dsh-runtime": "node scripts/clean-dsh-runtime-build.mjs"
+    "clean:dsh": "node scripts/clean-dsh-runtime-build.mjs",
+    "emit:dsh-runtime": "tsc -p dsh/runtime/tsconfig.json",
+    "emit:dsh-plugin": "tsc -p dsh/plugin/tsconfig.json",
+    "emit:dsh-agent": "tsc -p dsh/agent/tsconfig.json",
+    "emit:dsh-release": "tsc -p dsh/tsconfig.json",
+    "build:dsh-runtime": "npm run clean:dsh && npm run emit:dsh-runtime",
+    "build:dsh": "npm run clean:dsh && npm run emit:dsh-runtime && npm run emit:dsh-plugin && npm run emit:dsh-agent && npm run emit:dsh-release",
+    "typecheck:dsh-runtime": "npm run build:dsh-runtime && tsc -p dsh/runtime/tsconfig.tests.json",
+    "typecheck:dsh": "npm run build:dsh && tsc -p dsh/runtime/tsconfig.tests.json && tsc -p dsh/plugin/tsconfig.tests.json && tsc -p dsh/agent/tsconfig.tests.json"
   },
   "devDependencies": {
     "@types/node": "22.19.7",
-    "typescript": "7.0.2"
-  },
-  "version": "1.0.0",
-  "description": "<!-- Language toggle --> [English](README.md) · **中文**",
-  "main": "index.js",
-  "directories": {
-    "doc": "docs"
-  },
-  "dependencies": {
-    "undici-types": "^6.21.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/orziz/odai.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/orziz/odai/issues"
-  },
-  "homepage": "https://github.com/orziz/odai#readme"
+    "tsx": "4.20.6",
+    "typescript": "7.0.2",
+    "yaml": "2.8.1"
+  }
 }

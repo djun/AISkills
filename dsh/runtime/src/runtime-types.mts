@@ -1,5 +1,9 @@
 export type UnknownRecord = Record<string, unknown>;
 
+export function isUnknownRecord(value: unknown): value is UnknownRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export interface ModelRoute extends UnknownRecord {
   provider: string;
   model: string;
@@ -30,21 +34,65 @@ export interface RuntimeEventData extends UnknownRecord {
   turn?: number;
   step?: number;
   id?: string;
+  callId?: string;
+  rootCallId?: string;
+  name?: string;
+  tool?: string;
+  arguments?: unknown;
+  sourceEventSeqs?: readonly number[];
+  isError?: boolean;
+  error?: unknown;
   role?: string;
   content?: readonly DshContentBlock[];
+  message?: DshMessage;
+  inserted?: readonly DshMessage[];
   source?: UnknownRecord | string;
   capability?: string;
   responsibility?: string;
   stateDigest?: string;
+  digest?: string;
+  continuationPolicy?: string;
   scopeId?: string;
+  responsibilityScopeId?: string;
+  actualRoute?: ModelRoute;
   chunk?: {
     type?: string;
     usage?: { outputTokens?: number };
   };
   usage?: { outputTokens?: number };
   reason?: { kind?: string } | string;
+  reasonCode?: string;
+  action?: string;
+  targetRole?: string;
+  label?: string;
+  signals?: readonly string[];
+  mismatchReasons?: readonly string[];
+  activeTools?: readonly string[];
+  mode?: string;
+  status?: string;
+  stopReason?: string;
+  fallbackUsed?: boolean;
+  independent?: boolean;
+  budgetSource?: string;
+  startStep?: number;
+  stopStep?: number;
+  requestedRoute?: ModelRoute;
+  effectiveRoute?: ModelRoute;
+  effectiveMaxTokens?: number;
+  responsibilityMaxTokens?: number;
+  configuredControllerMaxTokens?: number;
+  outputTokens?: number;
+  baseRoute?: ModelRoute;
+  temporaryRoute?: ModelRoute;
+  routeMode?: string;
+  routeSource?: string;
+  resumeOfScopeId?: string;
+  resumedScopeId?: string;
+  routeCardId?: string;
   header?: { config?: ModelRoute };
   cardId?: string;
+  card?: UnknownRecord;
+  routeCard?: UnknownRecord;
   receiptStatus?: string;
 }
 
@@ -113,6 +161,14 @@ export interface ToolResult extends UnknownRecord {
   isError?: boolean;
   error?: { message?: string; code?: string };
   output?: readonly DshContentBlock[];
+}
+
+export interface RuntimeTool<TArguments, TResult> extends ToolSchema {
+  output?: {
+    schema: UnknownRecord;
+    render(arguments_: TArguments, value: TResult): readonly DshContentBlock[];
+  };
+  execute(arguments_: TArguments, execution: ToolExecution): TResult | Promise<TResult>;
 }
 
 export interface RuntimeLogger {

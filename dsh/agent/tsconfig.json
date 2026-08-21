@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "build"
+  },
+  "include": [
+    "bin/**/*.mts",
+    "src/**/*.mts"
+  ],
+  "exclude": [
+    "build",
+    "preset/odai/runtime",
+    "preset/odai/skills"
+  ]
+}
