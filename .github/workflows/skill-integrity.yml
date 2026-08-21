@@ -15,6 +15,12 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22.16.0
+      - name: Install runtime build dependencies
+        run: npm ci
+      - name: Typecheck and build DSH runtime
+        run: |
+          npm run typecheck:dsh-runtime
+          npm run build:dsh-runtime
       - name: Validate canonical skill
         run: node scripts/validate-odai-skill.mjs
       - name: Check maintenance scripts
@@ -43,10 +49,11 @@ jobs:
           node --check scripts/package-odai-artifact.mjs
           node --check scripts/run-package-pack.mjs
           node --check scripts/run-package-pack.test.mjs
+          node --check scripts/verify-dsh-packed-artifacts.mjs
           node --check cli/scripts/package-skill-bundle.mjs
           node --check dsh/runtime/src/governance.mjs
           node --check dsh/runtime/src/router.mjs
-          node --check dsh/runtime/src/index.mjs
+          node --check dsh/runtime/build/index.mjs
           node --check dsh/plugin/scripts/verify-dsh-load.mjs
           node --check dsh/plugin/scripts/live-routing-smoke.mjs
           node --check dsh/plugin/tests/package.test.mjs
@@ -76,6 +83,13 @@ jobs:
           npm --prefix cli run pack:dry-run
           npm --prefix dsh/plugin run pack:dry-run
           npm --prefix dsh/agent run pack:dry-run
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          npm pack ./dsh/plugin --pack-destination "$scratch"
+          npm pack ./dsh/agent --pack-destination "$scratch"
+          node scripts/verify-dsh-packed-artifacts.mjs \
+            "$scratch"/odai-dsh-plugin-*.tgz \
+            "$scratch"/odai-dsh-agent-*.tgz
           test ! -e cli/skills
           test ! -e dsh/plugin/runtime
           test ! -e dsh/plugin/skills
