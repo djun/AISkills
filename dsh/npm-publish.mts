@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { SpawnSyncReturns } from "node:child_process";
@@ -9,10 +9,11 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
 const REGISTRY = "https://registry.npmjs.org/";
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(SCRIPT_DIR, "..");
-const PLUGIN_DIR = resolve(SCRIPT_DIR, "plugin");
-const AGENT_DIR = resolve(SCRIPT_DIR, "agent");
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const DSH_DIR = MODULE_DIR.endsWith(`${sep}build`) ? resolve(MODULE_DIR, "..") : MODULE_DIR;
+const REPO_ROOT = resolve(DSH_DIR, "..");
+const PLUGIN_DIR = resolve(DSH_DIR, "plugin");
+const AGENT_DIR = resolve(DSH_DIR, "agent");
 const IS_WINDOWS = process.platform === "win32";
 
 interface RunOptions {
