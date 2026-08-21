@@ -101,6 +101,19 @@
       ],
       "dshVersions": [
         "0.1.0-rc.7",
+        "0.1.1-rc.1"
+      ]
+    },
+    {
+      "packageVersions": [
+        "0.2.7"
+      ],
+      "surfaces": [
+        "plugin",
+        "agent"
+      ],
+      "dshVersions": [
+        "0.1.0-rc.7",
         "0.1.1-rc.1",
         "0.1.1-rc.2"
       ]

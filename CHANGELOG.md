@@ -2,16 +2,21 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
-## 2026-08-21 — DSH 0.2.6 TypeScript runtime
+## 2026-08-21 — DSH 0.2.7 routing evidence and rc.2
 
-- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.6`，精确支持 `@deepseek-ai/dsh@0.1.0-rc.7`、`0.1.1-rc.1` 与 `0.1.1-rc.2`，不再接受 rc.8；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。本版本保留既有治理、记忆、会话兼容与工具暴露契约，并修正 Planner/Reviewer 责任 gap 与原生证据路由。
-- DSH Runtime、Plugin 与 Agent 的仓库自有实现、CLI、测试、验证/烟测脚本及 `npm-publish` 发布入口全部迁移为 strict TypeScript `.mts`；测试统一归入各包 `tests/`。统一启用 `noImplicitAny`、`noUnusedLocals`、`noUnusedParameters`、`useUnknownInCatchVariables` 与 `noEmitOnError`，以 Agent、Session、Event、Route、Tool、Prompt Assembly、安装器、CLI 和发布结果等结构合同替代宽泛 `any`，不保留 `allowJs`、`@ts-ignore` 或 `@ts-nocheck` 逃生口。
-- NodeNext 构建在每次 emit 前清理 Runtime、Plugin、Agent 与发布工具输出目录，将 `.mts` 编译为 DSH/Node 可直接加载的 `.mjs`、声明与 source map。Plugin 与 Agent 只发布 `build/bin`、`build/src` 或打包期生成的 Runtime/skill 制品，不发布测试和可编辑 TypeScript 源码；两个平台发布启动器先编译 `npm-publish.mts` 再执行生成入口，消费者无需安装 TypeScript。
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.7`，精确支持 `@deepseek-ai/dsh@0.1.0-rc.7`、`0.1.1-rc.1` 与 `0.1.1-rc.2`，不再接受 rc.8；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。本版本保留既有治理、记忆、会话兼容与工具暴露契约，并修正 Planner/Reviewer 责任 gap 与原生证据路由。
 - Planner gap 指引新增独立部署协议、认证状态机、发布顺序与回滚兼容边界；它们只有在独立规划能改变实现或验收时才触发，仍不按复杂度、风险词或角色名称机械路由。
 - Reviewer bounded packet 改按证据事件而非 raw stream chunk 限窗，兼容 rc.7 object arguments 与 rc.1/rc.2 JSON-string arguments、namespaced 工具名、同 session 外部工作目录、npm/Vitest/Maven/Gradle 测试入口及大 diff 的逐项截断。只有经认证的直接用户目标或与该用户消息绑定的 authorized route card 可提供 acceptance；assistant/plugin 文本不能自造验收，最终成功测试必须晚于 reviewed diff。`evidenceRefs` 只负责审计与去重，不能伪造 write/diff/test。packet 公开安全诊断，区分 host 证据缺失、未关联结果、参数解析失败、空 patch 和无结论测试。
 - `odai_responsibility_gap` 现在明确返回“proposal 已记录、尚未路由或启动”。证据不足的 Reviewer proposal 不再立即消费：相同证据不重复提示，直接用户续作可跨 turn 保留，新的 acceptance/write/diff/test/failure 证据会触发一次自动复评，新任务则显式结清；只有完整且当前的 packet 才启动独立 child，controller 自查仍不算独立验收。
 - 新增 `dsh/release-contracts.json` 与三版本 matrix runner，固定每个 DSH release 的发布时间边界、纯依赖图包数和 Standard composition 摘要，可复现 source 的 legacy/Plugin/Agent/coexistence load 与真实 tgz 的 installed-package load；版本校验器强制它与 compatibility matrix、双包 peer 完全一致；双包发布入口在 registry publish 前先跑 source matrix，再对当次生成的两个 tgz 跑 installed-artifact matrix，任一版本失败即停止发布。
 - 全仓 strict typecheck、Plugin/Runtime `193/193`、Agent `20/20`、版本策略与 canonical validator 全部通过；Plugin、Agent 与 CLI dry-run 包结束后均无生成目录残留。真实 Plugin/Agent tgz 清单覆盖全部 37 个 Runtime `.mjs` 与 30 个 canonical 文件；同一 tgz 分别安装到只含 DSH rc.7、`0.1.1-rc.1` 或 `0.1.1-rc.2` 的隔离依赖图后，公开 ESM 导入、CLI、Plugin legacy/load、Agent install/status/Standard/load 均通过。三版的源码态 Plugin、Agent 与 coexistence 也全部通过，且未执行 npm publish。
+
+## 2026-08-21 — DSH 0.2.6 TypeScript runtime
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.6`，精确支持 `@deepseek-ai/dsh@0.1.0-rc.7` 与 `0.1.1-rc.1`，不再接受 rc.8；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`，本版本不改变路由、治理、记忆、会话兼容或工具暴露行为。
+- DSH Runtime、Plugin 与 Agent 的仓库自有实现、CLI、测试、验证/烟测脚本及 `npm-publish` 发布入口全部迁移为 strict TypeScript `.mts`；测试统一归入各包 `tests/`。统一启用 `noImplicitAny`、`noUnusedLocals`、`noUnusedParameters`、`useUnknownInCatchVariables` 与 `noEmitOnError`，以 Agent、Session、Event、Route、Tool、Prompt Assembly、安装器、CLI 和发布结果等结构合同替代宽泛 `any`，不保留 `allowJs`、`@ts-ignore` 或 `@ts-nocheck` 逃生口。
+- NodeNext 构建在每次 emit 前清理 Runtime、Plugin、Agent 与发布工具输出目录，将 `.mts` 编译为 DSH/Node 可直接加载的 `.mjs`、声明与 source map。Plugin 与 Agent 只发布 `build/bin`、`build/src` 或打包期生成的 Runtime/skill 制品，不发布测试和可编辑 TypeScript 源码；两个平台发布启动器先编译 `npm-publish.mts` 再执行生成入口，消费者无需安装 TypeScript。
+- 全仓 strict typecheck、Plugin/Runtime `184/184`、Agent `16/16`、版本策略与 canonical validator 全部通过；Plugin、Agent 与 CLI dry-run 包结束后均无生成目录残留。真实 Plugin/Agent tgz 清单覆盖全部 37 个 Runtime `.mjs` 与 30 个 canonical 文件；同一 tgz 分别安装到只含 DSH rc.7 或 `0.1.1-rc.1` 的隔离依赖图后，公开 ESM 导入、CLI、Plugin legacy/load、Agent install/status/Standard/load 均通过。两版的源码态 Plugin、Agent 与 coexistence 也全部通过，且未执行 npm publish。
 
 ## 2026-08-20 — DSH 0.2.5 工具暴露一致性
 
