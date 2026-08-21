@@ -93,7 +93,7 @@ The repository includes double-clickable npm helpers under `dsh/` for maintainer
 - macOS two-package release: `npm-publish-macos.command`
 - Windows two-package release: `npm-publish-windows.cmd`
 
-The two platform launchers compile the shared `npm-publish.mts` release core and run `build/npm-publish.mjs`. It verifies that the npm account owns both packages, the Plugin/Agent versions match and do not move the `latest` tag backward, release-owned files are clean, and the current commit exactly matches `origin/main`. It requires the typed confirmation `publish <version>`, reruns both package tests and dry-run packaging, verifies the source matrix for every pinned DSH release, generates both real tarballs and verifies their installed-artifact matrix, then publishes and verifies `odai-dsh-plugin` followed by `odai-dsh-agent`. Registry verification also requires each package's `gitHead` to match the pushed commit. Rerunning after a partial registry success safely skips only a package version published from that exact commit. The helpers never change the global npm registry.
+The two platform launchers compile the shared `npm-publish.mts` release core and run `build/npm-publish.mjs`. It verifies that the npm account owns both packages, the Plugin/Agent versions match and do not move the `latest` tag backward, release-owned files are clean, and the current commit exactly matches `origin/main`. It requires the typed confirmation `publish <version>`, reruns both package tests, dry-run packaging, and current-environment Plugin/Agent DSH load checks, then publishes and verifies `odai-dsh-plugin` followed by `odai-dsh-agent`. Registry verification also requires each package's `gitHead` to match the pushed commit. Rerunning after a partial registry success safely skips only a package version published from that exact commit. The helpers never change the global npm registry.
 
 ## DSH compatibility
 
@@ -114,7 +114,7 @@ npm --prefix dsh/plugin run pack:dry-run
 npm --prefix dsh/agent run pack:dry-run
 ```
 
-The release-matrix runner defaults to every contract in `release-contracts.json`; pass `--version <exact-version>` to focus one release, or pass both `--plugin-tgz <path>` and `--agent-tgz <path>` to probe installed artifacts instead of source packages. It installs only into a temporary dependency graph and never publishes.
+The release-matrix runner defaults to every contract in `release-contracts.json`; pass `--version <exact-version>` to focus one release, or pass both `--plugin-tgz <path>` and `--agent-tgz <path>` to probe installed artifacts instead of source packages. Run it explicitly when the supported DSH set, composition contract, or compatibility implementation changes; the interactive publisher does not repeat this expensive matrix. It installs only into a temporary dependency graph and never publishes.
 
 The coexistence probe uses a temporary `DSH_HOME`: it packs and installs the real Plugin into a temporary Web profile, installs the Agent preset into the same home, and proves an Agent-scoped non-bundled project skill atomically supplies both prompt governance and routing role contracts while the profile-wide Plugin remains bundled for Standard sessions.
 

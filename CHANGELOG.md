@@ -8,7 +8,7 @@
 - Planner gap 指引新增独立部署协议、认证状态机、发布顺序与回滚兼容边界；它们只有在独立规划能改变实现或验收时才触发，仍不按复杂度、风险词或角色名称机械路由。
 - Reviewer bounded packet 改按证据事件而非 raw stream chunk 限窗，兼容 rc.7 object arguments 与 rc.1/rc.2 JSON-string arguments、namespaced 工具名、同 session 外部工作目录、npm/Vitest/Maven/Gradle 测试入口及大 diff 的逐项截断。只有经认证的直接用户目标或与该用户消息绑定的 authorized route card 可提供 acceptance；assistant/plugin 文本不能自造验收，最终成功测试必须晚于 reviewed diff。`evidenceRefs` 只负责审计与去重，不能伪造 write/diff/test。packet 公开安全诊断，区分 host 证据缺失、未关联结果、参数解析失败、空 patch 和无结论测试。
 - `odai_responsibility_gap` 现在明确返回“proposal 已记录、尚未路由或启动”。证据不足的 Reviewer proposal 不再立即消费：相同证据不重复提示，直接用户续作可跨 turn 保留，新的 acceptance/write/diff/test/failure 证据会触发一次自动复评，新任务则显式结清；只有完整且当前的 packet 才启动独立 child，controller 自查仍不算独立验收。
-- 新增 `dsh/release-contracts.json` 与三版本 matrix runner，固定每个 DSH release 的发布时间边界、纯依赖图包数和 Standard composition 摘要，可复现 source 的 legacy/Plugin/Agent/coexistence load 与真实 tgz 的 installed-package load；版本校验器强制它与 compatibility matrix、双包 peer 完全一致；双包发布入口在 registry publish 前先跑 source matrix，再对当次生成的两个 tgz 跑 installed-artifact matrix，任一版本失败即停止发布。
+- 新增 `dsh/release-contracts.json` 与三版本 matrix runner，固定每个 DSH release 的发布时间边界、纯依赖图包数和 Standard composition 摘要，可复现 source 的 legacy/Plugin/Agent/coexistence load 与真实 tgz 的 installed-package load；版本校验器强制它与 compatibility matrix、双包 peer 完全一致；兼容实现或支持范围变化时显式运行完整 matrix，交互式双包发布入口不重复执行这组高成本隔离安装。
 - 全仓 strict typecheck、Plugin/Runtime `193/193`、Agent `20/20`、版本策略与 canonical validator 全部通过；Plugin、Agent 与 CLI dry-run 包结束后均无生成目录残留。真实 Plugin/Agent tgz 清单覆盖全部 37 个 Runtime `.mjs` 与 30 个 canonical 文件；同一 tgz 分别安装到只含 DSH rc.7、`0.1.1-rc.1` 或 `0.1.1-rc.2` 的隔离依赖图后，公开 ESM 导入、CLI、Plugin legacy/load、Agent install/status/Standard/load 均通过。三版的源码态 Plugin、Agent 与 coexistence 也全部通过，且未执行 npm publish。
 
 ## 2026-08-21 — DSH 0.2.6 TypeScript runtime
