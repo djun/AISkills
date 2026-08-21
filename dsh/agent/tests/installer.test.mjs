@@ -290,7 +290,7 @@ async function writeFixture(root, runtimeText) {
     writeFile(resolve(root, "runtime/index.mjs"), `export default ${JSON.stringify(runtimeText)};\n`, "utf8"),
     writeFile(
       resolve(root, "runtime/session-compat.mjs"),
-      `export { inspectLegacySessionLogs, repairLegacySessionLogs } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../../runtime/src/session-compat.mjs")).href)};\n`,
+      `export { inspectLegacySessionLogs, repairLegacySessionLogs } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../../runtime/build/session-compat.mjs")).href)};\n`,
       "utf8",
     ),
     writeFile(resolve(root, "runtime/session-evidence.mjs"), "export const fixture = true;\n", "utf8"),

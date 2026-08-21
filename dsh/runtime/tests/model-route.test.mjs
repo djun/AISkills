@@ -6,7 +6,7 @@ import {
   probeModelRoute,
   requireModelRoute,
   sameModelRoute,
-} from "../src/model-route.mjs";
+} from "../build/model-route.mjs";
 
 test("model route failures distinguish invalid routes from environment and transient failures", () => {
   assert.equal(classifyModelRouteFailure({ code: "NO_ADAPTER", message: "missing" }).kind, "deterministic");

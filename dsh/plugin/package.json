@@ -1,6 +1,6 @@
 {
   "name": "odai-dsh-plugin",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Profile-wide odai governance and routing bundle for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
@@ -47,18 +47,20 @@
     }
   },
   "scripts": {
-    "check": "find ../runtime/src ../runtime/tests bin scripts tests -name '*.mjs' -print0 | xargs -0 -n1 node --check",
-    "prepare:artifact": "node ../../scripts/package-odai-artifact.mjs prepare --skill-root skills --runtime-root runtime",
+    "build:runtime": "npm --prefix ../.. run build:dsh-runtime",
+    "typecheck:runtime": "npm --prefix ../.. run typecheck:dsh-runtime",
+    "check": "npm run typecheck:runtime && npm run build:runtime && find ../runtime/build ../runtime/tests bin scripts tests -name '*.mjs' -print0 | xargs -0 -n1 node --check",
+    "prepare:artifact": "npm run build:runtime && node ../../scripts/package-odai-artifact.mjs prepare --skill-root skills --runtime-root runtime",
     "clean:artifact": "node ../../scripts/package-odai-artifact.mjs clean --skill-root skills --runtime-root runtime",
     "prepare": "npm run prepare:artifact",
     "verify:version": "node ../../scripts/verify-dsh-package-versions.mjs",
     "prepack": "npm run verify:version && node ../../scripts/validate-odai-skill.mjs",
     "postpack": "npm run clean:artifact",
     "pack:dry-run": "node ../../scripts/run-package-pack.mjs --clean runtime --clean skills -- --dry-run",
-    "test": "npm run verify:version && node --test ../runtime/tests/*.test.mjs ./tests/*.test.mjs",
-    "verify:dsh": "node ./scripts/verify-session-compat.mjs && node ./scripts/verify-dsh-load.mjs",
-    "smoke:live": "node ./scripts/live-routing-smoke.mjs",
-    "smoke:compaction-cache": "node ./scripts/live-compaction-cache-smoke.mjs"
+    "test": "npm run verify:version && npm run build:runtime && node --test ../runtime/tests/*.test.mjs ./tests/*.test.mjs",
+    "verify:dsh": "npm run build:runtime && node ./scripts/verify-session-compat.mjs && node ./scripts/verify-dsh-load.mjs",
+    "smoke:live": "npm run build:runtime && node ./scripts/live-routing-smoke.mjs",
+    "smoke:compaction-cache": "npm run build:runtime && node ./scripts/live-compaction-cache-smoke.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": "0.1.0-rc.7 || 0.1.0-rc.8"

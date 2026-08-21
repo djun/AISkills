@@ -11,9 +11,9 @@ import {
   renderOutputPolicyPrompt,
   resolveInPlaceResponsibilityOutputBudgets,
   resolveOutputPolicy,
-} from "../src/output-config.mjs";
-import { selectSharedOutputPolicyForTurn } from "../src/output-policy-state.mjs";
-import { acquireOwnedStoreLock } from "../src/store-lock.mjs";
+} from "../build/output-config.mjs";
+import { selectSharedOutputPolicyForTurn } from "../build/output-policy-state.mjs";
+import { acquireOwnedStoreLock } from "../build/store-lock.mjs";
 
 test("output policy validates explicit user-owned values and renders bounded guidance", () => {
   assert.deepEqual(resolveOutputPolicy({ concise: true }), { concise: true });

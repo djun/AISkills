@@ -7,7 +7,7 @@ import {
   createRouteCardTool,
   routeCardById,
   unsettledRouteCard,
-} from "../src/route-card.mjs";
+} from "../build/route-card.mjs";
 
 function cardArgs() {
   return {

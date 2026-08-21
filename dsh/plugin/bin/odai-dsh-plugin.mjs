@@ -25,7 +25,7 @@ try {
   } else {
     const modulePath = [
       resolve(import.meta.dirname, "../runtime/session-compat.mjs"),
-      resolve(import.meta.dirname, "../../runtime/src/session-compat.mjs"),
+      resolve(import.meta.dirname, "../../runtime/build/session-compat.mjs"),
     ].find(existsSync);
     if (!modulePath) throw new Error("session compatibility runtime is unavailable");
     const { repairLegacySessionLogs } = await import(pathToFileURL(modulePath).href);

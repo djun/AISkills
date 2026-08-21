@@ -11,7 +11,7 @@ test("owned versions reject the forbidden digit at every position", () => {
   for (const value of ["0.2.4", "0.4.0", "4.0.0", "0.2.14", 4, 14]) {
     assert.throws(() => validateOwnedVersion(value, ["4"], "candidate"), /contains forbidden digit 4/u);
   }
-  for (const value of ["0.2.5", "0.3.0", 3, 5]) {
+  for (const value of ["0.2.6", "0.3.0", 3, 5]) {
     assert.equal(validateOwnedVersion(value, ["4"], "candidate"), String(value));
   }
 });
@@ -23,8 +23,8 @@ test("repository policy covers every current owned version carrier", () => {
     result.versions.map(({ path, field, version }) => `${path}#${field}=${version}`),
     [
       "cli/package.json#version=0.0.2",
-      "dsh/plugin/package.json#version=0.2.5",
-      "dsh/agent/package.json#version=0.2.5",
+      "dsh/plugin/package.json#version=0.2.6",
+      "dsh/agent/package.json#version=0.2.6",
       "skills/odai/manifest.json#skillVersion=0.3.2",
       "skills/odai/manifest.json#runtimeContract=3",
     ],

@@ -19,7 +19,7 @@ const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(pluginRoot, "../..");
 const pluginPath = [
   resolve(pluginRoot, "runtime/index.mjs"),
-  resolve(pluginRoot, "../runtime/src/index.mjs"),
+  resolve(pluginRoot, "../runtime/build/index.mjs"),
 ].find((candidate) => existsSync(candidate));
 const args = parseArgs(process.argv.slice(2));
 const workspaceRoot = resolve(args.cwd ?? process.env.INIT_CWD ?? process.cwd());

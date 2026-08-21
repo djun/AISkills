@@ -15,6 +15,7 @@ skills-lock.json
 cli/.odai/
 cli/skills/
 node_modules/
+dsh/runtime/build/
 dsh/plugin/runtime/
 dsh/plugin/skills/
 dsh/agent/preset/odai/runtime/

@@ -35,7 +35,7 @@ const sourceSettings = resolve(sourceHome, "settings.yaml");
 const sourceCredentials = resolve(sourceHome, ".credentials.yaml");
 const runtimePath = [
   resolve(pluginRoot, "runtime/index.mjs"),
-  resolve(pluginRoot, "../runtime/src/index.mjs"),
+  resolve(pluginRoot, "../runtime/build/index.mjs"),
 ].find((candidate) => existsSync(candidate));
 const skillPath = [
   resolve(pluginRoot, "skills/odai/SKILL.md"),

@@ -9,13 +9,13 @@ import {
   inheritCompactionReasoning,
   resolveConfig,
   runRoutedRole,
-} from "../src/index.mjs";
+} from "../build/index.mjs";
 import {
   readStoredSessionEvidence,
   resolveSessionEvidenceRoot,
-} from "../src/session-evidence.mjs";
-import { activeOdaiToolNames, classifyContextActivation, estimateContextTokens, estimateToolSchemaTokens } from "../src/context-activation.mjs";
-import { readMemoryStore } from "../src/semantic-memory-store.mjs";
+} from "../build/session-evidence.mjs";
+import { activeOdaiToolNames, classifyContextActivation, estimateContextTokens, estimateToolSchemaTokens } from "../build/context-activation.mjs";
+import { readMemoryStore } from "../build/semantic-memory-store.mjs";
 
 const skillPath = resolve(import.meta.dirname, "../../../skills/odai/SKILL.md");
 const previousDshHome = process.env.DSH_HOME;

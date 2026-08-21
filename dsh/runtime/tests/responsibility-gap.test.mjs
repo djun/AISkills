@@ -5,7 +5,7 @@ import {
   RESPONSIBILITY_GAP_PROMPT,
   createResponsibilityGapTool,
   resolveResponsibilityGap,
-} from "../src/responsibility-gap.mjs";
+} from "../build/responsibility-gap.mjs";
 
 test("responsibility gaps are structured, grounded, and content addressed", () => {
   const proposal = resolveResponsibilityGap({

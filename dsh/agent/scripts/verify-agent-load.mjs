@@ -173,7 +173,7 @@ async function terminateChild(child) {
 
 await mkdir(workspace, { recursive: true });
 await cp(resolve(agentRoot, "preset/odai"), sourceRoot, { recursive: true });
-const developmentRuntime = resolve(repoRoot, "dsh/runtime/src");
+const developmentRuntime = resolve(repoRoot, "dsh/runtime/build");
 const developmentSkill = resolve(repoRoot, "skills/odai");
 if (existsSync(developmentRuntime) && existsSync(developmentSkill)) {
   await Promise.all([

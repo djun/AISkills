@@ -8,7 +8,7 @@ import {
   parseResearchPacket,
   renderResearchPacket,
   verifyResearchPacketSources,
-} from "../src/research-packet.mjs";
+} from "../build/research-packet.mjs";
 
 function packet(overrides = {}) {
   return {

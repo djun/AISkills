@@ -8,12 +8,12 @@ import {
   createCompactionConfigTool,
   invalidatePersistedCompactionTarget,
   readCompactionModelStore,
-} from "../src/compaction-config.mjs";
+} from "../build/compaction-config.mjs";
 import {
   createRoutingConfigTool,
   invalidatePersistedRoleRoute,
   readRoutingStore,
-} from "../src/routing-config.mjs";
+} from "../build/routing-config.mjs";
 
 const execution = { agent: { session: { header: {} } } };
 

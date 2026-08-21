@@ -1,0 +1,250 @@
+import { classifyImplementationAuthorization, extractLatestUserText } from "./router.mjs";
+import { activeRouteProtection, createChildToolGuard, createRouteProtectionGuard, isSubagent, summarizeToolResult } from "./governance.mjs";
+import { createRoutingConfigTool, effectiveRoutingSnapshot } from "./routing-config.mjs";
+import { createOutputConfigTool } from "./output-config.mjs";
+import { createCompactionConfigTool } from "./compaction-config.mjs";
+import { ODAI_CORE_TOOL_NAMES, activeOdaiToolNames, inactiveOdaiToolNames } from "./context-activation.mjs";
+import { createContextCapabilityTool } from "./context-capability.mjs";
+import { HUMAN_CARE_REFERENCE_PATH, createHumanCareTool } from "./human-care.mjs";
+import { HUMAN_SAFETY_REFERENCE_PATH, createHumanSafetyTool } from "./human-safety.mjs";
+import { createHumanSafetyContinuityTool } from "./human-safety-continuity.mjs";
+import { activeRouteCard, createRouteCardTool, unsettledRouteCard } from "./route-card.mjs";
+import { createResponsibilityGapTool } from "./responsibility-gap.mjs";
+import { createSkillSourceConfigTool } from "./skill-source-config.mjs";
+import { createSkillEvolutionTool, applySkillEvolutionSelection } from "./skill-evolution.mjs";
+import { createSemanticMemoryTool, latestDirectUserMessage } from "./semantic-memory.mjs";
+import { readSkillBundleFile } from "./skill-bundle.mjs";
+import { currentAgentTurn, sharedSkillSelection } from "./skill-selection-state.mjs";
+import { currentAgentStep, isSubagentSession, latestRouteReceipt } from "./runtime-support.mjs";
+import type { SkillBundle, SkillSelection } from "./runtime-support.mjs";
+import type { DshAgent, DshEvent, DshRuntimeContext, ModelRoute, RuntimeConfig, RuntimeEventData, RuntimeLogger, ToolExecution, ToolResult, UnknownRecord } from "./runtime-types.mjs";
+
+interface RouteProtection extends UnknownRecord { scopeId?: string }
+interface ToolActivation extends UnknownRecord { routeCard?: boolean }
+interface ExposureOptions { turn?: number; step?: number; routeCard?: boolean }
+interface PromptInstaller { install(deps: { pendingResponsibilityGap: ToolRuntimeDependencies["pendingResponsibilityGap"]; syncToolExposure: (agent: DshAgent, activation: ToolActivation, options?: ExposureOptions) => readonly string[] }): void }
+interface ToolRuntimeDependencies {
+  appendEvent(agent: DshAgent, type: string, data: RuntimeEventData): void;
+  baseSelection: SkillSelection;
+  bundled: SkillBundle;
+  config: RuntimeConfig;
+  ctx: DshRuntimeContext;
+  evidence: { events(agent: DshAgent): DshEvent[] };
+  evolutionDisabled: boolean;
+  explicitSkillPath: boolean;
+  hasSessionEvent(agent: DshAgent, type: string, predicate: (data: RuntimeEventData) => boolean): boolean;
+  humanSafetyContinuityStorePath: string;
+  logger: RuntimeLogger;
+  pendingResponsibilityGap(agent: DshAgent, turn: number | undefined, step: number): RuntimeEventData | undefined;
+  promptRuntime: PromptInstaller;
+  routeProtections: WeakMap<DshAgent, RouteProtection>;
+  selectOutputForAgent(): { policy: UnknownRecord };
+}
+
+export function installToolRuntime(deps: ToolRuntimeDependencies): void {
+  const { appendEvent, baseSelection, bundled, config, ctx, evidence, evolutionDisabled, explicitSkillPath, hasSessionEvent, humanSafetyContinuityStorePath, logger, pendingResponsibilityGap, promptRuntime, routeProtections, selectOutputForAgent } = deps;
+  const onDenied = (execution: ToolExecution & { agent: DshAgent }, reason: string) => {
+    appendEvent(execution.agent, "odai/governance-denied", {
+      callId: String(execution.callId),
+      tool: execution.name,
+      reason,
+    });
+  };
+  const childGuard = createChildToolGuard({
+    additionalDeniedTools: config.governance.additionalDeniedTools,
+    onDenied,
+  });
+  const routeProtectionGuard = createRouteProtectionGuard({
+    additionalDeniedTools: config.governance.additionalDeniedTools,
+    onDenied,
+    protectionFor(agent: DshAgent) {
+      if (config.routing.mode === "off") return undefined;
+      return routeProtections.get(agent) ?? activeRouteProtection(agent, evidence.events(agent));
+    },
+  });
+  ctx.tools.register(createContextCapabilityTool({
+    isChild: isSubagent,
+    onRequested(agent: DshAgent, capability: string) {
+      const turn = currentAgentTurn(agent);
+      const step = currentAgentStep(agent);
+      appendEvent(agent, "odai/context-capability-requested", {
+        ...(turn === undefined ? {} : { turn }),
+        ...(step === undefined ? {} : { step }),
+        capability,
+      });
+    },
+  }));
+  ctx.tools.register(createRoutingConfigTool(config.routing.configPath, {
+    configuredRoles: config.routing.roles,
+    resolveCallConfig(route: ModelRoute, signal?: AbortSignal) {
+      return ctx.llm.resolveCallConfig(route, signal);
+    },
+    latestRouteFor(agent: DshAgent) {
+      return latestRouteReceipt(evidence.events(agent));
+    },
+    outputPolicyFor() {
+      return selectOutputForAgent().policy;
+    },
+    onConfigured(agent: DshAgent, data: RuntimeEventData) {
+      appendEvent(agent, "odai/routing-configured", data);
+    },
+  }));
+  ctx.tools.register(createHumanCareTool({
+    isChild: isSubagent,
+    contractFor(agent: DshAgent) {
+      const bundle = sharedSkillSelection(agent)?.bundle ?? bundled;
+      return readSkillBundleFile(bundle, HUMAN_CARE_REFERENCE_PATH).toString("utf8");
+    },
+  }));
+  ctx.tools.register(createHumanSafetyTool({
+    isChild: isSubagent,
+    contractFor(agent: DshAgent) {
+      const bundle = sharedSkillSelection(agent)?.bundle ?? bundled;
+      return readSkillBundleFile(bundle, HUMAN_SAFETY_REFERENCE_PATH).toString("utf8");
+    },
+  }));
+  ctx.tools.register(createResponsibilityGapTool({
+    isChild: isSubagent,
+    onProposed(agent: DshAgent, proposal: RuntimeEventData) {
+      const turn = currentAgentTurn(agent);
+      const step = currentAgentStep(agent);
+      appendEvent(agent, "odai/responsibility-gap", {
+        ...(turn === undefined ? {} : { turn }),
+        ...(step === undefined ? {} : { step }),
+        ...proposal,
+      });
+    },
+  }));
+  ctx.tools.register(createRouteCardTool({
+    activeFor(agent: DshAgent) {
+      return activeRouteCard(evidence.events(agent));
+    },
+    unsettledFor(agent: DshAgent) {
+      return unsettledRouteCard(evidence.events(agent));
+    },
+    authorizationFor(agent: DshAgent) {
+      const message = latestDirectUserMessage(agent);
+      if (!message) return Object.freeze({ status: "unknown" });
+      return Object.freeze({
+        ...classifyImplementationAuthorization(extractLatestUserText([message])),
+        userMessageId: message.id,
+      });
+    },
+    onFrozen(agent: DshAgent, card: UnknownRecord) {
+      appendEvent(agent, "odai/route-card-frozen", { card });
+    },
+    onCleared(agent: DshAgent, cardId: string) {
+      appendEvent(agent, "odai/route-card-cleared", { cardId });
+    },
+  }));
+  ctx.tools.register(createSkillSourceConfigTool(
+    config.governance.skillConfigPath,
+    config.governance.skillSource,
+    {
+      explicitPath: explicitSkillPath,
+      onConfigured(agent: DshAgent, data: RuntimeEventData) {
+        appendEvent(agent, "odai/skill-source-configured", data);
+      },
+    },
+  ));
+  ctx.tools.register(createSkillEvolutionTool(config.governance.evolutionRoot, {
+    disabled: evolutionDisabled,
+    currentSelectionFor(agent: DshAgent) {
+      return sharedSkillSelection(agent)
+        ?? applySkillEvolutionSelection(baseSelection, config.governance.evolutionRoot, { disabled: evolutionDisabled });
+    },
+    onChanged(agent: DshAgent, data: RuntimeEventData) {
+      appendEvent(agent, `odai/evolution-${data.action}`, data);
+    },
+  }));
+  ctx.tools.register(createOutputConfigTool(config.output.configPath, {
+    isChild: isSubagent,
+    responsibilityRoutesFor() {
+      try {
+        return effectiveRoutingSnapshot(config.routing.configPath, config.routing.roles).roles;
+      } catch {
+        return undefined;
+      }
+    },
+    onConfigured(agent: DshAgent, data: RuntimeEventData) {
+      appendEvent(agent, "odai/output-configured", data);
+    },
+  }));
+  ctx.tools.register(createCompactionConfigTool(config.compaction.configPath, {
+    isChild: isSubagent,
+    resolveCallConfig(route: ModelRoute, signal?: AbortSignal) {
+      return ctx.llm.resolveCallConfig(route, signal);
+    },
+    onConfigured(agent: DshAgent, data: RuntimeEventData) {
+      appendEvent(agent, "odai/compaction-configured", data);
+    },
+  }));
+  ctx.tools.register(createSemanticMemoryTool(config.memory.storePath, {
+    configuredMode: config.memory.mode,
+    onChanged(agent: DshAgent, data: RuntimeEventData) {
+      appendEvent(agent, "odai/memory-changed", data);
+    },
+  }));
+  ctx.tools.register(createHumanSafetyContinuityTool({
+    storePath: humanSafetyContinuityStorePath,
+    directUserTextFor(agent: DshAgent) {
+      const message = latestDirectUserMessage(agent);
+      return message ? extractLatestUserText([message]) : "";
+    },
+    onChanged(agent: DshAgent, data: RuntimeEventData) {
+      appendEvent(agent, "odai/human-safety-continuity-changed", data);
+    },
+  }));
+  ctx.tools.guard?.((execution: ToolExecution) => childGuard(execution) ?? routeProtectionGuard(execution));
+
+  const toolExposureStates = new WeakMap();
+  const syncToolExposure = (
+    agent: DshAgent,
+    activation: ToolActivation,
+    options: ExposureOptions = {},
+  ): readonly string[] => {
+    const child = isSubagentSession(agent);
+    const activeNames = activeOdaiToolNames(activation, { child, routeCard: options.routeCard === true });
+    const deniedNames = [
+      ...inactiveOdaiToolNames(activeNames),
+      ...(child ? ODAI_CORE_TOOL_NAMES : []),
+    ];
+    const key = deniedNames.join("\u0000");
+    const previous = toolExposureStates.get(agent);
+    if (previous?.key === key || ["unsupported", "fallback"].includes(previous?.key)) return activeNames;
+    previous?.dispose?.();
+    const agentTools = agent.ctx?.tools;
+    const restrict = agentTools?.restrict;
+    if (typeof restrict !== "function") {
+      toolExposureStates.set(agent, Object.freeze({ key: "unsupported", dispose: undefined }));
+      return activeNames;
+    }
+    try {
+      const dispose = deniedNames.length > 0
+        ? restrict.call(agentTools, { deny: deniedNames })
+        : undefined;
+      toolExposureStates.set(agent, Object.freeze({ key, dispose }));
+      appendEvent(agent, "odai/tool-exposure-selected", {
+        ...(options.turn === undefined ? {} : { turn: options.turn }),
+        ...(options.step === undefined ? {} : { step: options.step }),
+        mode: "adaptive",
+        activeTools: activeNames,
+      });
+    } catch (error) {
+      logger.warn(`Odai adaptive execution restriction is unavailable; prompt schemas remain limited while the executable catalog stays complete: ${error instanceof Error ? error.message : String(error)}`);
+      toolExposureStates.set(agent, Object.freeze({ key: "fallback", dispose: undefined }));
+    }
+    return activeNames;
+  };
+
+  promptRuntime.install({ pendingResponsibilityGap, syncToolExposure });
+
+  ctx.on("tools/result", (execution: ToolExecution, result: ToolResult) => {
+    if (!execution.agent) return;
+    const summary = summarizeToolResult(execution, result);
+    if (hasSessionEvent(execution.agent, "odai/tool-observed", (data) => data?.callId === summary.callId)) return;
+    appendEvent(execution.agent, "odai/tool-observed", summary);
+  });
+
+
+}

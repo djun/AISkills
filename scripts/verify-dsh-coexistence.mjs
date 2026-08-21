@@ -21,7 +21,7 @@ import { readDshVersion, spawnDsh } from "../dsh/agent/src/dsh-version.mjs";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = resolve(repoRoot, "dsh/plugin");
 const agentRoot = resolve(repoRoot, "dsh/agent");
-const runtimeRoot = resolve(repoRoot, "dsh/runtime/src");
+const runtimeRoot = resolve(repoRoot, "dsh/runtime/build");
 const canonicalSkillRoot = resolve(repoRoot, "skills/odai");
 const sharedStateModule = resolve(runtimeRoot, "skill-selection-state.mjs");
 const dsh = process.env.DSH_BIN ?? (process.platform === "win32" ? "dsh.cmd" : "dsh");

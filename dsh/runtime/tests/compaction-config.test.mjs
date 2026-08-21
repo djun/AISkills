@@ -14,8 +14,8 @@ import {
   readCompactionModelStore,
   resolveCompactionConfigPath,
   resolveCompactionTarget,
-} from "../src/compaction-config.mjs";
-import { acquireOwnedStoreLock } from "../src/store-lock.mjs";
+} from "../build/compaction-config.mjs";
+import { acquireOwnedStoreLock } from "../build/store-lock.mjs";
 
 test("compaction target validates explicit model options and applies only to compaction", () => {
   assert.deepEqual(resolveCompactionTarget({

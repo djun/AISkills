@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const skillSource = resolve(repoRoot, "skills/odai");
-const runtimeSource = resolve(repoRoot, "dsh/runtime/src");
+const runtimeSource = resolve(repoRoot, "dsh/runtime/build");
 const [command, ...argv] = process.argv.slice(2);
 const options = parseOptions(argv);
 const packageRoot = process.cwd();

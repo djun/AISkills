@@ -17,14 +17,14 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { loadSkillBundle } from "../src/skill-bundle.mjs";
+import { loadSkillBundle } from "../build/skill-bundle.mjs";
 import {
   applySkillEvolutionSelection,
   createSkillEvolutionTool,
   readSkillEvolutionState,
   resolveSkillEvolutionRoot,
   skillEvolutionDisabled,
-} from "../src/skill-evolution.mjs";
+} from "../build/skill-evolution.mjs";
 
 const canonicalRoot = resolve(import.meta.dirname, "../../../skills/odai");
 const canonicalPath = resolve(canonicalRoot, "SKILL.md");

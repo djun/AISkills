@@ -10,7 +10,7 @@ import {
   pendingResponsibilityScopeRestoration,
   responsibilityScopeOwnsRequest,
   responsibilityScopeStopReason,
-} from "../src/responsibility-scope.mjs";
+} from "../build/responsibility-scope.mjs";
 
 const decision = Object.freeze({ reasonCode: "TEST_SCOPE", action: "upgrade" });
 const baseRoute = Object.freeze({ provider: "openai", model: "controller", reasoningEffort: "high", maxTokens: 500 });

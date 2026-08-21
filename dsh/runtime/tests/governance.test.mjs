@@ -7,7 +7,7 @@ import {
   createRouteProtectionGuard,
   isSubagent,
   summarizeToolResult,
-} from "../src/governance.mjs";
+} from "../build/governance.mjs";
 
 const controller = { session: { header: {} } };
 const child = { session: { header: { origin: "subagent", delegationDepth: 1 } } };

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createHumanCareTool } from "../src/human-care.mjs";
-import { createHumanSafetyTool } from "../src/human-safety.mjs";
+import { createHumanCareTool } from "../build/human-care.mjs";
+import { createHumanSafetyTool } from "../build/human-safety.mjs";
 
 test("non-crisis care is separate, argument-free, and never changes routing or persistence", async () => {
   const contract = "先承接感受，再提供一个可选的小步骤。";

@@ -23,7 +23,7 @@ const dshRoot = process.env.DSH_PACKAGE_ROOT
   : findDshPackageRoot(dsh);
 const compatibilityPath = [
   resolve(pluginRoot, "runtime/session-compat.mjs"),
-  resolve(pluginRoot, "../runtime/src/session-compat.mjs"),
+  resolve(pluginRoot, "../runtime/build/session-compat.mjs"),
 ].find(existsSync);
 if (!compatibilityPath) throw new Error("cannot locate the Odai session compatibility module");
 

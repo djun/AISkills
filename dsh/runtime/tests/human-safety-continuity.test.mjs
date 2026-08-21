@@ -7,8 +7,8 @@ import test from "node:test";
 import {
   createHumanSafetyContinuityTool,
   renderHumanSafetyContinuitySection,
-} from "../src/human-safety-continuity.mjs";
-import { readHumanSafetyContinuityStore } from "../src/human-safety-continuity-store.mjs";
+} from "../build/human-safety-continuity.mjs";
+import { readHumanSafetyContinuityStore } from "../build/human-safety-continuity-store.mjs";
 
 function harness() {
   const root = mkdtempSync(resolve(tmpdir(), "odai-human-safety-continuity-"));

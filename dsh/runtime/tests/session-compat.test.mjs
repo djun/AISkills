@@ -18,11 +18,11 @@ import { constants, zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import {
   inspectLegacySessionLogs,
   repairLegacySessionLogs,
-} from "../src/session-compat.mjs";
+} from "../build/session-compat.mjs";
 import {
   createSessionEvidence,
   readStoredSessionEvidence,
-} from "../src/session-evidence.mjs";
+} from "../build/session-evidence.mjs";
 
 const ZSTD_OPTIONS = { params: { [constants.ZSTD_c_checksumFlag]: 1 } };
 const noDshProcesses = () => [];

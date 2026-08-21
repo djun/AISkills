@@ -1,0 +1,1295 @@
+
+import {
+  classifyResponsibilityInterruptionText,
+  decideResearchPrefetch,
+  decideRoute,
+  extractLatestUserText,
+  extractRoutingText,
+  renderMissingRouteConfigNotice,
+  renderRouteFailureNotice,
+  renderRouteNotice,
+  requiresFailClosedProtection,
+} from "./router.mjs";
+import { classifyModelRouteFailure, probeModelRoute } from "./model-route.mjs";
+import { selectSharedOutputPolicyForTurn } from "./output-policy-state.mjs";
+import {
+  isSubagentSession, outputText, pluginMessage,
+  renderOutputLimitInterruptionNotice, renderResearchTaskContract, routeFromConfig,
+  routeMismatchFor, routedRoleOf, runRoutedRole, sameRequestModelRoute,
+} from "./runtime-support.mjs";
+import type { RoutedRoleOutcome, SubagentsService } from "./runtime-support.mjs";
+import {
+  claimResponsibilityScope,
+  createResponsibilityScope,
+  latestStoppedResponsibilityScope,
+  pendingResponsibilityInterruption,
+  pendingResponsibilityScopeRestoration,
+  responsibilityScopeClaimedEvent,
+  responsibilityScopeOwnsRequest,
+  responsibilityScopeStartedEvent,
+  responsibilityScopeStopReason,
+} from "./responsibility-scope.mjs";
+import {
+  activeRouteCard,
+  routeCardById,
+} from "./route-card.mjs";
+import { buildRoleContextPacket, renderRoleContextPacket } from "./routing-context.mjs";
+import {
+  parseResearchPacket,
+  renderResearchPacket,
+  verifyResearchPacketSources,
+} from "./research-packet.mjs";
+import { dshRoleContract } from "./role-overlays.mjs";
+import { sharedSkillSelection } from "./skill-selection-state.mjs";
+import {
+  captureAutomaticMemories,
+  claimSemanticMemoryTurn,
+  latestDirectUserMessage,
+  memoryPacketMessage,
+  renderSemanticMemoryPacket,
+  retrieveSemanticMemories,
+} from "./semantic-memory.mjs";
+import type {
+  DshAgent,
+  DshEvent,
+  DshMessage,
+  DshRuntimeContext,
+  DshSession,
+  ModelRoute,
+  RuntimeConfig,
+  RuntimeEventData,
+  RuntimeLogger,
+  UnknownRecord,
+} from "./runtime-types.mjs";
+
+interface AgentRequestEvent { agent: DshAgent; turn: number; step: number; signal: AbortSignal }
+interface AgentRequestErrorEvent extends AgentRequestEvent { provider: string; failure: UnknownRecord }
+interface AgentTurnEvent { agent: DshAgent; turn: number }
+interface RequestOptions extends UnknownRecord, Partial<ModelRoute> { messages?: readonly DshMessage[] }
+interface StepResult extends UnknownRecord { kind: string; messages: readonly DshMessage[] }
+interface RouteDecision extends UnknownRecord {
+  role: string;
+  targetRole?: string;
+  mode: string;
+  reasonCode: string;
+  reason: string;
+  action: string;
+  signals: readonly string[];
+  considerations?: readonly string[];
+}
+interface RouteFailure { kind: string; code: string; message: string }
+interface RoleState { route?: ModelRoute; source?: string; error?: string; detail?: string; id?: string; cardId?: string; baseRoute?: ModelRoute }
+export interface ResponsibilityScope extends UnknownRecord { id: string; role: string; turn: number; route: ModelRoute; source?: string; cardId?: string; decision?: RouteDecision; continuationPolicy?: string; stopPolicy?: string; routeValidated?: boolean; state?: string; baseRoute?: ModelRoute; resumeOfScopeId?: string }
+export interface RouteProtection extends UnknownRecord { scopeId?: string }
+export interface PendingRouteReceipt extends UnknownRecord { agent: DshAgent; turn: number; step: number; responsibility: string; responsibilityScopeId?: string; routeCardId?: string; routeMode: string; routeSource?: string; requestedRoute: ModelRoute; expectedRoute: ModelRoute; resumeOfScopeId?: string }
+export interface PendingRestoration extends UnknownRecord { agent: DshAgent; scopeId: string; turn: number; step: number; role: string; expectedRoute: ModelRoute }
+export interface OutputUsage extends UnknownRecord { turn?: number; usage?: { outputTokens?: number } }
+interface MemorySettings { mode: "auto" | "off"; source: string }
+interface ResponsibilityScopeInput {
+  turn: number;
+  startStep: number;
+  role: string;
+  route: ModelRoute;
+  source?: string;
+  decision: RouteDecision;
+  routeValidated?: boolean;
+  cardId?: string;
+  resumeOfScopeId?: string;
+}
+
+const createTypedResponsibilityScope = createResponsibilityScope as unknown as (
+  input: ResponsibilityScopeInput,
+) => ResponsibilityScope;
+const retrieveTypedSemanticMemories = retrieveSemanticMemories as unknown as (input: {
+  storePath: string;
+  query: string;
+  cwd?: string;
+  limit?: number;
+  maxChars?: number;
+  excludeMessageHash?: string;
+}) => readonly UnknownRecord[];
+
+function isSubagentsService(value: unknown): value is SubagentsService {
+  return value !== null && typeof value === "object" && "start" in value && typeof value.start === "function";
+}
+
+interface LifecycleDependencies {
+  appendEvent(agent: DshAgent, type: string, data: RuntimeEventData): void;
+  bundled: import("./runtime-support.mjs").SkillBundle;
+  config: RuntimeConfig;
+  configuredRole(agent: DshAgent, role: string, turn?: number): RoleState;
+  ctx: DshRuntimeContext;
+  evidence: { events(agent: DshAgent): DshEvent[] };
+  hasSessionEvent(agent: DshAgent, type: string, predicate: (data: RuntimeEventData) => boolean): boolean;
+  invalidateFailedRoleRoute(agent: DshAgent, role: string, route: ModelRoute, source: string | undefined, failure: RouteFailure, position?: RuntimeEventData): UnknownRecord;
+  logger: RuntimeLogger;
+  memorySettingsFor(agent: DshAgent, turn?: number): MemorySettings;
+  outputUsageBySession: WeakMap<DshSession, OutputUsage>;
+  pendingResponsibilityGap(agent: DshAgent, turn: number | undefined, step: number): RuntimeEventData | undefined;
+  pendingRouteReceipts: WeakMap<DshSession, PendingRouteReceipt>;
+  pendingScopeRestorations: WeakMap<DshSession, PendingRestoration>;
+  responsibilityScopeOwners: WeakMap<DshSession, DshAgent>;
+  responsibilityScopes: WeakMap<DshAgent, ResponsibilityScope>;
+  routeProtections: WeakMap<DshAgent, RouteProtection>;
+  selectOutputForAgent(): { policy: { maxTokens?: number } };
+  stopDanglingResponsibilityScope(agent: DshAgent, reason: string): RuntimeEventData | undefined;
+  stopResponsibilityScope(agent: DshAgent, reason: string, position?: RuntimeEventData): ResponsibilityScope | undefined;
+}
+
+export function installLifecycleRuntime(deps: LifecycleDependencies): void {
+  const { appendEvent, bundled, config, configuredRole, ctx, evidence, hasSessionEvent, invalidateFailedRoleRoute, logger, memorySettingsFor, outputUsageBySession, pendingResponsibilityGap, pendingRouteReceipts, pendingScopeRestorations, responsibilityScopeOwners, responsibilityScopes, routeProtections, selectOutputForAgent, stopDanglingResponsibilityScope, stopResponsibilityScope } = deps;
+  ctx.on("agent/request", async (
+    { agent, turn, step, signal }: AgentRequestEvent,
+    next: () => Promise<RequestOptions>,
+  ) => {
+    let proposed = await next();
+    const childRole = routedRoleOf(agent);
+    const childRoleState = childRole ? configuredRole(agent, childRole, turn) : undefined;
+    if (childRole && !childRoleState?.route) {
+      throw new Error(childRoleState?.error
+        ? `Odai ${childRole} child route is unavailable: ${childRoleState.detail}`
+        : `Odai ${childRole} child route is not configured`);
+    }
+    let scope = responsibilityScopes.get(agent);
+    if (scope && !responsibilityScopeOwnsRequest(scope, turn, step)) {
+      stopResponsibilityScope(agent, "ownership-boundary", { step });
+      scope = undefined;
+    }
+    if (!childRole && !scope) {
+      const restoration = pendingResponsibilityScopeRestoration(evidence.events(agent));
+      if (restoration && sameRequestModelRoute(proposed, restoration.temporaryRoute)) {
+        const { reasoningEffort: _temporaryEffort, maxTokens: _temporaryMaxTokens, ...withoutTemporaryRoute } = proposed;
+        proposed = Object.freeze({ ...withoutTemporaryRoute, ...restoration.baseRoute });
+        appendEvent(agent, "odai/responsibility-scope-restoration-requested", {
+          scopeId: restoration.scopeId,
+          turn,
+          step,
+          role: restoration.role,
+          requestedRoute: restoration.baseRoute,
+        });
+        if (agent?.session) {
+          pendingScopeRestorations.set(agent.session, Object.freeze({
+            agent,
+            scopeId: restoration.scopeId,
+            turn,
+            step,
+            role: restoration.role,
+            expectedRoute: restoration.baseRoute,
+          }));
+        }
+      }
+    }
+    const upgradeRole = scope?.role;
+    let roleRoute = childRole
+      ? childRoleState?.route
+      : scope
+        ? scope.route
+        : undefined;
+    const routeSource = childRole ? childRoleState?.source : scope?.source;
+    let routeMode = childRole ? "child" : sameRequestModelRoute(proposed, roleRoute) ? "inline" : "same-turn";
+    let scopedResponsibilityMaxTokens = upgradeRole ? roleRoute?.maxTokens : undefined;
+    const finalize = <T extends RequestOptions>(finalRequest: T): T => {
+      if (roleRoute && agent?.session && Number.isSafeInteger(turn) && Number.isSafeInteger(step)) {
+        const expectedRoute = roleRoute;
+        const receiptScope = responsibilityScopeOwnsRequest(responsibilityScopes.get(agent), turn, step)
+          ? responsibilityScopes.get(agent)
+          : scope;
+        const responsibility = childRole ?? upgradeRole;
+        if (!responsibility) throw new Error("routed request is missing its responsibility");
+        pendingRouteReceipts.set(agent.session, Object.freeze({
+          agent,
+          turn,
+          step,
+          responsibility,
+          routeMode,
+          routeSource,
+          ...(receiptScope?.id ? { responsibilityScopeId: receiptScope.id } : {}),
+          ...(receiptScope?.cardId ? { routeCardId: receiptScope.cardId } : {}),
+          ...(receiptScope?.resumeOfScopeId ? { resumeOfScopeId: receiptScope.resumeOfScopeId } : {}),
+          requestedRoute: expectedRoute,
+          expectedRoute,
+        }));
+      }
+      return finalRequest;
+    };
+    let request = proposed;
+    if (roleRoute) {
+      const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = proposed;
+      request = Object.freeze({
+        ...withoutInheritedEffort,
+        provider: roleRoute.provider,
+        model: roleRoute.model,
+        ...(roleRoute.reasoningEffort === undefined ? {} : { reasoningEffort: roleRoute.reasoningEffort }),
+        ...((childRole || scopedResponsibilityMaxTokens !== undefined) && roleRoute.maxTokens !== undefined
+          ? { maxTokens: roleRoute.maxTokens }
+          : {}),
+      });
+      if (!childRole && scope?.state === "pending") {
+        scope = claimResponsibilityScope(scope, {
+          step,
+          baseRoute: proposed,
+          temporaryRoute: request,
+          routeMode,
+        }) as ResponsibilityScope;
+        responsibilityScopes.set(agent, scope);
+        appendEvent(agent, "odai/responsibility-scope-claimed", responsibilityScopeClaimedEvent(scope));
+      }
+      const validation = scope?.routeValidated
+        ? Object.freeze({ status: "verified" })
+        : await probeModelRoute(
+            (candidate: ModelRoute, candidateSignal?: AbortSignal) => ctx.llm.resolveCallConfig(candidate, candidateSignal),
+            request,
+            signal,
+          );
+      if (validation.status === "rejected") {
+        const responsibility = childRole ?? upgradeRole;
+        if (!responsibility) throw new Error("route validation failure is missing its responsibility");
+        const invalidation = invalidateFailedRoleRoute(
+          agent,
+          responsibility,
+          roleRoute,
+          routeSource,
+          validation.failure,
+          { turn, step },
+        );
+        appendEvent(agent, "odai/route-fallback", {
+          turn,
+          step,
+          responsibility,
+          ...(scope?.id ? { responsibilityScopeId: scope.id } : {}),
+          ...(scope?.cardId ? { routeCardId: scope.cardId } : {}),
+          routeMode,
+          routeSource,
+          requestedRoute: roleRoute,
+          fallbackUsed: true,
+          fallbackRoute: routeFromConfig(proposed),
+          failureKind: validation.failure.kind,
+          errorCode: validation.failure.code,
+          error: validation.failure.message,
+          invalidated: invalidation.invalidated,
+        });
+        if (scope?.cardId) {
+          appendEvent(agent, "odai/route-card-claim-released", {
+            cardId: scope.cardId,
+            turn,
+            step,
+            reason: "route-validation-failed",
+          });
+        }
+        if (childRole) {
+          const error = new Error(`Odai ${childRole} route failed validation: ${validation.failure.code}: ${validation.failure.message}`) as Error & {
+            code: string;
+            routeFailureKind: string;
+          };
+          error.code = validation.failure.code;
+          error.routeFailureKind = validation.failure.kind;
+          throw error;
+        }
+        stopResponsibilityScope(agent, "route-validation-failed", { step });
+        if (scope?.decision && requiresFailClosedProtection(scope.decision)) {
+          protectController(agent, turn, step, scope.decision, "route-validation", validation.failure.message);
+        }
+        roleRoute = undefined;
+        routeMode = "same-turn";
+        scopedResponsibilityMaxTokens = undefined;
+        request = proposed;
+      }
+    }
+    if (childRole || isSubagentSession(agent)) return finalize(request);
+
+    const outputSelection = await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
+    const configuredMaxTokens = outputSelection.policy.maxTokens;
+    if (scopedResponsibilityMaxTokens !== undefined) {
+      if (!hasSessionEvent(agent, "odai/output-budget-overridden", (data) => data?.turn === turn && data?.step === step)) {
+        appendEvent(agent, "odai/output-budget-overridden", {
+          turn,
+          ...(step === undefined ? {} : { step }),
+          responsibility: upgradeRole,
+          responsibilityMaxTokens: scopedResponsibilityMaxTokens,
+          ...(configuredMaxTokens === undefined ? {} : { configuredControllerMaxTokens: configuredMaxTokens }),
+          effectiveMaxTokens: scopedResponsibilityMaxTokens,
+          budgetSource: "responsibility-override",
+          semantics: "explicit-responsibility-override",
+        });
+      }
+      return finalize(Object.freeze({ ...request, maxTokens: scopedResponsibilityMaxTokens }));
+    }
+    if (configuredMaxTokens === undefined) return finalize(request);
+    const priorMaxTokens = request.maxTokens;
+    const effectiveMaxTokens = priorMaxTokens === undefined
+      ? configuredMaxTokens
+      : Math.min(priorMaxTokens, configuredMaxTokens);
+    const budgetSource = priorMaxTokens !== undefined && priorMaxTokens < configuredMaxTokens
+      ? "preexisting-request-ceiling"
+      : "controller-policy";
+    if (!hasSessionEvent(agent, "odai/output-budget-applied", (data) => data?.turn === turn && data?.step === step)) {
+      appendEvent(agent, "odai/output-budget-applied", {
+        turn,
+        ...(step === undefined ? {} : { step }),
+        ...(upgradeRole === undefined ? {} : { responsibility: upgradeRole }),
+        configuredMaxTokens,
+        ...(priorMaxTokens === undefined ? {} : { priorMaxTokens }),
+        effectiveMaxTokens,
+        budgetSource,
+        semantics: "provider-request-ceiling",
+      });
+    }
+    return finalize(Object.freeze({ ...request, maxTokens: effectiveMaxTokens }));
+  }, { prepend: true });
+
+  const routeFallbackAttempts = new WeakMap<DshAgent, Set<string>>();
+  ctx.on("agent/request-error", async (
+    { agent, turn, step, provider, failure, signal }: AgentRequestErrorEvent,
+    next: () => Promise<unknown>,
+  ) => {
+    const childRole = routedRoleOf(agent);
+    const scope = responsibilityScopes.get(agent);
+    if (!childRole && scope && (signal.aborted || failure?.code === "CONTEXT_WINDOW_EXCEEDED")) {
+      if (agent?.session) pendingRouteReceipts.delete(agent.session);
+      stopResponsibilityScope(agent, signal.aborted ? "request-aborted" : "context-window-exceeded", { step });
+      return next();
+    }
+    if (signal.aborted || failure?.code === "CONTEXT_WINDOW_EXCEEDED") return next();
+    const active = childRole
+      ? { role: childRole, ...configuredRole(agent, childRole, turn) }
+      : responsibilityScopeOwnsRequest(scope, turn, step)
+        ? scope
+        : undefined;
+    if (!active?.route || provider !== active.route.provider) return next();
+
+    const classified = classifyModelRouteFailure(failure);
+    const invalidation = invalidateFailedRoleRoute(
+      agent,
+      active.role,
+      active.route,
+      active.source,
+      classified,
+      { turn, step },
+    );
+    appendEvent(agent, "odai/route-fallback", {
+      turn,
+      step,
+      responsibility: active.role,
+      ...(active.id ? { responsibilityScopeId: active.id } : {}),
+      ...(active.cardId ? { routeCardId: active.cardId } : {}),
+      routeMode: childRole ? "child" : "same-turn",
+      routeSource: active.source,
+      requestedRoute: active.route,
+      fallbackUsed: !childRole,
+      fallbackRoute: childRole ? undefined : active.baseRoute ?? routeFromConfig(agent?.options),
+      failureKind: classified.kind,
+      errorCode: classified.code,
+      error: classified.message,
+      invalidated: invalidation.invalidated,
+    });
+    if (active.cardId) {
+      appendEvent(agent, "odai/route-card-claim-released", {
+        cardId: active.cardId,
+        turn,
+        step,
+        reason: "route-request-failed",
+      });
+    }
+    if (childRole) return next();
+    if (agent?.session) pendingRouteReceipts.delete(agent.session);
+    stopResponsibilityScope(agent, classified.kind === "cancelled" ? "request-cancelled" : "route-request-failed", { step });
+    if (scope?.decision && requiresFailClosedProtection(scope.decision)) {
+      protectController(agent, turn, step, scope.decision, "route-request-failure", classified.message);
+    }
+    if (classified.kind === "cancelled") return next();
+
+    let attempts = routeFallbackAttempts.get(agent);
+    if (!attempts) {
+      attempts = new Set();
+      routeFallbackAttempts.set(agent, attempts);
+    }
+    const key = `${turn}:${step}`;
+    if (attempts.has(key)) return next();
+    attempts.add(key);
+    return { kind: "retry" };
+  });
+
+  const protectController = (
+    agent: DshAgent,
+    turn: number,
+    step: number,
+    decision: Pick<RouteDecision, "reasonCode">,
+    source: string,
+    failure: string | undefined = undefined,
+    scopeId: string | undefined = undefined,
+  ): void => {
+    const protection = Object.freeze({
+      turn,
+      step,
+      mode: "read-only",
+      reasonCode: decision.reasonCode,
+      source,
+      ...(failure ? { failure } : {}),
+      ...(scopeId ? { scopeId } : {}),
+    });
+    routeProtections.set(agent, protection);
+    appendEvent(agent, "odai/route-protection", protection);
+  };
+
+  ctx.on("session/event", (session: DshSession, event: DshEvent) => {
+    const owner = responsibilityScopeOwners.get(session);
+    const activeScope = owner ? responsibilityScopes.get(owner) : undefined;
+    const eventMatchesRequestPosition = (position: RuntimeEventData) => Number.isSafeInteger(event.data.turn)
+      && Number.isSafeInteger(event?.data?.step)
+      && event.data.turn === position?.turn
+      && event.data.step === position?.step;
+    const scopeStopReason = responsibilityScopeStopReason(activeScope, event);
+    if (scopeStopReason && owner && activeScope) {
+      stopResponsibilityScope(owner, scopeStopReason, {
+        scopeId: activeScope.id,
+        ...(Number.isSafeInteger(event.data?.step) ? { step: event.data.step } : {}),
+      });
+    }
+
+    if (event?.type === "assistant/chunk" && event.data?.chunk?.type === "usage") {
+      outputUsageBySession.set(session, {
+        turn: event.data.turn,
+        step: event.data.step,
+        usage: event.data.chunk.usage,
+      });
+    } else if (event?.type === "assistant/message" && event.data?.usage) {
+      outputUsageBySession.set(session, {
+        turn: event.data.turn,
+        step: event.data.step,
+        usage: event.data.usage,
+      });
+    }
+
+    if (event.type === "turn/end") {
+      const usage = outputUsageBySession.get(session);
+      const finishReason = event.data.reason;
+      if (typeof finishReason === "object" && finishReason?.kind === "max-tokens" && owner) {
+        const events = evidence.events(owner);
+        const stopped = latestStoppedResponsibilityScope(events, event.data?.turn);
+        const receipt = stopped && events.findLast((candidate) => (
+          candidate?.type === "odai/route-applied"
+            && candidate.data?.status === "applied"
+            && candidate.data?.responsibilityScopeId === stopped.scopeId
+        ))?.data;
+        const routeCard = stopped?.routeCardId ? routeCardById(events, stopped.routeCardId) : undefined;
+        const observedOutputTokens = usage?.turn === stopped?.turn
+          && usage?.step === stopped?.stopStep
+          && Number.isSafeInteger(usage?.usage?.outputTokens)
+          ? usage?.usage?.outputTokens
+          : undefined;
+        if (stopped?.reason === "terminal-response"
+          && Number.isSafeInteger(stopped.stopStep)
+          && receipt?.step === stopped.stopStep
+          && Number.isSafeInteger(observedOutputTokens)
+          && ["planner", "executor", "frontend"].includes(receipt.responsibility)
+          && (receipt.responsibility !== "executor" || routeCard)) {
+          const effectiveRoute = receipt.actualRoute ?? receipt.requestedRoute;
+          appendEvent(owner, "odai/responsibility-interrupted", {
+            scopeId: stopped.scopeId,
+            turn: stopped.turn,
+            step: stopped.stopStep ?? stopped.startStep,
+            responsibility: receipt.responsibility,
+            reason: "max-tokens",
+            routeMode: receipt.routeMode,
+            routeSource: receipt.routeSource,
+            requestedRoute: receipt.requestedRoute,
+            ...(effectiveRoute ? { effectiveRoute } : {}),
+            ...(effectiveRoute?.maxTokens === undefined ? {} : { effectiveMaxTokens: effectiveRoute.maxTokens }),
+            outputTokens: observedOutputTokens,
+            ...(stopped.routeCardId ? { routeCardId: stopped.routeCardId } : {}),
+            ...(routeCard ? { routeCard } : {}),
+          });
+        }
+      }
+      outputUsageBySession.delete(session);
+    }
+
+    const pendingRestoration = pendingScopeRestorations.get(session);
+    if (pendingRestoration && event?.type === "turn/end" && event.data?.turn === pendingRestoration.turn) {
+      appendEvent(pendingRestoration.agent, "odai/responsibility-scope-restored", {
+        scopeId: pendingRestoration.scopeId,
+        turn: pendingRestoration.turn,
+        step: pendingRestoration.step,
+        role: pendingRestoration.role,
+        status: "unverified",
+        requestedRoute: pendingRestoration.expectedRoute,
+        stopReason: "no-effective-request",
+      });
+      pendingScopeRestorations.delete(session);
+    }
+    if (pendingRestoration
+      && ["request/header", "assistant/chunk", "assistant/message"].includes(event?.type)
+      && eventMatchesRequestPosition(pendingRestoration)) {
+      let actualRoute;
+      try {
+        actualRoute = event.type === "request/header"
+          ? routeFromConfig(event.data?.header?.config)
+          : routeFromConfig(session.requestHeader?.()?.config);
+      } catch {}
+      if (actualRoute || event.type !== "request/header") {
+        const mismatch = routeMismatchFor(pendingRestoration.expectedRoute, actualRoute, "base-route restoration");
+        appendEvent(pendingRestoration.agent, "odai/responsibility-scope-restored", {
+          scopeId: pendingRestoration.scopeId,
+          turn: pendingRestoration.turn,
+          step: pendingRestoration.step,
+          role: pendingRestoration.role,
+          status: mismatch ? "mismatch" : "applied",
+          requestedRoute: pendingRestoration.expectedRoute,
+          ...(actualRoute ? { actualRoute } : {}),
+          ...(mismatch ? { error: mismatch } : {}),
+        });
+        if (mismatch) {
+          protectController(
+            pendingRestoration.agent,
+            pendingRestoration.turn,
+            pendingRestoration.step,
+            { reasonCode: "RESPONSIBILITY_BASE_ROUTE_RESTORATION_MISMATCH" },
+            "scope-restoration-mismatch",
+            mismatch,
+            pendingRestoration.scopeId,
+          );
+        }
+        pendingScopeRestorations.delete(session);
+      }
+    }
+
+    const pending = pendingRouteReceipts.get(session);
+    if (!pending) return;
+    if (event?.type === "turn/end" && event.data?.turn === pending.turn) {
+      appendEvent(pending.agent, "odai/route-applied", {
+        turn: pending.turn,
+        step: pending.step,
+        responsibility: pending.responsibility,
+        ...(pending.responsibilityScopeId ? { responsibilityScopeId: pending.responsibilityScopeId } : {}),
+        ...(pending.routeCardId ? { routeCardId: pending.routeCardId } : {}),
+        status: "unverified",
+        routeMode: pending.routeMode,
+        routeSource: pending.routeSource,
+        fallbackUsed: true,
+        requestedRoute: pending.requestedRoute,
+        stopReason: "no-effective-request",
+      });
+      if (pending.routeCardId) {
+        appendEvent(pending.agent, "odai/route-card-claim-released", {
+          cardId: pending.routeCardId,
+          turn: pending.turn,
+          step: pending.step,
+          reason: "no-effective-request",
+        });
+      }
+      stopResponsibilityScope(pending.agent, "no-effective-request", {
+        scopeId: pending.responsibilityScopeId,
+        step: pending.step,
+      });
+      pendingRouteReceipts.delete(session);
+      return;
+    }
+    if (!["request/header", "assistant/chunk", "assistant/message"].includes(event?.type)) return;
+    if (!eventMatchesRequestPosition(pending)) return;
+    let actualRoute;
+    try {
+      actualRoute = event.type === "request/header"
+        ? routeFromConfig(event.data?.header?.config)
+        : routeFromConfig(session.requestHeader?.()?.config);
+    } catch {}
+    if (!actualRoute && event.type === "request/header") return;
+    const mismatch = routeMismatchFor(pending.expectedRoute, actualRoute, pending.routeMode);
+    appendEvent(pending.agent, "odai/route-applied", {
+      turn: pending.turn,
+      step: pending.step,
+      responsibility: pending.responsibility,
+      ...(pending.responsibilityScopeId ? { responsibilityScopeId: pending.responsibilityScopeId } : {}),
+      ...(pending.routeCardId ? { routeCardId: pending.routeCardId } : {}),
+      status: mismatch ? "mismatch" : "applied",
+      routeMode: pending.routeMode,
+      routeSource: pending.routeSource,
+      fallbackUsed: Boolean(mismatch),
+      requestedRoute: pending.requestedRoute,
+      ...(actualRoute ? { actualRoute } : {}),
+      ...(mismatch ? { stopReason: "route-mismatch", error: mismatch } : {}),
+    });
+    if (mismatch && pending.routeMode === "same-turn") {
+      stopResponsibilityScope(pending.agent, "route-mismatch", {
+        scopeId: pending.responsibilityScopeId,
+        step: pending.step,
+      });
+    }
+    if (!mismatch && pending.resumeOfScopeId) {
+      appendEvent(pending.agent, "odai/responsibility-interruption-consumed", {
+        scopeId: pending.resumeOfScopeId,
+        turn: pending.turn,
+        step: pending.step,
+        responsibility: pending.responsibility,
+        resumedScopeId: pending.responsibilityScopeId,
+      });
+    }
+    if (pending.routeCardId) {
+      appendEvent(pending.agent, mismatch ? "odai/route-card-claim-released" : "odai/route-card-consumed", {
+        cardId: pending.routeCardId,
+        turn: pending.turn,
+        step: pending.step,
+        ...(mismatch ? { reason: "route-mismatch" } : { receiptStatus: "applied" }),
+      });
+    }
+    pendingRouteReceipts.delete(session);
+    if (mismatch && pending.routeMode === "same-turn") {
+      protectController(
+        pending.agent,
+        pending.turn,
+        pending.step,
+        { reasonCode: `${pending.responsibility.toUpperCase()}_ROUTE_MISMATCH` },
+        "route-mismatch",
+        mismatch,
+      );
+    }
+  });
+
+  ctx.on("agent/turn-stopping", ({ agent, turn }: AgentTurnEvent) => {
+    stopResponsibilityScope(agent, "turn-stopping");
+    const role = routedRoleOf(agent);
+    if (!role) return;
+    const receipts = evidence.events(agent)
+      .filter((event) => event.type === "odai/route-applied"
+        && event.data?.turn === turn
+        && event.data?.responsibility === role
+        && event.data?.routeMode === "child")
+      .map((event) => event.data);
+    const failed = receipts.find((receipt) => receipt.status !== "applied");
+    if (receipts.length > 0 && !failed) return;
+    const detail = failed?.error ?? failed?.stopReason ?? "no verified child route receipt";
+    throw new Error(`Odai ${role} child route was not verified: ${detail}`);
+  });
+
+  {
+    const routedSteps = new WeakMap<DshAgent, Set<string>>();
+    ctx.on("agent/pre-step", async (
+      { agent, turn, step, signal }: AgentRequestEvent,
+      next: () => Promise<StepResult>,
+    ) => {
+      const subagentSession = isSubagentSession(agent);
+      if (!subagentSession) {
+        if (step === 1) {
+          stopResponsibilityScope(agent, "new-turn");
+          routeProtections.delete(agent);
+        }
+        stopDanglingResponsibilityScope(agent, "runtime-resume");
+      }
+      let downstream = await next();
+      if (downstream.kind === "reject" || signal.aborted) return downstream;
+      const responsibilityGap = subagentSession ? undefined : pendingResponsibilityGap(agent, turn, step);
+      const authenticatedDirectMessage = latestDirectUserMessage(agent, undefined, { turn });
+      const suppliedDirectMessages = Array.isArray(downstream.messages)
+        ? downstream.messages.filter((message) => message?.role === "user" && message?.source?.kind === "user")
+        : [];
+      const directMessage = latestDirectUserMessage(agent, suppliedDirectMessages, { turn });
+      const authenticatedDirectText = authenticatedDirectMessage
+        ? extractLatestUserText([authenticatedDirectMessage])
+        : "";
+      const responsibilityEvents = subagentSession ? [] : evidence.events(agent);
+      const interruption = !subagentSession && step === 1
+        ? pendingResponsibilityInterruption(responsibilityEvents)
+        : undefined;
+      let responsibilityContinuation;
+      let interruptionNotice;
+      if (interruption && authenticatedDirectMessage) {
+        const disposition = classifyResponsibilityInterruptionText(authenticatedDirectText);
+        if (disposition === "continue" && directMessage) {
+          responsibilityContinuation = Object.freeze({ ...interruption, continuationText: authenticatedDirectText });
+          appendEvent(agent, "odai/responsibility-interruption-resume-requested", {
+            scopeId: interruption.scopeId,
+            turn,
+            step,
+            responsibility: interruption.responsibility,
+          });
+        } else if (disposition === "preserve") {
+          if (directMessage) {
+            interruptionNotice = pluginMessage(
+              renderOutputLimitInterruptionNotice(interruption),
+              `odai verified ${interruption.responsibility} output-limit interruption`,
+            );
+          }
+          appendEvent(agent, "odai/responsibility-interruption-preserved", {
+            scopeId: interruption.scopeId,
+            turn,
+            step,
+            responsibility: interruption.responsibility,
+            reason: "output-limit-diagnostic",
+          });
+        } else if (disposition === "clear") {
+          appendEvent(agent, "odai/responsibility-interruption-cleared", {
+            scopeId: interruption.scopeId,
+            turn,
+            step,
+            responsibility: interruption.responsibility,
+            reason: "superseded-by-user-task",
+          });
+        }
+      }
+      if (interruptionNotice) {
+        downstream = { ...downstream, messages: [...downstream.messages, interruptionNotice] };
+      }
+      if (subagentSession) return downstream;
+      if (step !== 1 && !responsibilityGap) return downstream;
+
+      if (step === 1 && claimSemanticMemoryTurn(agent, turn, step)) {
+        const settings = memorySettingsFor(agent, turn);
+        const message = directMessage;
+        const query = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
+        let retrieved: readonly UnknownRecord[] = [];
+        let captured: readonly UnknownRecord[] = [];
+        let error;
+        if (settings.mode === "auto" && message) {
+          try {
+            retrieved = retrieveTypedSemanticMemories({
+              storePath: config.memory.storePath,
+              query,
+              cwd: agent?.session?.header?.cwd,
+              limit: config.memory.maxRetrieved,
+            });
+            captured = captureAutomaticMemories({
+              storePath: config.memory.storePath,
+              mode: settings.mode,
+              agent,
+              message,
+              turn,
+              cwd: agent?.session?.header?.cwd,
+            });
+          } catch (memoryError) {
+            error = memoryError instanceof Error ? memoryError.message : String(memoryError);
+            logger.warn(`Odai semantic memory processing failed closed for this turn: ${error}`);
+            retrieved = [];
+            captured = [];
+          }
+        }
+        const captureEvidence = captured.filter((result) => result.changed);
+        if (retrieved.length > 0 || captureEvidence.length > 0 || error) {
+          appendEvent(agent, "odai/memory-processed", {
+            turn,
+            step,
+            mode: settings.mode,
+            source: settings.source,
+            retrievedIds: retrieved.map((entry) => entry.id),
+            captures: captureEvidence.map((result) => ({
+              changed: true,
+              reasonCode: result.reasonCode,
+              ...(result.id ? { id: result.id } : {}),
+              ...(result.status ? { status: result.status } : {}),
+              ...(result.scope ? { scope: result.scope } : {}),
+            })),
+            ...(error ? { status: "fallback", error: "memory-store-unavailable" } : { status: "completed" }),
+          });
+        }
+        const packet = renderSemanticMemoryPacket(retrieved);
+        if (packet) {
+          downstream = {
+            ...downstream,
+            messages: [...downstream.messages, memoryPacketMessage(packet)],
+          };
+        }
+      }
+
+      if (config.routing.mode === "off") return downstream;
+      if (hasSessionEvent(agent, "odai/route-decided", (data) => data?.turn === turn && data?.step === step)) {
+        return downstream;
+      }
+
+      let routed = routedSteps.get(agent);
+      if (!routed) {
+        routed = new Set();
+        routedSteps.set(agent, routed);
+      }
+      const routeKey = `${turn}:${step}`;
+      if (routed.has(routeKey)) return downstream;
+      routed.add(routeKey);
+
+      const taskText = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
+      let routedDownstream = downstream;
+      let researchPacketText = "";
+      const researchDecision = decideResearchPrefetch({ text: taskText, proposal: responsibilityGap });
+      if (researchDecision.action === "delegate") {
+        appendEvent(agent, "odai/research-decided", {
+          turn,
+          step,
+          role: "researcher",
+          action: "delegate",
+          mode: config.routing.mode,
+          reasonCode: researchDecision.reasonCode,
+          signals: researchDecision.signals,
+        });
+        if (config.routing.mode === "observe") {
+          appendEvent(agent, "odai/research-result", {
+            turn,
+            step,
+            role: "researcher",
+            status: "observed",
+            stopReason: "observe-mode",
+          });
+        } else {
+          const researchState = configuredRole(agent, "researcher", turn);
+          const researchRoute = researchState.route;
+          if (!researchRoute) {
+            appendEvent(agent, "odai/research-result", {
+              turn,
+              step,
+              role: "researcher",
+              status: "fallback",
+              stopReason: researchState.error ? "route-config-invalid" : "route-config-missing",
+              ...(researchState.error ? { error: researchState.detail } : {}),
+            });
+          } else {
+            const researchBundle = sharedSkillSelection(agent, turn)?.bundle ?? bundled;
+            const researchContract = dshRoleContract(
+              "researcher",
+              researchBundle.roleContracts.researcher,
+              researchBundle.referenceContracts,
+            );
+            const subagents = isSubagentsService(ctx.subagents) ? ctx.subagents : undefined;
+            const result: Readonly<RoutedRoleOutcome> = subagents
+              ? await runRoutedRole({
+                  subagents,
+                  provider: config.routing.provider,
+                  decision: researchDecision,
+                  taskText: renderResearchTaskContract(taskText),
+                  roleContract: researchContract,
+                  agent,
+                  signal,
+                  roleRoute: researchRoute,
+                })
+              : Object.freeze({
+                  status: "fallback",
+                  stopReason: "infrastructure-error",
+                  output: [],
+                  error: "dsh subagents service unavailable",
+                });
+            let packet;
+            let packetError;
+            if (result.status === "completed") {
+              try {
+                packet = verifyResearchPacketSources(
+                  parseResearchPacket(outputText(result.output)),
+                  agent?.session?.header?.cwd,
+                );
+              } catch (error) {
+                packetError = error instanceof Error ? error.message : String(error);
+              }
+            }
+            const completed = result.status === "completed" && packet !== undefined;
+            appendEvent(agent, "odai/research-result", {
+              turn,
+              step,
+              role: "researcher",
+              status: completed ? "completed" : "fallback",
+              stopReason: completed ? result.stopReason : (packetError ? "packet-invalid" : result.stopReason),
+              routeSource: researchState.source,
+              fallbackUsed: !completed,
+              routeReceiptStatus: result.routeReceiptStatus,
+              requestedRoute: researchRoute,
+              ...(result.routeReceiptError ? { routeReceiptError: result.routeReceiptError } : {}),
+              ...(result.actualRoute ? { actualRoute: result.actualRoute } : {}),
+              ...(packet ? { packetDigest: packet.digest, sourceCount: packet.sourceCount } : {}),
+              ...(packetError ? { error: packetError } : result.taskError ? { error: result.taskError } : {}),
+            });
+            if (completed) {
+              researchPacketText = renderResearchPacket(packet);
+              routedDownstream = {
+                ...downstream,
+                messages: [
+                  ...routedDownstream.messages,
+                  pluginMessage(
+                    researchPacketText,
+                    `odai completed researcher evidence compression (${packet.sourceCount} sources)`,
+                  ),
+                ],
+              };
+            }
+          }
+        }
+      }
+
+      const frozenCard = responsibilityContinuation?.routeCard ?? activeRouteCard(evidence.events(agent));
+      let decision = decideRoute({
+        text: taskText,
+        routeCard: frozenCard,
+        proposal: responsibilityGap,
+        interruption: responsibilityContinuation,
+      }) as RouteDecision;
+      let routeRole = decision.targetRole ?? decision.role;
+      const roleTaskText = researchPacketText ? `${taskText}\n\n${researchPacketText}` : taskText;
+      let roleContext = decision.action === "direct"
+        ? undefined
+        : buildRoleContextPacket(agent, routeRole, roleTaskText);
+      let localReviewerCoverage;
+      if (config.routing.mode === "auto"
+        && routeRole === "reviewer"
+        && decision.action === "delegate"
+        && roleContext
+        && !roleContext.sufficient) {
+        localReviewerCoverage = roleContext.coverage;
+        decision = Object.freeze({
+          ...decision,
+          role: "controller",
+          mode: "direct",
+          action: "direct",
+          targetRole: "reviewer",
+          signals: Object.freeze([...decision.signals, "review-evidence-packet-missing", "controller-local-review"]),
+        });
+        routeRole = "reviewer";
+      }
+      appendEvent(agent, "odai/route-decided", {
+        turn,
+        step,
+        role: decision.role,
+        action: decision.action,
+        ...(decision.targetRole ? { targetRole: decision.targetRole } : {}),
+        mode: config.routing.mode,
+        reasonCode: decision.reasonCode,
+        signals: decision.signals,
+        ...(responsibilityGap ? {
+          stateDigest: responsibilityGap.stateDigest,
+          gap: responsibilityGap.gap,
+          evidenceRefs: responsibilityGap.evidenceRefs,
+          expectedChange: responsibilityGap.expectedChange,
+        } : {}),
+        ...(decision.considerations ? { considerations: decision.considerations } : {}),
+      });
+      if (responsibilityGap) {
+        appendEvent(agent, "odai/responsibility-gap-consumed", {
+          turn,
+          step,
+          responsibility: responsibilityGap.responsibility,
+          stateDigest: responsibilityGap.stateDigest,
+          routeAction: decision.action,
+          reasonCode: decision.reasonCode,
+        });
+      }
+
+      if (decision.action === "direct") {
+        if (!localReviewerCoverage) return routedDownstream;
+        if (!roleContext) throw new Error("reviewer fallback is missing its context packet");
+        appendEvent(agent, "odai/route-context", {
+          turn,
+          step,
+          role: "reviewer",
+          mode: "controller-local",
+          digest: roleContext.digest,
+          evidenceCount: roleContext.evidenceCount,
+          toolEvidenceCount: roleContext.toolEvidenceCount,
+          acceptanceCount: localReviewerCoverage.acceptanceCount,
+          diffCount: localReviewerCoverage.diffCount,
+          testCount: localReviewerCoverage.testCount,
+          truncated: roleContext.truncated,
+          sufficient: false,
+        });
+        appendEvent(agent, "odai/route-result", {
+          turn,
+          step,
+          role: "reviewer",
+          action: "direct",
+          status: "fallback",
+          stopReason: "evidence-packet-missing",
+          independent: false,
+        });
+        return {
+          kind: "enter",
+          messages: [
+            ...routedDownstream.messages,
+            pluginMessage(
+              [
+                `An independent reviewer was not started because the bounded packet is incomplete (${JSON.stringify(localReviewerCoverage)}).`,
+                "Remain on the current controller route and continue the authorized task. Gather project-available requirements, acceptance conditions, diff, tests, and matching tool evidence before resubmitting a changed reviewer gap.",
+                "A controller-local read-only check may guide the work, but it is not independent acceptance. Do not stop solely to ask the user for review artifacts the project can produce, and do not claim the reviewer approved release.",
+              ].join("\n"),
+              "odai reviewer evidence is incomplete; controller continues locally",
+            ),
+          ],
+        };
+      }
+
+      if (config.routing.mode === "observe") {
+        if (requiresFailClosedProtection(decision)) {
+          protectController(agent, turn, step, decision, "observe");
+        }
+        return {
+          kind: "enter",
+          messages: [
+            ...routedDownstream.messages,
+            pluginMessage(
+              renderRouteNotice(decision, "observe"),
+              `odai observed ${routeRole} gap (${decision.reasonCode})`,
+            ),
+          ],
+        };
+      }
+
+      const roleState = configuredRole(agent, routeRole, turn);
+      const roleRoute = roleState.route;
+      if (!roleRoute) {
+        const invalidConfig = Boolean(roleState.error);
+        appendEvent(agent, "odai/route-config-missing", {
+          turn,
+          step,
+          role: routeRole,
+          action: decision.action,
+          mode: config.routing.mode,
+          status: invalidConfig ? "invalid" : "unconfigured",
+          ...(invalidConfig ? { error: roleState.detail } : {}),
+        });
+        if (requiresFailClosedProtection(decision)) {
+          protectController(
+            agent,
+            turn,
+            step,
+            decision,
+            invalidConfig ? "route-config-invalid" : "route-config-missing",
+          );
+        }
+        if (routeRole === "frontend") return routedDownstream;
+        return {
+          kind: "enter",
+          messages: [
+            ...routedDownstream.messages,
+            pluginMessage(
+              renderMissingRouteConfigNotice(decision, config.routing.mode, roleState.error),
+              `odai ${routeRole} route is ${invalidConfig ? "invalid" : "not configured"}`,
+            ),
+          ],
+        };
+      }
+
+      const roleBundle = sharedSkillSelection(agent, turn)?.bundle ?? bundled;
+      const canonicalRoleContract = roleBundle.roleContracts[routeRole];
+      const roleContract = dshRoleContract(routeRole, canonicalRoleContract, roleBundle.referenceContracts);
+      let rolePreflightVerified = false;
+      if (routeRole === "frontend" && decision.action === "upgrade") {
+        const health = await probeModelRoute(
+          (candidate: ModelRoute, candidateSignal?: AbortSignal) => ctx.llm.resolveCallConfig(candidate, candidateSignal),
+          roleRoute,
+          signal,
+        );
+        if (health.status === "rejected") {
+          const invalidation = invalidateFailedRoleRoute(
+            agent,
+            routeRole,
+            roleRoute,
+            roleState.source,
+            health.failure,
+            { turn, step, position: "pre-step" },
+          );
+          appendEvent(agent, "odai/route-result", {
+            turn,
+            step,
+            role: routeRole,
+            action: "upgrade",
+            status: "fallback",
+            stopReason: "route-preflight-failed",
+            routeSource: roleState.source,
+            fallbackUsed: true,
+            requestedRoute: roleRoute,
+            failureKind: health.failure.kind,
+            error: health.failure.message,
+            invalidated: invalidation.invalidated,
+          });
+          return {
+            kind: "enter",
+            messages: [
+              ...routedDownstream.messages,
+              pluginMessage(
+                [
+                  `The configured frontend route failed preflight (${health.failure.kind}: ${health.failure.message}).`,
+                  "Continue locally as the current controller for this turn using the canonical frontend and craft contract below. Do not claim the configured frontend responsibility ran; no routed receipt exists.",
+                  "",
+                  "frontend local-fallback responsibility contract:",
+                  roleContract,
+                ].join("\n"),
+                "odai frontend route unavailable; explicit local fallback",
+              ),
+            ],
+          };
+        }
+        rolePreflightVerified = health.status === "verified";
+      }
+      roleContext ??= buildRoleContextPacket(agent, routeRole, taskText);
+      const inPlaceUpgrade = decision.action === "upgrade"
+        && (config.routing.mode === "auto" || ["executor", "frontend"].includes(routeRole));
+      const contextMode = inPlaceUpgrade ? "same-turn" : "bounded-packet";
+      appendEvent(agent, "odai/route-context", {
+        turn,
+        step,
+        role: routeRole,
+        mode: contextMode,
+        digest: roleContext.digest,
+        evidenceCount: roleContext.evidenceCount,
+        toolEvidenceCount: roleContext.toolEvidenceCount,
+        acceptanceCount: roleContext.coverage.acceptanceCount,
+        diffCount: roleContext.coverage.diffCount,
+        testCount: roleContext.coverage.testCount,
+        truncated: roleContext.truncated,
+        sufficient: roleContext.sufficient,
+      });
+
+      if (routeRole === "reviewer" && decision.action === "delegate" && !roleContext.sufficient) {
+        appendEvent(agent, "odai/route-result", {
+          turn,
+          step,
+          role: "reviewer",
+          action: "delegate",
+          status: "fallback",
+          stopReason: "evidence-packet-missing",
+          contextDigest: roleContext.digest,
+        });
+        return {
+          kind: "enter",
+          messages: [
+            ...routedDownstream.messages,
+            pluginMessage(
+              `odai reviewer child was not started because the bounded packet is incomplete (${JSON.stringify(roleContext.coverage)}). Gather requirements, acceptance conditions, actual diff, tests, and matching tool evidence first; do not claim independent acceptance.`,
+              "odai reviewer evidence packet is incomplete",
+            ),
+          ],
+        };
+      }
+
+      if (inPlaceUpgrade) {
+        stopResponsibilityScope(agent, "superseded", { step });
+        const responsibilityScope = createTypedResponsibilityScope({
+          turn,
+          startStep: step,
+          role: routeRole,
+          route: roleRoute,
+          source: roleState.source,
+          decision,
+          routeValidated: rolePreflightVerified,
+          ...(routeRole === "executor" && frozenCard ? { cardId: frozenCard.id } : {}),
+          ...(responsibilityContinuation ? { resumeOfScopeId: responsibilityContinuation.scopeId } : {}),
+        });
+        responsibilityScopes.set(agent, responsibilityScope);
+        if (agent?.session) responsibilityScopeOwners.set(agent.session, agent);
+        appendEvent(agent, "odai/responsibility-scope-started", responsibilityScopeStartedEvent(responsibilityScope));
+        if (["planner", "reviewer"].includes(routeRole)) {
+          protectController(agent, turn, step, decision, `responsibility-scope-${routeRole}`, undefined, responsibilityScope.id);
+        }
+        if (routeRole === "executor" && frozenCard) {
+          appendEvent(agent, "odai/route-card-claimed", {
+            cardId: frozenCard.id,
+            turn,
+            step,
+            ...(responsibilityContinuation ? { reason: "output-limit-continuation" } : {}),
+          });
+        }
+        appendEvent(agent, "odai/route-upgrade", {
+          turn,
+          step,
+          role: decision.role,
+          targetRole: routeRole,
+          status: "requested",
+          responsibilityScopeId: responsibilityScope.id,
+          ...(responsibilityContinuation ? { resumeOfScopeId: responsibilityContinuation.scopeId } : {}),
+          continuationPolicy: responsibilityScope.continuationPolicy,
+          stopPolicy: responsibilityScope.stopPolicy,
+          routeSource: roleState.source,
+          requestedRoute: roleRoute,
+          contextDigest: roleContext.digest,
+          contextMode,
+          ...(routeRole === "reviewer" ? { independent: false } : {}),
+        });
+        const contextBoundary = routeRole === "reviewer"
+          ? `The bounded packet is not independently reviewable (${JSON.stringify(roleContext.coverage)}). Perform a same-turn read-only check and do not claim independent acceptance.`
+          : "Retain the current controller conversation and workspace context; do not reconstruct it through a child handoff.";
+        return {
+          kind: "enter",
+          messages: [
+            ...routedDownstream.messages,
+            pluginMessage(
+              [
+                renderRouteNotice(decision, config.routing.mode, roleRoute),
+                "",
+                `Context digest: sha256:${roleContext.digest}`,
+                contextBoundary,
+                "",
+                `${routeRole} responsibility contract:`,
+                roleContract,
+                ...(routeRole === "executor" && frozenCard
+                  ? ["", "Frozen route card:", JSON.stringify(frozenCard, null, 2)]
+                  : []),
+              ].join("\n"),
+              `odai upgraded controller route (${decision.reasonCode})`,
+            ),
+          ],
+        };
+      }
+
+      const delegationDecision = decision.role === routeRole
+        ? decision
+        : Object.freeze({ ...decision, role: routeRole, mode: "delegate", action: "delegate" });
+      const subagents = isSubagentsService(ctx.subagents) ? ctx.subagents : undefined;
+      const result: Readonly<RoutedRoleOutcome> = subagents
+        ? await runRoutedRole({
+            subagents,
+            provider: config.routing.provider,
+            decision: delegationDecision,
+            taskText: renderRoleContextPacket(roleContext),
+            roleContract,
+            agent,
+            signal,
+            roleRoute,
+          })
+        : Object.freeze({
+            status: "fallback",
+            stopReason: "infrastructure-error",
+            output: [],
+            error: "dsh subagents service unavailable",
+          });
+      appendEvent(agent, "odai/route-result", {
+        turn,
+        step,
+        role: routeRole,
+        action: "delegate",
+        status: result.status,
+        stopReason: result.stopReason,
+        routeSource: roleState.source,
+        fallbackUsed: result.status !== "completed",
+        routeReceiptStatus: result.routeReceiptStatus,
+        requestedRoute: roleRoute,
+        contextDigest: roleContext.digest,
+        ...(result.routeReceiptError ? { routeReceiptError: result.routeReceiptError } : {}),
+        ...(result.actualRoute ? { actualRoute: result.actualRoute } : {}),
+        ...(result.taskError ? { error: result.taskError } : {}),
+      });
+
+      if (result.status === "completed") {
+        const childText = outputText(result.output);
+        const heading = renderRouteNotice(delegationDecision, config.routing.mode, result.actualRoute);
+        return {
+          kind: "enter",
+          messages: [
+            ...routedDownstream.messages,
+            pluginMessage(
+              childText ? `${heading}\ncontext digest: sha256:${roleContext.digest}\n\n${routeRole} output:\n${childText}` : heading,
+              `odai completed ${routeRole} route`,
+              result.output.filter((block) => block?.type !== "text"),
+            ),
+          ],
+        };
+      }
+
+      const failure = result.error ?? result.stopReason;
+      if (requiresFailClosedProtection(delegationDecision)) {
+        protectController(agent, turn, step, delegationDecision, "route-failure", failure);
+      }
+      return {
+        kind: "enter",
+        messages: [
+          ...routedDownstream.messages,
+          pluginMessage(
+            renderRouteFailureNotice(delegationDecision, failure),
+            requiresFailClosedProtection(delegationDecision)
+              ? `odai blocked high-impact ${routeRole} fallback`
+              : `odai fell back from ${routeRole} route`,
+          ),
+        ],
+      };
+    }, { prepend: true });
+  }
+
+
+}

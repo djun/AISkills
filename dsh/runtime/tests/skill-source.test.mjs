@@ -11,22 +11,22 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { resolve } from "node:path";
 
-import { apply, resolveSkillPath } from "../src/index.mjs";
+import { apply, resolveSkillPath } from "../build/index.mjs";
 import {
   chooseSkillBundle,
   compareSkillVersions,
   loadSkillBundle,
-} from "../src/skill-bundle.mjs";
+} from "../build/skill-bundle.mjs";
 import {
   createSkillSourceConfigTool,
   effectiveSkillSource,
   readSkillSourceStore,
-} from "../src/skill-source-config.mjs";
-import { resolveSkillSelection } from "../src/skill-selector.mjs";
+} from "../build/skill-source-config.mjs";
+import { resolveSkillSelection } from "../build/skill-selector.mjs";
 import {
   selectSharedSkillForTurn,
   sharedSkillSelection,
-} from "../src/skill-selection-state.mjs";
+} from "../build/skill-selection-state.mjs";
 
 const canonicalRoot = resolve(import.meta.dirname, "../../../skills/odai");
 const canonicalPath = resolve(canonicalRoot, "SKILL.md");

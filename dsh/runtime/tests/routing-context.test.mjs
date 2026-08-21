@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildRoleContextPacket, renderRoleContextPacket } from "../src/routing-context.mjs";
+import { buildRoleContextPacket, renderRoleContextPacket } from "../build/routing-context.mjs";
 
 const userMessage = (text) => ({
   role: "user",

@@ -14,7 +14,7 @@ import {
   renderRouteFailureNotice,
   renderRouteNotice,
   requiresFailClosedProtection,
-} from "../src/router.mjs";
+} from "../build/router.mjs";
 
 function gap(responsibility, overrides = {}) {
   return {

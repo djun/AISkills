@@ -5,8 +5,8 @@ import {
   activateRequestedCapabilities,
   createContextCapabilityTool,
   requestedContextCapabilities,
-} from "../src/context-capability.mjs";
-import { classifyContextActivation } from "../src/context-activation.mjs";
+} from "../build/context-capability.mjs";
+import { classifyContextActivation } from "../build/context-activation.mjs";
 
 test("capability gateway enables an otherwise missed intent for the current turn", async () => {
   const requests = [];

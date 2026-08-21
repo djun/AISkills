@@ -8,7 +8,7 @@ import {
   estimateContextTokens,
   estimateToolSchemaTokens,
   inactiveOdaiToolNames,
-} from "../src/context-activation.mjs";
+} from "../build/context-activation.mjs";
 
 test("ordinary work exposes only the compact core tools", () => {
   const activation = classifyContextActivation("把按钮文案改清楚并运行现有测试");

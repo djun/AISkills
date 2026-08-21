@@ -22,13 +22,13 @@ import {
   latestDirectUserMessage,
   renderSemanticMemoryPacket,
   retrieveSemanticMemories,
-} from "../src/semantic-memory.mjs";
+} from "../build/semantic-memory.mjs";
 import {
   MemoryStoreValidationError,
   effectiveMemorySettings,
   readMemoryStore,
   resolveMemoryStorePath,
-} from "../src/semantic-memory-store.mjs";
+} from "../build/semantic-memory-store.mjs";
 
 function symlinkOrSkip(t, target, path, type) {
   try {

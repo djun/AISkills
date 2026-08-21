@@ -15,11 +15,11 @@ const firstExisting = (label, candidates) => {
 };
 const pluginPath = firstExisting("Odai DSH runtime", [
   resolve(pluginRoot, "runtime/index.mjs"),
-  resolve(pluginRoot, "../runtime/src/index.mjs"),
+  resolve(pluginRoot, "../runtime/build/index.mjs"),
 ]);
 const routingConfigModulePath = firstExisting("Odai routing configuration runtime", [
   resolve(pluginRoot, "runtime/routing-config.mjs"),
-  resolve(pluginRoot, "../runtime/src/routing-config.mjs"),
+  resolve(pluginRoot, "../runtime/build/routing-config.mjs"),
 ]);
 const skillPath = firstExisting("canonical Odai skill", [
   resolve(pluginRoot, "skills/odai/SKILL.md"),
