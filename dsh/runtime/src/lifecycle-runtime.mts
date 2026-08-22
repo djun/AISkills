@@ -63,6 +63,7 @@ import type {
   DshRuntimeContext,
   DshSession,
   ModelRoute,
+  ResponsibilityDispatch,
   RuntimeConfig,
   RuntimeEventData,
   RuntimeLogger,
@@ -75,14 +76,25 @@ interface AgentTurnEvent { agent: DshAgent; turn: number }
 interface RequestOptions extends UnknownRecord, Partial<ModelRoute> { messages?: readonly DshMessage[] }
 interface StepResult extends UnknownRecord { kind: string; messages: readonly DshMessage[] }
 interface RouteFailure { kind: string; code: string; message: string }
-interface RoleState { route?: ModelRoute; source?: string; error?: string; detail?: string; id?: string; cardId?: string; baseRoute?: ModelRoute }
+interface RoleState { route?: ModelRoute; source?: string; dispatch?: ResponsibilityDispatch; dispatchSource?: string; error?: string; detail?: string; id?: string; cardId?: string; baseRoute?: ModelRoute }
 export interface RouteProtection extends UnknownRecord { scopeId?: string }
+
+function effectiveRoleDispatch(
+  role: string,
+  configured: ResponsibilityDispatch | undefined,
+  routingMode: RuntimeConfig["routing"]["mode"],
+): ResponsibilityDispatch {
+  if (configured) return configured;
+  if (role === "researcher" || role === "reviewer") return "child";
+  if (role === "planner") return routingMode === "auto" ? "same-turn" : "child";
+  return "same-turn";
+}
 export interface PendingRouteReceipt extends UnknownRecord { agent: DshAgent; turn: number; step: number; responsibility: string; responsibilityScopeId?: string; routeCardId?: string; routeMode: string; routeSource?: string; requestedRoute: ModelRoute; expectedRoute: ModelRoute; resumeOfScopeId?: string }
 export interface PendingRestoration extends UnknownRecord { agent: DshAgent; scopeId: string; turn: number; step: number; role: string; expectedRoute: ModelRoute }
 export interface OutputUsage extends UnknownRecord { turn?: number; usage?: { outputTokens?: number } }
 interface MemorySettings { mode: "auto" | "off"; source: string }
 function isInPlaceResponsibility(value: unknown): value is InPlaceResponsibility {
-  return value === "planner" || value === "reviewer" || value === "executor" || value === "frontend";
+  return value === "researcher" || value === "planner" || value === "reviewer" || value === "executor" || value === "frontend";
 }
 
 function isSubagentsService(value: unknown): value is SubagentsService {
@@ -140,27 +152,39 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       stopResponsibilityScope(agent, "ownership-boundary", { step });
       scope = undefined;
     }
-    if (!childRole && !scope) {
+    if (!childRole && (!scope || scope.state === "pending")) {
       const restoration = pendingResponsibilityScopeRestoration(evidence.events(agent));
       if (restoration && sameRequestModelRoute(proposed, restoration.temporaryRoute)) {
         const { reasoningEffort: _temporaryEffort, maxTokens: _temporaryMaxTokens, ...withoutTemporaryRoute } = proposed;
         proposed = Object.freeze({ ...withoutTemporaryRoute, ...restoration.baseRoute });
-        appendEvent(agent, "odai/responsibility-scope-restoration-requested", {
-          scopeId: restoration.scopeId,
-          turn,
-          step,
-          role: restoration.role,
-          requestedRoute: restoration.baseRoute,
-        });
-        if (agent?.session) {
-          pendingScopeRestorations.set(agent.session, Object.freeze({
-            agent,
+        if (scope?.state === "pending") {
+          appendEvent(agent, "odai/responsibility-scope-restored", {
             scopeId: restoration.scopeId,
             turn,
             step,
             role: restoration.role,
-            expectedRoute: restoration.baseRoute,
-          }));
+            status: "chained",
+            baseRoute: restoration.baseRoute,
+            nextScopeId: scope.id,
+          });
+        } else {
+          appendEvent(agent, "odai/responsibility-scope-restoration-requested", {
+            scopeId: restoration.scopeId,
+            turn,
+            step,
+            role: restoration.role,
+            requestedRoute: restoration.baseRoute,
+          });
+          if (agent?.session) {
+            pendingScopeRestorations.set(agent.session, Object.freeze({
+              agent,
+              scopeId: restoration.scopeId,
+              turn,
+              step,
+              role: restoration.role,
+              expectedRoute: restoration.baseRoute,
+            }));
+          }
         }
       }
     }
@@ -432,6 +456,22 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         scopeId: activeScope.id,
         ...(Number.isSafeInteger(event.data?.step) ? { step: event.data.step } : {}),
       });
+      if (scopeStopReason === "terminal-response"
+        && ["researcher", "planner", "reviewer"].includes(activeScope.role)) {
+        appendEvent(owner, "odai/responsibility-return-missing", {
+          scopeId: activeScope.id,
+          turn: activeScope.turn,
+          step: event.data?.step ?? activeScope.startStep,
+          responsibility: activeScope.role,
+          target: "controller",
+          status: typeof owner.inject === "function" ? "recovery-injected" : "recovery-unavailable",
+        });
+        owner.inject?.(pluginMessage([
+          `The same-turn ${activeScope.role} responsibility emitted a terminal response without odai_responsibility_return.`,
+          "Its text is an unverified read-only draft, not final delivery or independent acceptance.",
+          "The runtime restored the controller route. Verify the decisive claims, continue the authorized task, and keep controller ownership of final delivery.",
+        ].join("\n"), `${activeScope.role} handback recovery`));
+      }
     }
 
     if (event?.type === "assistant/chunk" && event.data?.chunk?.type === "usage") {
@@ -796,6 +836,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       const taskText = extractRoutingText(downstream.messages, agent?.session?.events).slice(0, config.routing.maxInputChars);
       let routedDownstream = downstream;
       let researchPacketText = "";
+      let sameTurnResearchDecision: RouteDecision | undefined;
       const researchDecision = decideResearchPrefetch({ text: taskText, proposal: responsibilityGap });
       if (researchDecision.action === "delegate") {
         appendEvent(agent, "odai/research-decided", {
@@ -826,6 +867,14 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
               status: "fallback",
               stopReason: researchState.error ? "route-config-invalid" : "route-config-missing",
               ...(researchState.error ? { error: researchState.detail } : {}),
+            });
+          } else if (effectiveRoleDispatch("researcher", researchState.dispatch, config.routing.mode) === "same-turn") {
+            sameTurnResearchDecision = Object.freeze({
+              ...researchDecision,
+              role: "controller",
+              mode: "upgrade",
+              action: "upgrade",
+              targetRole: "researcher",
             });
           } else {
             const researchBundle = sharedSkillSelection<SkillSelection>(agent, turn)?.bundle ?? bundled;
@@ -898,7 +947,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       }
 
       const frozenCard = responsibilityContinuation?.routeCard ?? activeRouteCard(evidence.events(agent));
-      let decision = decideRoute({
+      let decision = sameTurnResearchDecision ?? decideRoute({
         text: taskText,
         routeCard: frozenCard,
         proposal: responsibilityGap,
@@ -916,6 +965,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       if (config.routing.mode === "auto"
         && routeRole === "reviewer"
         && decision.action === "delegate"
+        && effectiveRoleDispatch("reviewer", configuredRole(agent, "reviewer", turn).dispatch, config.routing.mode) === "child"
         && roleContext
         && !roleContext.sufficient) {
         localReviewerCoverage = roleContext.coverage;
@@ -1127,8 +1177,8 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         rolePreflightVerified = health.status === "verified";
       }
       roleContext ??= buildRoleContextPacket(agent, routeRole, taskText);
-      const inPlaceUpgrade = decision.action === "upgrade"
-        && (config.routing.mode === "auto" || ["executor", "frontend"].includes(routeRole));
+      const roleDispatch = effectiveRoleDispatch(routeRole, roleState.dispatch, config.routing.mode);
+      const inPlaceUpgrade = roleDispatch === "same-turn";
       const contextMode = inPlaceUpgrade ? "same-turn" : "bounded-packet";
       appendEvent(agent, "odai/route-context", {
         turn,
@@ -1147,7 +1197,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         sufficient: roleContext.sufficient,
       });
 
-      if (routeRole === "reviewer" && decision.action === "delegate" && !roleContext.sufficient) {
+      if (routeRole === "reviewer" && roleDispatch === "child" && decision.action === "delegate" && !roleContext.sufficient) {
         if (reviewerEvidenceUnchanged) return routedDownstream;
         appendEvent(agent, "odai/route-result", {
           turn,
@@ -1205,7 +1255,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         responsibilityScopes.set(agent, responsibilityScope);
         if (agent?.session) responsibilityScopeOwners.set(agent.session, agent);
         appendEvent(agent, "odai/responsibility-scope-started", responsibilityScopeStartedEvent(responsibilityScope));
-        if (["planner", "reviewer"].includes(routeRole)) {
+        if (["researcher", "planner", "reviewer"].includes(routeRole)) {
           protectController(agent, turn, step, decision, `responsibility-scope-${routeRole}`, undefined, responsibilityScope.id);
         }
         if (routeRole === "executor" && frozenCard) {
@@ -1241,7 +1291,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
             ...routedDownstream.messages,
             pluginMessage(
               [
-                renderRouteNotice(decision, config.routing.mode, roleRoute),
+                renderRouteNotice(decision, config.routing.mode, roleRoute, roleDispatch),
                 "",
                 `Context digest: sha256:${roleContext.digest}`,
                 contextBoundary,

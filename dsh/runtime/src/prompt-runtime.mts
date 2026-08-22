@@ -1,4 +1,4 @@
-import { extractLatestUserText } from "./router.mjs";
+import { decideRoute, extractLatestUserText } from "./router.mjs";
 import { ROUTING_CONFIG_PROMPT, effectiveRoutingSnapshot } from "./routing-config.mjs";
 import { DEFAULT_OUTPUT_POLICY, effectiveOutputPolicy, renderOutputPolicyPrompt } from "./output-config.mjs";
 import type { OutputPolicy } from "./output-config.mjs";
@@ -9,7 +9,7 @@ import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
 import { classifyContextActivation } from "./context-activation.mjs";
 import type { ContextActivation } from "./context-activation.mjs";
 import { activateRequestedCapabilities, requestedContextCapabilities } from "./context-capability.mjs";
-import { pendingResponsibilityInterruption } from "./responsibility-scope.mjs";
+import { latestDanglingResponsibilityScope, pendingResponsibilityInterruption } from "./responsibility-scope.mjs";
 import {
   HUMAN_SAFETY_CONTINUITY_PROMPT,
   renderHumanSafetyContinuitySection,
@@ -87,7 +87,7 @@ interface PromptInstallDependencies {
   syncToolExposure(
     agent: DshAgent,
     activation: ContextActivation,
-    options: { turn?: number; step: number; routeCard: boolean },
+    options: { turn?: number; step: number; routeCard: boolean; responsibilityReturn: boolean },
   ): readonly string[];
 }
 
@@ -242,7 +242,7 @@ export function createPromptRuntime(deps: PromptDependencies) {
     let state;
     try {
       state = Object.freeze({
-        snapshot: effectiveRoutingSnapshot(config.routing.configPath, config.routing.roles),
+        snapshot: effectiveRoutingSnapshot(config.routing.configPath, config.routing.roles, config.routing.dispatch),
       });
     } catch (error) {
       state = Object.freeze({
@@ -264,14 +264,29 @@ export function createPromptRuntime(deps: PromptDependencies) {
     const turn = currentAgentTurn(agent);
     const childSession = isSubagentSession(agent);
     const directMessage = latestDirectUserMessage(agent);
-    const activation = contextActivationFor(agent, directMessage ? extractLatestUserText([directMessage]) : "", turn);
+    const directText = directMessage ? extractLatestUserText([directMessage]) : "";
+    const activation = contextActivationFor(agent, directText, turn);
     const proposedStep = (currentAgentStep(agent) ?? 0) + 1;
     const exposureEvents = evidence.events(agent);
+    const pendingGap = pendingResponsibilityGap(agent, turn, proposedStep);
+    const routeCandidate = decideRoute({ text: directText, proposal: pendingGap });
+    const danglingScope = latestDanglingResponsibilityScope(exposureEvents);
+    const pendingReadOnlyRole = pendingGap?.responsibility
+      ?? (routeCandidate.action === "upgrade" ? routeCandidate.targetRole : undefined);
+    const responsibilityReturnNeeded = !childSession && (
+      ["researcher", "planner", "reviewer"].includes(pendingReadOnlyRole ?? "")
+      || ["researcher", "planner", "reviewer"].includes(danglingScope?.role ?? "")
+    );
     const routeCardNeeded = !childSession && (Boolean(activeRouteCard(exposureEvents))
-      || ["planner", "executor"].includes(pendingResponsibilityGap(agent, turn, proposedStep)?.responsibility ?? "")
+      || ["planner", "executor"].includes(pendingGap?.responsibility ?? "")
       || pendingResponsibilityInterruption(exposureEvents)?.responsibility === "executor");
     // DSH builds assembly.tools before this middleware runs. Filter that snapshot and the execution registry together.
-    const activeToolNames = syncToolExposure(agent, activation, { turn, step: proposedStep, routeCard: routeCardNeeded });
+    const activeToolNames = syncToolExposure(agent, activation, {
+      turn,
+      step: proposedStep,
+      routeCard: routeCardNeeded,
+      responsibilityReturn: responsibilityReturnNeeded,
+    });
     const executableSchemas = typeof ctx.tools.schemas === "function" ? ctx.tools.schemas(agent) : [];
     const visibleAssembly = reconcileAdaptiveToolSchemas(assembly, activeToolNames, executableSchemas);
     if (visibleAssembly !== assembly) assembly.tools = visibleAssembly.tools;

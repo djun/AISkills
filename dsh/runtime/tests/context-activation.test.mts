@@ -26,6 +26,11 @@ test("ordinary work exposes only the compact core tools", () => {
   const active = activeOdaiToolNames(activation);
   assert.deepEqual(active, ["odai_context_capability", "odai_responsibility_gap"]);
   assert.deepEqual(inactiveOdaiToolNames(active), ODAI_CONTEXTUAL_TOOL_NAMES);
+  assert.deepEqual(activeOdaiToolNames(activation, { responsibilityReturn: true }), [
+    "odai_context_capability",
+    "odai_responsibility_gap",
+    "odai_responsibility_return",
+  ]);
   assert.deepEqual(activeOdaiToolNames(activation, { child: true }), []);
 });
 
@@ -52,6 +57,8 @@ test("care and crisis signals activate separate contracts without model configur
 test("low-frequency control tools appear only for matching direct intent", () => {
   const cases: Array<readonly [string, ReturnType<typeof activeOdaiToolNames>[number]]> = [
     ["请显示当前所有职责模型映射", "odai_routing_config"],
+    ["规划职责改成 child", "odai_routing_config"],
+    ["验收改成同轮调度", "odai_routing_config"],
     ["把 Odai skill 来源设置成 bundled", "odai_skill_source_config"],
     ["查看 Odai 治理演化 generation", "odai_skill_evolution"],
     ["把输出模式改成 economy", "odai_output_config"],

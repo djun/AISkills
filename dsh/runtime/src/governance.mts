@@ -35,6 +35,7 @@ export const DEFAULT_PROTECTED_CONTROLLER_ALLOWED_TOOLS = Object.freeze([
   "job_list",
   "skill",
   "odai_route_card",
+  "odai_responsibility_return",
 ] as const);
 
 export interface ToolGuardOptions {

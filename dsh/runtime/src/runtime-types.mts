@@ -11,6 +11,8 @@ export interface ModelRoute extends UnknownRecord {
   maxTokens?: number;
 }
 
+export type ResponsibilityDispatch = "same-turn" | "child";
+
 export interface DshContentBlock extends UnknownRecord {
   type: string;
   text?: string;
@@ -125,6 +127,7 @@ export interface ToolRestriction {
 
 export interface DshAgent {
   session: DshSession;
+  inject?(message: DshMessage): void;
   phase?: { turn?: number; step?: number };
   options?: UnknownRecord;
   ctx?: {
@@ -222,6 +225,7 @@ export interface RuntimeConfig {
     maxInputChars: number;
     configPath: string;
     roles: Readonly<Record<string, ModelRoute | undefined>>;
+    dispatch: Readonly<Record<string, ResponsibilityDispatch | undefined>>;
   };
   governance: {
     additionalDeniedTools: readonly string[];

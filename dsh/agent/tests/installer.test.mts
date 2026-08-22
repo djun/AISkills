@@ -30,10 +30,11 @@ function jsonRecord(text: string): Record<string, unknown> {
 test("Agent composition renders every supported DSH Standard contract", async () => {
   assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.7", "0.1.1-rc.1", "0.1.1-rc.2"]);
   const source = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
+  const normalizedSource = source.replace(/\r\n/gu, "\n");
   const rc2 = renderAgentCompositionForDsh(source, "0.1.1-rc.2");
-  assert.equal(rc2, source);
+  assert.equal(rc2, normalizedSource);
   const rc1 = renderAgentCompositionForDsh(source, "0.1.1-rc.1");
-  assert.equal(rc1, source);
+  assert.equal(rc1, normalizedSource);
   assert.match(rc1, /Install the[\s\S]*matching Bundle[\s\S]*Host availability[\s\S]*alone grants no tool/u);
   assert.match(rc1, /provider: codex[\s\S]*backgroundMode: one-shot/u);
   assert.match(rc1, /provider: claude-code[\s\S]*backgroundMode: one-shot/u);

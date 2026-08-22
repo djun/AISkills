@@ -13,6 +13,7 @@ import type {
   DshEvent,
   DshMessage,
   ModelRoute,
+  ResponsibilityDispatch,
   PromptAssembly,
   RuntimeLogger,
   ToolSchema,
@@ -71,6 +72,8 @@ export interface RoutingSnapshotState {
   snapshot?: {
     roles: Readonly<Record<string, ModelRoute | undefined>>;
     sources: Readonly<Record<string, string>>;
+    dispatch: Readonly<Record<string, ResponsibilityDispatch | undefined>>;
+    dispatchSources: Readonly<Record<string, string>>;
   };
 }
 
@@ -355,9 +358,15 @@ export function renderEffectiveRoutingContext(snapshotState: RoutingSnapshotStat
     ];
     return [`${role}=${route.provider}/${route.model}${options.length > 0 ? ` (${options.join(", ")})` : ""} [${snapshot.sources[role]}]`];
   });
+  const dispatch = CONFIGURABLE_ROLES.flatMap((role) => (
+    snapshot.dispatch[role]
+      ? [`${role}=${snapshot.dispatch[role]} [${snapshot.dispatchSources[role]}]`]
+      : []
+  ));
   return [
     `Current effective responsibility mappings (runtime-owned; supersedes conversation summaries): ${mappings.join("; ") || "none"}.`,
-    "These are route targets, not evidence that a responsibility ran. Only an actual route receipt proves use; a generic subagent does not.",
+    `Current explicit dispatch overrides: ${dispatch.join("; ") || "none; legacy defaults apply"}.`,
+    "These are route targets and dispatch preferences, not evidence that a responsibility ran. Only an actual route receipt proves use; a generic subagent does not.",
   ].join("\n");
 }
 

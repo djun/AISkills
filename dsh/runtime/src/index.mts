@@ -175,6 +175,8 @@ export function apply(ctx: DshRuntimeContext, rawConfig: unknown): void {
     return {
       route: state.snapshot.roles[role],
       source: state.snapshot.sources[role],
+      dispatch: state.snapshot.dispatch[role],
+      dispatchSource: state.snapshot.dispatchSources[role],
     };
   };
   const pendingResponsibilityGap = (
@@ -268,7 +270,7 @@ export function apply(ctx: DshRuntimeContext, rawConfig: unknown): void {
   installToolRuntime({
     appendEvent, baseSelection, bundled, config, ctx, evidence, evolutionDisabled, explicitSkillPath,
     hasSessionEvent, humanSafetyContinuityStorePath, logger, pendingResponsibilityGap, promptRuntime,
-    routeProtections, selectOutputForAgent,
+    responsibilityScopes, routeProtections, selectOutputForAgent, stopResponsibilityScope,
   });
 
   installLifecycleRuntime({

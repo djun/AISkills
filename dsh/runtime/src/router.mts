@@ -706,10 +706,13 @@ export function renderRouteNotice(
   decision: RouteDecision,
   runtimeMode: string,
   actualRoute?: ModelRoute,
+  dispatch?: "same-turn" | "child",
 ): string {
   const routeRole = decision.targetRole ?? decision.role;
-  const isUpgrade = decision.action === "upgrade"
-    && (runtimeMode === "auto" || ["executor", "frontend"].includes(routeRole));
+  const isUpgrade = dispatch
+    ? dispatch === "same-turn"
+    : decision.action === "upgrade"
+      && (runtimeMode === "auto" || ["executor", "frontend"].includes(routeRole));
   const action = isUpgrade
     ? "The current controller turn requested an in-place upgrade; no child was started."
     : runtimeMode === "observe"

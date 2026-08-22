@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONFIGURABLE_ROLES, resolveRoleRoute, resolveRoutingConfigPath } from "./routing-config.mjs";
+import { CONFIGURABLE_ROLES, resolveRoleDispatch, resolveRoleRoute, resolveRoutingConfigPath } from "./routing-config.mjs";
 import { resolveOutputConfigPath } from "./output-config.mjs";
 import { resolveCompactionConfigPath } from "./compaction-config.mjs";
 import { resolveSkillSourceConfigPath } from "./skill-source-config.mjs";
@@ -59,6 +59,7 @@ export function resolveConfig(rawConfig: unknown = {}): RuntimeConfig {
   const raw = assertPlainObject(rawConfig, "config");
   const routing = assertPlainObject(raw.routing, "config.routing");
   const roles = assertPlainObject(routing.roles, "config.routing.roles");
+  const dispatch = assertPlainObject(routing.dispatch, "config.routing.dispatch");
   const governance = assertPlainObject(raw.governance, "config.governance");
   const output = assertPlainObject(raw.output, "config.output");
   const compaction = assertPlainObject(raw.compaction, "config.compaction");
@@ -80,6 +81,7 @@ export function resolveConfig(rawConfig: unknown = {}): RuntimeConfig {
     ?? process.env.ODAI_COMPACTION_CACHE_RETENTION
     ?? "provider-default";
   const unknownRoles = Object.keys(roles).filter((role) => !(ROUTED_ROLES as readonly string[]).includes(role));
+  const unknownDispatchRoles = Object.keys(dispatch).filter((role) => !(ROUTED_ROLES as readonly string[]).includes(role));
   const unknownOutputFields = Object.keys(output).filter((field) => field !== "configPath");
   const unknownCompactionFields = Object.keys(compaction).filter((field) => !["cacheRetention", "configPath"].includes(field));
   const unknownMemoryFields = Object.keys(memory).filter((field) => !["mode", "storePath", "maxRetrieved"].includes(field));
@@ -95,6 +97,9 @@ export function resolveConfig(rawConfig: unknown = {}): RuntimeConfig {
   }
   if (unknownRoles.length > 0) {
     throw new TypeError(`config.routing.roles has unknown roles: ${unknownRoles.join(", ")}`);
+  }
+  if (unknownDispatchRoles.length > 0) {
+    throw new TypeError(`config.routing.dispatch has unknown roles: ${unknownDispatchRoles.join(", ")}`);
   }
   if (unknownOutputFields.length > 0) {
     throw new TypeError(`config.output has unknown fields: ${unknownOutputFields.join(", ")}`);
@@ -136,6 +141,10 @@ export function resolveConfig(rawConfig: unknown = {}): RuntimeConfig {
       roles: Object.freeze(Object.fromEntries(ROUTED_ROLES.map((role) => [
         role,
         resolveRoleRoute(roles[role], role),
+      ]))),
+      dispatch: Object.freeze(Object.fromEntries(ROUTED_ROLES.map((role) => [
+        role,
+        resolveRoleDispatch(dispatch[role], role),
       ]))),
     }),
     governance: Object.freeze({

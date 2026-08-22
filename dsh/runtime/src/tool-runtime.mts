@@ -11,8 +11,11 @@ import { HUMAN_CARE_REFERENCE_PATH, createHumanCareTool } from "./human-care.mjs
 import { HUMAN_SAFETY_REFERENCE_PATH, createHumanSafetyTool } from "./human-safety.mjs";
 import { createHumanSafetyContinuityTool } from "./human-safety-continuity.mjs";
 import { activeRouteCard, createRouteCardTool, unsettledRouteCard } from "./route-card.mjs";
-import { createResponsibilityGapTool } from "./responsibility-gap.mjs";
+import { createResponsibilityGapTool, resolveResponsibilityGap } from "./responsibility-gap.mjs";
 import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
+import { createResponsibilityReturnTool } from "./responsibility-return.mjs";
+import type { ResponsibilityReturnResult } from "./responsibility-return.mjs";
+import type { ResponsibilityScope } from "./responsibility-scope.mjs";
 import { createSkillSourceConfigTool } from "./skill-source-config.mjs";
 import { createSkillEvolutionTool, applySkillEvolutionSelection } from "./skill-evolution.mjs";
 import { createSemanticMemoryTool, latestDirectUserMessage } from "./semantic-memory.mjs";
@@ -24,8 +27,8 @@ import type { SkillSelection } from "./runtime-support.mjs";
 import type { DshAgent, DshEvent, DshRuntimeContext, ModelRoute, RuntimeConfig, RuntimeEventData, RuntimeLogger, ToolExecution, ToolResult, UnknownRecord } from "./runtime-types.mjs";
 
 interface RouteProtection extends UnknownRecord { scopeId?: string }
-interface ExposureOptions { turn?: number; step?: number; routeCard?: boolean }
-interface PromptInstaller { install(deps: { pendingResponsibilityGap: ToolRuntimeDependencies["pendingResponsibilityGap"]; syncToolExposure: (agent: DshAgent, activation: ContextActivation, options: { turn?: number; step: number; routeCard: boolean }) => readonly string[] }): void }
+interface ExposureOptions { turn?: number; step?: number; routeCard?: boolean; responsibilityReturn?: boolean }
+interface PromptInstaller { install(deps: { pendingResponsibilityGap: ToolRuntimeDependencies["pendingResponsibilityGap"]; syncToolExposure: (agent: DshAgent, activation: ContextActivation, options: { turn?: number; step: number; routeCard: boolean; responsibilityReturn: boolean }) => readonly string[] }): void }
 interface ToolRuntimeDependencies {
   appendEvent(agent: DshAgent, type: string, data: object): void;
   baseSelection: SkillSelection;
@@ -40,12 +43,14 @@ interface ToolRuntimeDependencies {
   logger: RuntimeLogger;
   pendingResponsibilityGap(agent: DshAgent, turn: number | undefined, step: number): ResponsibilityGapProposal | undefined;
   promptRuntime: PromptInstaller;
+  responsibilityScopes: WeakMap<DshAgent, ResponsibilityScope>;
   routeProtections: WeakMap<DshAgent, RouteProtection>;
   selectOutputForAgent(): { policy: OutputPolicy };
+  stopResponsibilityScope(agent: DshAgent, reason: string, position?: RuntimeEventData): ResponsibilityScope | undefined;
 }
 
 export function installToolRuntime(deps: ToolRuntimeDependencies): void {
-  const { appendEvent, baseSelection, bundled, config, ctx, evidence, evolutionDisabled, explicitSkillPath, hasSessionEvent, humanSafetyContinuityStorePath, logger, pendingResponsibilityGap, promptRuntime, routeProtections, selectOutputForAgent } = deps;
+  const { appendEvent, baseSelection, bundled, config, ctx, evidence, evolutionDisabled, explicitSkillPath, hasSessionEvent, humanSafetyContinuityStorePath, logger, pendingResponsibilityGap, promptRuntime, responsibilityScopes, routeProtections, selectOutputForAgent, stopResponsibilityScope } = deps;
   const onDenied = (execution: ToolExecution & { agent: DshAgent }, reason: string) => {
     appendEvent(execution.agent, "odai/governance-denied", {
       callId: String(execution.callId),
@@ -79,6 +84,7 @@ export function installToolRuntime(deps: ToolRuntimeDependencies): void {
   }));
   ctx.tools.register(createRoutingConfigTool(config.routing.configPath, {
     configuredRoles: config.routing.roles,
+    configuredDispatch: config.routing.dispatch,
     resolveCallConfig(route: ModelRoute, signal?: AbortSignal) {
       return ctx.llm.resolveCallConfig(route, signal);
     },
@@ -116,6 +122,44 @@ export function installToolRuntime(deps: ToolRuntimeDependencies): void {
         ...(step === undefined ? {} : { step }),
         ...proposal,
       });
+    },
+  }));
+  ctx.tools.register(createResponsibilityReturnTool({
+    activeScopeFor(agent) {
+      return responsibilityScopes.get(agent);
+    },
+    activeCardFor(agent) {
+      return activeRouteCard(evidence.events(agent));
+    },
+    onReturned(agent, result: ResponsibilityReturnResult) {
+      const turn = currentAgentTurn(agent);
+      const step = currentAgentStep(agent);
+      const stopped = stopResponsibilityScope(agent, "responsibility-returned", {
+        ...(step === undefined ? {} : { step }),
+        scopeId: result.scopeId,
+      });
+      if (!stopped) throw new Error(`responsibility scope ${result.scopeId} is no longer active`);
+      appendEvent(agent, "odai/responsibility-returned", {
+        ...(turn === undefined ? {} : { turn }),
+        ...(step === undefined ? {} : { step }),
+        ...result,
+      });
+      if (result.target === "executor") {
+        const proposal = resolveResponsibilityGap({
+          responsibility: "executor",
+          gap: result.summary,
+          evidenceRefs: [
+            `route-card:${result.routeCardId}`,
+            ...result.evidenceRefs,
+          ],
+          expectedChange: "Implement the authorized frozen route card and return verifiable evidence to the controller.",
+        });
+        appendEvent(agent, "odai/responsibility-gap", {
+          ...(turn === undefined ? {} : { turn }),
+          ...(step === undefined ? {} : { step }),
+          ...proposal,
+        });
+      }
     },
   }));
   ctx.tools.register(createRouteCardTool({
@@ -164,7 +208,7 @@ export function installToolRuntime(deps: ToolRuntimeDependencies): void {
     isChild: isSubagent,
     responsibilityRoutesFor() {
       try {
-        return effectiveRoutingSnapshot(config.routing.configPath, config.routing.roles).roles;
+        return effectiveRoutingSnapshot(config.routing.configPath, config.routing.roles, config.routing.dispatch).roles;
       } catch {
         return undefined;
       }
@@ -207,7 +251,11 @@ export function installToolRuntime(deps: ToolRuntimeDependencies): void {
     options: ExposureOptions = {},
   ): readonly string[] => {
     const child = isSubagentSession(agent);
-    const activeNames = activeOdaiToolNames(activation, { child, routeCard: options.routeCard === true });
+    const activeNames = activeOdaiToolNames(activation, {
+      child,
+      routeCard: options.routeCard === true,
+      responsibilityReturn: options.responsibilityReturn === true,
+    });
     const deniedNames = [
       ...inactiveOdaiToolNames(activeNames),
       ...(child ? ODAI_CORE_TOOL_NAMES : []),

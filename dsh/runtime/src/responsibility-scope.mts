@@ -4,11 +4,11 @@ import type { DshEvent, DshMessage, ModelRoute, RuntimeEventData, UnknownRecord 
 import type { RouteDecision } from "./router.mjs";
 import type { RouteCard } from "./route-card.mjs";
 
-export type InPlaceResponsibility = "planner" | "reviewer" | "executor" | "frontend";
+export type InPlaceResponsibility = "researcher" | "planner" | "reviewer" | "executor" | "frontend";
 export type ResponsibilityContinuationPolicy = "read-only-tool-chain" | "bounded-work-tool-chain";
 export type ResponsibilityScopeState = "pending" | "active";
 
-const SHORT_SCOPE_ROLES = new Set<InPlaceResponsibility>(["planner", "reviewer"]);
+const SHORT_SCOPE_ROLES = new Set<InPlaceResponsibility>(["researcher", "planner", "reviewer"]);
 const WORK_SCOPE_ROLES = new Set<InPlaceResponsibility>(["executor", "frontend"]);
 
 export interface ResponsibilityScope {
@@ -231,7 +231,7 @@ export function latestStoppedResponsibilityScope(events: readonly DshEvent[] | u
 }
 
 function isInPlaceResponsibility(value: unknown): value is InPlaceResponsibility {
-  return value === "planner" || value === "reviewer" || value === "executor" || value === "frontend";
+  return value === "researcher" || value === "planner" || value === "reviewer" || value === "executor" || value === "frontend";
 }
 
 function isRouteCard(value: unknown): value is RouteCard {
@@ -297,7 +297,7 @@ export function pendingResponsibilityScopeRestoration(events: readonly DshEvent[
     if (candidate
       && event?.type === "odai/responsibility-scope-restored"
       && event.data?.scopeId === candidate.scopeId
-      && event.data?.status === "applied") candidate = undefined;
+      && (event.data?.status === "applied" || event.data?.status === "chained")) candidate = undefined;
   }
   return candidate;
 }

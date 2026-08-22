@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -51,13 +51,40 @@ test("responsibility mappings are probed before persistence and invalidated with
     const route = { provider: "openai", model: "gpt-5.6-sol", reasoningEffort: "xhigh" };
     const tool = createRoutingConfigTool(path, { resolveCallConfig: async (config) => ({ config }) });
     await tool.execute({ action: "set", responsibility: "planner", ...route }, execution);
+    await tool.execute({ action: "set-dispatch", responsibility: "planner", dispatch: "child" }, execution);
     assert.deepEqual(readRoutingStore(path).roles.planner, route);
+    assert.equal(readRoutingStore(path).schemaVersion, 2);
+    assert.equal(readRoutingStore(path).dispatch.planner, "child");
+    assert.throws(
+      () => tool.execute({ action: "set-dispatch", responsibility: "executor", dispatch: "child" }, execution),
+      /executor must be same-turn/u,
+    );
     assert.equal(invalidatePersistedRoleRoute(path, "planner", { ...route, model: "other" }).invalidated, false);
     const invalidated = invalidatePersistedRoleRoute(path, "planner", route);
     assert.equal(invalidated.invalidated, true);
     assert.equal(existsSync(invalidated.backupPath), true);
     assert.equal(readRoutingStore(path).roles.planner, undefined);
+    assert.equal(readRoutingStore(path).dispatch.planner, "child");
     assert.equal(readdirSync(root).some((name) => name.startsWith("routing.json.invalidated-")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("schema 1 routing stores remain readable and upgrade without losing model mappings", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "odai-routing-schema-"));
+  try {
+    const path = resolve(root, "routing.json");
+    const planner = { provider: "openai", model: "legacy-planner" };
+    writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, roles: { planner } })}\n`, "utf8");
+    assert.deepEqual(readRoutingStore(path), { schemaVersion: 1, roles: { planner }, dispatch: {} });
+    const tool = createRoutingConfigTool(path);
+    await tool.execute({ action: "set-dispatch", responsibility: "planner", dispatch: "child" }, execution);
+    assert.deepEqual(readRoutingStore(path), {
+      schemaVersion: 2,
+      roles: { planner },
+      dispatch: { planner: "child" },
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

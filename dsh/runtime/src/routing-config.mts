@@ -19,22 +19,27 @@ import {
   type OutputPolicy,
   type ResponsibilityOutputBudgets,
 } from "./output-config.mjs";
-import type { DshAgent, ModelRoute, RuntimeTool, UnknownRecord } from "./runtime-types.mjs";
+import type { DshAgent, ModelRoute, ResponsibilityDispatch, RuntimeTool, UnknownRecord } from "./runtime-types.mjs";
 import { isUnknownRecord } from "./runtime-types.mjs";
 
 export const CONFIGURABLE_ROLES = Object.freeze(["researcher", "planner", "executor", "reviewer", "frontend"] as const);
 export type ConfigurableRole = (typeof CONFIGURABLE_ROLES)[number];
 export type RoleRoutes = Partial<Record<ConfigurableRole, ModelRoute>>;
 export type RoleRouteSources = Partial<Record<ConfigurableRole, "persisted-mapping" | "deployment-config">>;
+export type RoleDispatches = Partial<Record<ConfigurableRole, ResponsibilityDispatch>>;
+export type RoleDispatchSources = Partial<Record<ConfigurableRole, "persisted-config" | "deployment-config">>;
 
 export interface RoutingStore {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
   readonly roles: Readonly<RoleRoutes>;
+  readonly dispatch: Readonly<RoleDispatches>;
 }
 
 export interface RoutingSnapshot {
   readonly roles: Readonly<RoleRoutes>;
   readonly sources: Readonly<RoleRouteSources>;
+  readonly dispatch: Readonly<RoleDispatches>;
+  readonly dispatchSources: Readonly<RoleDispatchSources>;
 }
 
 export interface LatestRouteReceipt {
@@ -60,8 +65,9 @@ export const ROUTING_CONFIG_PROMPT = [
   "## Odai responsibility model configuration",
   "When the user naturally asks to inspect, set, change, or remove the research/investigation, planning/planner, execution/executor, review/acceptance/reviewer, or frontend design/implementation model, use odai_routing_config.",
   "Translate the user's natural responsibility wording into the tool's responsibility field. Do not require internal routing terms or a special prompt form.",
-  "For set, call the tool only after the user explicitly supplies both provider and model. Pass reasoningEffort or maxTokens only when the user supplies them; otherwise omit them.",
-  "Never infer, recommend as chosen, or silently select any provider, model, effort, token limit, or price. Ask a concise clarification when provider or model is ambiguous.",
+  "For a model set, call the tool only after the user explicitly supplies both provider and model. Pass reasoningEffort or maxTokens only when the user supplies them; otherwise omit them.",
+  "A user may independently set or reset one responsibility's dispatch. researcher, planner, reviewer, and frontend accept same-turn or child; executor accepts same-turn only. Do not require provider/model again for a dispatch-only change.",
+  "Never infer, recommend as chosen, or silently select any provider, model, effort, token limit, dispatch, or price. Ask a concise clarification when a requested value is ambiguous.",
   "Researcher routing is task-gated but not price-aware. A researcher mapping enables the narrow trigger but does not guarantee lower cost; compare actual provider prices and measured usage without inventing either.",
   "A generic subagent is not proof that a configured responsibility ran. When a real responsibility gap emerges after initial routing and manual delegation is necessary, begin the subagent label with `odai-<responsibility>` followed by a space or colon; otherwise keep it generic and do not claim the responsibility mapping was used.",
   "Do not ask the user to edit YAML, JSON, managed Agent files, or Plugin configuration. The tool owns persistence. A set/remove change applies from the next user turn.",
@@ -69,7 +75,9 @@ export const ROUTING_CONFIG_PROMPT = [
 ].join("\n");
 
 const ROLE_ROUTE_FIELDS = new Set<string>(["provider", "model", "reasoningEffort", "maxTokens"]);
-const STORE_SCHEMA_VERSION = 1;
+const STORE_SCHEMA_VERSION = 2;
+const SUPPORTED_STORE_SCHEMA_VERSIONS = new Set([1, STORE_SCHEMA_VERSION]);
+const DISPATCH_VALUES = new Set<ResponsibilityDispatch>(["same-turn", "child"]);
 
 function isConfigurableRole(value: unknown): value is ConfigurableRole {
   return typeof value === "string" && (CONFIGURABLE_ROLES as readonly string[]).includes(value);
@@ -111,6 +119,18 @@ export function resolveRoleRoute(value: unknown, role: unknown): Readonly<ModelR
   });
 }
 
+export function resolveRoleDispatch(value: unknown, role: unknown): ResponsibilityDispatch | undefined {
+  if (value === undefined) return undefined;
+  if (!isConfigurableRole(role)) throw new TypeError(`unknown odai routing responsibility: ${String(role)}`);
+  if (typeof value !== "string" || !DISPATCH_VALUES.has(value as ResponsibilityDispatch)) {
+    throw new TypeError(`routing dispatch ${role} must be same-turn or child`);
+  }
+  if (role === "executor" && value === "child") {
+    throw new TypeError("routing dispatch executor must be same-turn; child executors cannot satisfy the controller-owned write boundary");
+  }
+  return value as ResponsibilityDispatch;
+}
+
 export function resolveRoutingConfigPath(
   configuredPath: unknown,
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -129,7 +149,7 @@ export function resolveRoutingConfigPath(
 
 export function readRoutingStore(configPath: string): Readonly<RoutingStore> {
   if (!existsSync(configPath)) {
-    return Object.freeze({ schemaVersion: STORE_SCHEMA_VERSION, roles: Object.freeze({}) });
+    return Object.freeze({ schemaVersion: STORE_SCHEMA_VERSION, roles: Object.freeze({}), dispatch: Object.freeze({}) });
   }
 
   let parsed: unknown;
@@ -139,27 +159,43 @@ export function readRoutingStore(configPath: string): Readonly<RoutingStore> {
     throw new Error(`cannot read odai routing config ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!isUnknownRecord(parsed)) throw new TypeError(`odai routing config ${configPath} must be an object`);
-  const unknownStoreFields = Object.keys(parsed).filter((field) => !["schemaVersion", "roles"].includes(field));
+  if (typeof parsed.schemaVersion !== "number" || !SUPPORTED_STORE_SCHEMA_VERSIONS.has(parsed.schemaVersion)) {
+    throw new TypeError(`odai routing config ${configPath} has unsupported schemaVersion ${String(parsed.schemaVersion)}`);
+  }
+  const allowedStoreFields = parsed.schemaVersion === 1 ? ["schemaVersion", "roles"] : ["schemaVersion", "roles", "dispatch"];
+  const unknownStoreFields = Object.keys(parsed).filter((field) => !allowedStoreFields.includes(field));
   if (unknownStoreFields.length > 0) {
     throw new TypeError(`odai routing config ${configPath} has unknown fields: ${unknownStoreFields.join(", ")}`);
   }
-  if (parsed.schemaVersion !== STORE_SCHEMA_VERSION) {
-    throw new TypeError(`odai routing config ${configPath} has unsupported schemaVersion ${String(parsed.schemaVersion)}`);
-  }
   if (!isUnknownRecord(parsed.roles)) throw new TypeError(`odai routing config ${configPath}.roles must be an object`);
   const rawRoles = parsed.roles;
+  const rawDispatch = parsed.schemaVersion === 1
+    ? {}
+    : parsed.dispatch === undefined
+      ? {}
+      : isUnknownRecord(parsed.dispatch)
+        ? parsed.dispatch
+        : (() => { throw new TypeError(`odai routing config ${configPath}.dispatch must be an object`); })();
   const unknownRoles = Object.keys(rawRoles).filter((role) => !isConfigurableRole(role));
+  const unknownDispatchRoles = Object.keys(rawDispatch).filter((role) => !isConfigurableRole(role));
   if (unknownRoles.length > 0) {
     throw new TypeError(`odai routing config ${configPath} has unknown roles: ${unknownRoles.join(", ")}`);
   }
+  if (unknownDispatchRoles.length > 0) {
+    throw new TypeError(`odai routing config ${configPath} has unknown dispatch roles: ${unknownDispatchRoles.join(", ")}`);
+  }
   const entries: [ConfigurableRole, ModelRoute][] = [];
+  const dispatchEntries: [ConfigurableRole, ResponsibilityDispatch][] = [];
   for (const role of CONFIGURABLE_ROLES) {
     const route = resolveRoleRoute(rawRoles[role], role);
+    const dispatch = resolveRoleDispatch(rawDispatch[role], role);
     if (route) entries.push([role, route]);
+    if (dispatch) dispatchEntries.push([role, dispatch]);
   }
   return Object.freeze({
-    schemaVersion: STORE_SCHEMA_VERSION,
+    schemaVersion: parsed.schemaVersion as 1 | 2,
     roles: Object.freeze(Object.fromEntries(entries)),
+    dispatch: Object.freeze(Object.fromEntries(dispatchEntries)),
   });
 }
 
@@ -174,23 +210,37 @@ export function effectiveRoleRoute(
 export function effectiveRoutingSnapshot(
   configPath: string,
   configuredRoles: Readonly<RoleRoutes> = {},
+  configuredDispatch: Readonly<RoleDispatches> = {},
 ): Readonly<RoutingSnapshot> {
-  const persisted = readRoutingStore(configPath).roles;
+  const persisted = readRoutingStore(configPath);
   const roles: RoleRoutes = {};
   const sources: RoleRouteSources = {};
+  const dispatch: RoleDispatches = {};
+  const dispatchSources: RoleDispatchSources = {};
   for (const role of CONFIGURABLE_ROLES) {
-    const route = persisted[role] ?? configuredRoles[role];
-    if (!route) continue;
-    roles[role] = route;
-    sources[role] = persisted[role] ? "persisted-mapping" : "deployment-config";
+    const route = persisted.roles[role] ?? configuredRoles[role];
+    const roleDispatch = persisted.dispatch[role] ?? configuredDispatch[role];
+    if (route) {
+      roles[role] = route;
+      sources[role] = persisted.roles[role] ? "persisted-mapping" : "deployment-config";
+    }
+    if (roleDispatch) {
+      dispatch[role] = roleDispatch;
+      dispatchSources[role] = persisted.dispatch[role] ? "persisted-config" : "deployment-config";
+    }
   }
-  return Object.freeze({ roles: Object.freeze(roles), sources: Object.freeze(sources) });
+  return Object.freeze({
+    roles: Object.freeze(roles),
+    sources: Object.freeze(sources),
+    dispatch: Object.freeze(dispatch),
+    dispatchSources: Object.freeze(dispatchSources),
+  });
 }
 
-function writeRoutingStore(configPath: string, roles: Readonly<RoleRoutes>): void {
+function writeRoutingStore(configPath: string, roles: Readonly<RoleRoutes>, dispatch: Readonly<RoleDispatches>): void {
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   const temporary = `${configPath}.tmp-${process.pid}-${randomUUID()}`;
-  const value = `${JSON.stringify({ schemaVersion: STORE_SCHEMA_VERSION, roles }, null, 2)}\n`;
+  const value = `${JSON.stringify({ schemaVersion: STORE_SCHEMA_VERSION, roles, dispatch }, null, 2)}\n`;
   try {
     writeFileSync(temporary, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
     renameSync(temporary, configPath);
@@ -251,7 +301,7 @@ export function invalidatePersistedRoleRoute(
     copyFileSync(configPath, backupPath);
     const roles: RoleRoutes = { ...current.roles };
     delete roles[role];
-    writeRoutingStore(configPath, roles);
+    writeRoutingStore(configPath, roles, current.dispatch);
     return Object.freeze({ invalidated: true, backupPath, route: persisted });
   } finally {
     releaseLock();
@@ -272,7 +322,7 @@ function routeSchema(required: boolean): UnknownRecord {
   };
 }
 
-export type RoutingConfigAction = "show" | "set" | "remove";
+export type RoutingConfigAction = "show" | "set" | "remove" | "set-dispatch" | "reset-dispatch";
 
 export interface RoutingConfigResult {
   action: RoutingConfigAction;
@@ -280,6 +330,8 @@ export interface RoutingConfigResult {
   configPath: string;
   roles: Readonly<RoleRoutes>;
   sources: Readonly<RoleRouteSources>;
+  dispatch: Readonly<RoleDispatches>;
+  dispatchSources: Readonly<RoleDispatchSources>;
   requiresNextTurn: boolean;
   responsibilityBudgets?: ResponsibilityOutputBudgets;
   recoveredInvalidStore?: true;
@@ -302,6 +354,8 @@ function resultFor(
     configPath,
     roles: snapshot.roles,
     sources: snapshot.sources,
+    dispatch: snapshot.dispatch,
+    dispatchSources: snapshot.dispatchSources,
     requiresNextTurn: action !== "show",
     ...(responsibilityBudgets ? { responsibilityBudgets } : {}),
     ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
@@ -310,9 +364,10 @@ function resultFor(
 }
 
 export interface RoutingConfiguredEvent {
-  action: "set" | "remove";
+  action: "set" | "remove" | "set-dispatch" | "reset-dispatch";
   responsibility: ConfigurableRole;
   route?: ModelRoute;
+  dispatch?: ResponsibilityDispatch;
   validationStatus?: "verified";
   recoveredInvalidStore?: true;
 }
@@ -320,6 +375,7 @@ export interface RoutingConfiguredEvent {
 export interface RoutingConfigToolOptions {
   onConfigured?(agent: DshAgent, event: RoutingConfiguredEvent): void;
   configuredRoles?: Readonly<RoleRoutes>;
+  configuredDispatch?: Readonly<RoleDispatches>;
   latestRouteFor?(agent: DshAgent): LatestRouteReceipt | undefined;
   outputPolicyFor?(): OutputPolicy | undefined;
   resolveCallConfig?: ResolveCallConfig;
@@ -331,17 +387,18 @@ export function createRoutingConfigTool(
 ): RuntimeTool<unknown, RoutingConfigResult> {
   const onConfigured = typeof options.onConfigured === "function" ? options.onConfigured : () => {};
   const configuredRoles = options.configuredRoles ?? {};
+  const configuredDispatch = options.configuredDispatch ?? {};
   const latestRouteFor = typeof options.latestRouteFor === "function" ? options.latestRouteFor : () => undefined;
   const outputPolicyFor = typeof options.outputPolicyFor === "function" ? options.outputPolicyFor : () => undefined;
   const resolveCallConfig = typeof options.resolveCallConfig === "function" ? options.resolveCallConfig : undefined;
   return {
     name: "odai_routing_config",
     description: [
-      "Inspect effective Odai model mappings and the latest current-session route receipt, or set/remove persisted mappings for researcher, planner, executor, reviewer, and frontend responsibilities.",
-      "Use this only when the user naturally and explicitly asks to inspect/remove a mapping or names the provider/model to set.",
-      "Never choose a provider, model, reasoning effort, token limit, or price on the user's behalf.",
+      "Inspect effective Odai model mappings, per-responsibility dispatch overrides, and the latest current-session route receipt; set/remove mappings or set/reset dispatch for researcher, planner, executor, reviewer, and frontend responsibilities.",
+      "Use this only when the user naturally and explicitly asks to inspect/remove a mapping, names the provider/model to set, or explicitly chooses same-turn/child dispatch.",
+      "Never choose a provider, model, reasoning effort, token limit, or price on the user's behalf. Never choose a dispatch mode on the user's behalf.",
       "Researcher routing is task-gated but not price-aware; its mapping does not guarantee lower cost.",
-      "For set/remove, handle one responsibility per call. Persisted mappings are shared by the Odai DSH Plugin and Agent and apply from the next user turn.",
+      "For every configuration change, handle one responsibility per call. Persisted model mappings and dispatch overrides are shared by the Odai DSH Plugin and Agent and apply from the next user turn.",
       "Results expose configured in-place responsibility ceilings and warn when planner, executor, or frontend mappings without maxTokens inherit the controller ceiling; never invent an override.",
     ].join(" "),
     parameters: {
@@ -349,25 +406,28 @@ export function createRoutingConfigTool(
       additionalProperties: false,
       required: ["action"],
       properties: {
-        action: { type: "string", enum: ["show", "set", "remove"], description: "Show all mappings, set one user-specified mapping, or remove one mapping." },
-        responsibility: { type: "string", enum: [...CONFIGURABLE_ROLES], description: "Required for set/remove; omitted for show." },
+        action: { type: "string", enum: ["show", "set", "remove", "set-dispatch", "reset-dispatch"], description: "Show configuration, set/remove one model mapping, or set/reset one dispatch override." },
+        responsibility: { type: "string", enum: [...CONFIGURABLE_ROLES], description: "Required for every action except show." },
         provider: { type: "string", description: "Provider id explicitly supplied by the user; required for set." },
         model: { type: "string", description: "Model id explicitly supplied by the user; required for set." },
         reasoningEffort: { type: "string", description: "Optional reasoning effort explicitly supplied by the user." },
         maxTokens: { type: "integer", description: "Optional positive output limit explicitly supplied by the user. It limits routed child requests and explicitly overrides the global controller ceiling only inside the same planner, executor, or frontend responsibility scope when that responsibility runs in-place." },
+        dispatch: { type: "string", enum: ["same-turn", "child"], description: "Required for set-dispatch. executor accepts same-turn only; all other responsibilities accept same-turn or child." },
       },
     },
     output: {
       schema: {
         type: "object",
         additionalProperties: false,
-        required: ["action", "configPath", "roles", "sources", "requiresNextTurn"],
+        required: ["action", "configPath", "roles", "sources", "dispatch", "dispatchSources", "requiresNextTurn"],
         properties: {
-          action: { type: "string", enum: ["show", "set", "remove"] },
+          action: { type: "string", enum: ["show", "set", "remove", "set-dispatch", "reset-dispatch"] },
           responsibility: { type: "string", enum: [...CONFIGURABLE_ROLES] },
           configPath: { type: "string" },
           roles: { type: "object", additionalProperties: false, properties: Object.fromEntries(CONFIGURABLE_ROLES.map((role) => [role, routeSchema(true)])) },
           sources: { type: "object", additionalProperties: false, properties: Object.fromEntries(CONFIGURABLE_ROLES.map((role) => [role, { type: "string", enum: ["persisted-mapping", "deployment-config"] }])) },
+          dispatch: { type: "object", additionalProperties: false, properties: Object.fromEntries(CONFIGURABLE_ROLES.map((role) => [role, { type: "string", enum: ["same-turn", "child"] }])) },
+          dispatchSources: { type: "object", additionalProperties: false, properties: Object.fromEntries(CONFIGURABLE_ROLES.map((role) => [role, { type: "string", enum: ["persisted-config", "deployment-config"] }])) },
           requiresNextTurn: { type: "boolean" },
           recoveredInvalidStore: { type: "boolean" },
           responsibilityBudgets: {
@@ -410,6 +470,9 @@ export function createRoutingConfigTool(
             return `${role}: ${route.provider}/${route.model}${options.length > 0 ? ` (${options.join(", ")})` : ""} [${value.sources[role as ConfigurableRole]}]`;
           })
           .join("\n") || "No Odai responsibility models are configured.";
+        const dispatch = Object.entries(value.dispatch)
+          .map(([role, mode]) => `${role}: ${mode} [${value.dispatchSources[role as ConfigurableRole]}]`)
+          .join("\n") || "No per-responsibility dispatch overrides are configured; legacy defaults apply.";
         const responsibilityBudgets = Object.entries(value.responsibilityBudgets ?? {});
         const configuredResponsibilities = responsibilityBudgets.length > 0
           ? `\nIn-place responsibility ceilings: ${responsibilityBudgets.map(([responsibility, budget]) => (
@@ -444,7 +507,7 @@ export function createRoutingConfigTool(
         return [{
           type: "text",
           text: [
-            `${value.action === "show" ? "Current" : "Updated"} Odai routing configuration:\n${mapping}`,
+            `${value.action === "show" ? "Current" : "Updated"} Odai routing configuration:\n${mapping}\nDispatch overrides:\n${dispatch}`,
             ...(value.recoveredInvalidStore ? ["\nAn invalid prior store was preserved and replaced."] : []),
             configuredResponsibilities,
             inheritedWarnings,
@@ -464,13 +527,16 @@ export function createRoutingConfigTool(
       }
       if (!isUnknownRecord(arguments_)) throw new TypeError("arguments must be an object");
       const action = arguments_.action;
-      if (action !== "show" && action !== "set" && action !== "remove") throw new TypeError("action must be show, set, or remove");
+      if (!["show", "set", "remove", "set-dispatch", "reset-dispatch"].includes(String(action))) {
+        throw new TypeError("action must be show, set, remove, set-dispatch, or reset-dispatch");
+      }
 
-      if (action === "show") {
+      const routingAction = action as RoutingConfigAction;
+      if (routingAction === "show") {
         return Promise.resolve(resultFor(
           configPath,
           "show",
-          effectiveRoutingSnapshot(configPath, configuredRoles),
+          effectiveRoutingSnapshot(configPath, configuredRoles, configuredDispatch),
           undefined,
           false,
           latestRouteFor(agent),
@@ -478,47 +544,59 @@ export function createRoutingConfigTool(
         ));
       }
       if (!isConfigurableRole(arguments_.responsibility)) {
-        throw new TypeError("responsibility must be researcher, planner, executor, reviewer, or frontend for set/remove");
+        throw new TypeError("responsibility must be researcher, planner, executor, reviewer, or frontend for configuration changes");
       }
       const responsibility = arguments_.responsibility;
-      const proposedRoute = action === "set" ? resolveRoleRoute({
+      const proposedRoute = routingAction === "set" ? resolveRoleRoute({
         provider: arguments_.provider,
         model: arguments_.model,
         ...(arguments_.reasoningEffort === undefined ? {} : { reasoningEffort: arguments_.reasoningEffort }),
         ...(arguments_.maxTokens === undefined ? {} : { maxTokens: arguments_.maxTokens }),
       }, responsibility) : undefined;
+      const proposedDispatch = routingAction === "set-dispatch"
+        ? resolveRoleDispatch(arguments_.dispatch, responsibility)
+        : undefined;
 
       const commit = (validationStatus?: string): RoutingConfigResult => {
         const releaseLock = acquireRoutingStoreLock(configPath);
         try {
-          let current: Pick<RoutingStore, "roles">;
+          let current: Pick<RoutingStore, "roles" | "dispatch">;
           let recoveredInvalidStore = false;
           try {
             current = readRoutingStore(configPath);
           } catch (error) {
-            if (action !== "set") {
-              throw new Error("Odai routing configuration is invalid; ask the user to set a responsibility mapping to repair it automatically", { cause: error });
+            if (routingAction !== "set") {
+              throw new Error("Odai routing configuration is invalid; set a responsibility mapping to repair it automatically", { cause: error });
             }
             preserveInvalidRoutingStore(configPath);
-            current = { roles: {} };
+            current = { roles: {}, dispatch: {} };
             recoveredInvalidStore = true;
           }
 
           const roles: RoleRoutes = { ...current.roles };
-          if (action === "remove") delete roles[responsibility];
-          else if (proposedRoute) roles[responsibility] = proposedRoute;
-          writeRoutingStore(configPath, roles);
+          const dispatch: RoleDispatches = { ...current.dispatch };
+          if (routingAction === "remove") {
+            delete roles[responsibility];
+          } else if (routingAction === "set" && proposedRoute) {
+            roles[responsibility] = proposedRoute;
+          } else if (routingAction === "set-dispatch" && proposedDispatch) {
+            dispatch[responsibility] = proposedDispatch;
+          } else if (routingAction === "reset-dispatch") {
+            delete dispatch[responsibility];
+          }
+          writeRoutingStore(configPath, roles, dispatch);
           onConfigured(agent, {
-            action,
+            action: routingAction,
             responsibility,
             ...(roles[responsibility] ? { route: roles[responsibility] } : {}),
+            ...(dispatch[responsibility] ? { dispatch: dispatch[responsibility] } : {}),
             ...(validationStatus === "verified" ? { validationStatus } : {}),
             ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
           });
           return resultFor(
             configPath,
-            action,
-            effectiveRoutingSnapshot(configPath, configuredRoles),
+            routingAction,
+            effectiveRoutingSnapshot(configPath, configuredRoles, configuredDispatch),
             responsibility,
             recoveredInvalidStore,
             undefined,
@@ -528,7 +606,7 @@ export function createRoutingConfigTool(
           releaseLock();
         }
       };
-      if (action === "set" && proposedRoute) {
+      if (routingAction === "set" && proposedRoute) {
         return requireModelRoute(
           resolveCallConfig,
           proposedRoute,

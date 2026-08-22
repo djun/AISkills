@@ -356,6 +356,8 @@ test("config is strict at governance boundaries", () => {
   assert.throws(() => resolveConfig({ governance: { additionalDeniedTools: [""] } }), /non-empty strings/u);
   assert.throws(() => resolveConfig({ routing: { roles: { planner: { provider: "openai" } } } }), /planner\.model/u);
   assert.throws(() => resolveConfig({ routing: { roles: { critic: {} } } }), /unknown roles: critic/u);
+  assert.throws(() => resolveConfig({ routing: { dispatch: { critic: "child" } } }), /dispatch has unknown roles: critic/u);
+  assert.throws(() => resolveConfig({ routing: { dispatch: { executor: "child" } } }), /executor must be same-turn/u);
   assert.throws(() => resolveConfig({ routing: { configPath: "" } }), /configPath must be a non-empty string/u);
   assert.throws(() => resolveConfig({ governance: { skillSource: "latest" } }), /skillSource must be bundled, auto, or user/u);
   assert.throws(() => resolveConfig({ governance: { skillConfigPath: "" } }), /skillConfigPath must be a non-empty string/u);
@@ -385,6 +387,11 @@ test("config is strict at governance boundaries", () => {
   assert.equal(defaults.routing.roles.executor, undefined);
   assert.equal(defaults.routing.roles.reviewer, undefined);
   assert.equal(defaults.routing.roles.frontend, undefined);
+  assert.equal(defaults.routing.dispatch.researcher, undefined);
+  assert.equal(defaults.routing.dispatch.planner, undefined);
+  assert.equal(defaults.routing.dispatch.executor, undefined);
+  assert.equal(defaults.routing.dispatch.reviewer, undefined);
+  assert.equal(defaults.routing.dispatch.frontend, undefined);
   assert.equal(defaults.routing.configPath, resolve(testDshHome, "odai/routing.json"));
   assert.equal(defaults.governance.skillSource, "bundled");
   assert.equal(defaults.governance.skillConfigPath, resolve(testDshHome, "odai/source.json"));
@@ -406,6 +413,10 @@ test("config is strict at governance boundaries", () => {
           reasoningEffort: "high",
         },
       },
+      dispatch: {
+        planner: "child",
+        executor: "same-turn",
+      },
     },
   });
   assert.deepEqual(config.routing.roles.planner, {
@@ -413,6 +424,8 @@ test("config is strict at governance boundaries", () => {
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
   });
+  assert.equal(config.routing.dispatch.planner, "child");
+  assert.equal(config.routing.dispatch.executor, "same-turn");
 });
 
 test("compaction cache retention honors config over the deployment environment", () => {
@@ -1694,6 +1707,7 @@ test("plugin registers canonical prompt, monotonic guard, audit observer, and ro
     "odai_human_care",
     "odai_human_safety",
     "odai_responsibility_gap",
+    "odai_responsibility_return",
     "odai_route_card",
     "odai_skill_source_config",
     "odai_skill_evolution",
@@ -2270,6 +2284,301 @@ test("configured auto mode upgrades the current controller turn without a child"
   });
   assert.equal(findLastEvent(events, (event) => event.type === "odai/responsibility-scope-stopped").data.reason, "direct-user-input");
   assert.deepEqual(await request({ agent, turn: 3, step: 2 }, async () => inherited), inherited);
+});
+
+test("auto mode honors explicit child dispatch for planner and frontend", async () => {
+  const cases = [
+    {
+      role: "planner" as const,
+      route: { provider: "openai", model: "planner-child", reasoningEffort: "high" },
+      message: "checkout 老超时，把客户端超时和重试一起改掉。",
+      events: [responsibilityGapEvent("planner")],
+    },
+    {
+      role: "frontend" as const,
+      route: { provider: "kimi-coding", model: "frontend-child", reasoningEffort: "max" },
+      message: "重新设计并实现完整的运营后台导航、表格、筛选、加载和错误状态。",
+      events: [responsibilityGapEvent("frontend")],
+    },
+  ];
+
+  for (const fixture of cases) {
+    let starts = 0;
+    const ctx = fakeContext({
+      subagents: {
+        async start(_provider: string, options: UnknownRecord) {
+          starts += 1;
+          assert.equal(options.label, `odai-${fixture.role}`);
+          return {
+            localAgent: {
+              session: {
+                events: [{ type: "request/header", data: { header: { config: fixture.route } } }],
+              },
+            },
+            result: Promise.resolve({
+              stopReason: "completed",
+              output: [{ type: "text", text: `${fixture.role} bounded result` }],
+            }),
+            async dispose() {},
+          };
+        },
+      },
+    });
+    apply(ctx, {
+      skillPath,
+      routing: {
+        roles: { [fixture.role]: fixture.route },
+        dispatch: { [fixture.role]: "child" },
+      },
+    });
+    const events: DshEvent[] = [...fixture.events];
+    const agent = {
+      session: {
+        header: {},
+        events,
+        append(type: string, data: RuntimeEventData) { events.push({ type, data }); },
+      },
+    };
+    const result = await ctx.captured.handlers.get("agent/pre-step")(
+      { agent, turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ kind: "enter", messages: [userMessage(fixture.message)] }),
+    );
+    assert.equal(starts, 1, fixture.role);
+    assert.equal(events.some((event) => event.type === "odai/responsibility-scope-started"), false, fixture.role);
+    assert.match(messageText(result.messages.at(-1)), new RegExp(`${fixture.role} bounded result`, "u"));
+    const routed = findLastEvent(events, (event) => event.type === "odai/route-result");
+    assert.equal(routed.data.role, fixture.role);
+    assert.equal(routed.data.status, "completed");
+  }
+});
+
+test("researcher same-turn dispatch returns its read-only packet to the controller", async () => {
+  const researcherRoute = { provider: "openai", model: "researcher-inline" };
+  const controllerRoute = { provider: "openai", model: "controller" };
+  const ctx = fakeContext();
+  apply(ctx, {
+    skillPath,
+    routing: {
+      roles: { researcher: researcherRoute },
+      dispatch: { researcher: "same-turn" },
+    },
+  });
+  const events: DshEvent[] = [responsibilityGapEvent("researcher")];
+  const agent = {
+    session: {
+      header: {},
+      events,
+      append(type: string, data: RuntimeEventData) { events.push({ type, data }); },
+    },
+  };
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("核实当前实现依据再继续")] }),
+  );
+  const researcherRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1 },
+    async () => controllerRoute,
+  );
+  assert.deepEqual(researcherRequest, researcherRoute);
+  const returnTool = ctx.captured.tools.find((tool: TestTool) => tool.name === "odai_responsibility_return");
+  const returned = await returnTool.execute({
+    target: "controller",
+    summary: "Verified bounded evidence packet",
+    evidenceRefs: ["src/router.mts:1"],
+  }, { agent });
+  assert.equal(returned.responsibility, "researcher");
+  assert.equal(returned.target, "controller");
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 2 },
+    async () => researcherRequest,
+  ), controllerRoute);
+});
+
+test("reviewer same-turn findings return to the controller for continued processing", async () => {
+  const reviewerRoute = { provider: "openai", model: "reviewer-inline" };
+  const controllerRoute = { provider: "openai", model: "controller" };
+  const ctx = fakeContext();
+  apply(ctx, {
+    skillPath,
+    routing: {
+      roles: { reviewer: reviewerRoute },
+      dispatch: { reviewer: "same-turn" },
+    },
+  });
+  const events: DshEvent[] = [responsibilityGapEvent("reviewer")];
+  const agent = {
+    session: {
+      header: {},
+      events,
+      append(type: string, data: RuntimeEventData) { events.push({ type, data }); },
+    },
+  };
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("请审查当前实现并把 finding 交回总控继续处理")] }),
+  );
+  const reviewerRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1 },
+    async () => controllerRoute,
+  );
+  assert.deepEqual(reviewerRequest, reviewerRoute);
+  const returnTool = ctx.captured.tools.find((tool: TestTool) => tool.name === "odai_responsibility_return");
+  const returned = await returnTool.execute({
+    target: "controller",
+    summary: "Finding: preserve the controller-owned write boundary.",
+    evidenceRefs: ["dsh/runtime/src/governance.mts"],
+  }, { agent });
+  assert.equal(returned.responsibility, "reviewer");
+  assert.equal(returned.target, "controller");
+  assert.equal(findLastEvent(events, (event) => event.type === "odai/responsibility-returned").data.target, "controller");
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 2 },
+    async () => reviewerRequest,
+  ), controllerRoute);
+});
+
+test("planner handback chains to executor and restores the original controller route", async () => {
+  const plannerRoute = { provider: "openai", model: "planner-inline", reasoningEffort: "high" };
+  const executorRoute = { provider: "openai", model: "executor-inline", reasoningEffort: "xhigh" };
+  const controllerRoute = { provider: "openai", model: "controller", reasoningEffort: "max" };
+  const ctx = fakeContext();
+  apply(ctx, {
+    skillPath,
+    routing: {
+      roles: { planner: plannerRoute, executor: executorRoute },
+      dispatch: { planner: "same-turn", executor: "same-turn" },
+    },
+  });
+  const original = userMessage("请修复并验证当前路由问题");
+  const events: DshEvent[] = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "user/message", seq: 2, data: original },
+    { type: "step/start", seq: 3, data: { turn: 1, step: 1 } },
+    { ...responsibilityGapEvent("planner"), seq: 4 },
+  ];
+  let actualHeader: UnknownRecord | undefined;
+  const agent = {
+    phase: { turn: 1, step: 1 },
+    session: {
+      header: {},
+      events,
+      requestHeader() { return actualHeader; },
+      append(type: string, data: RuntimeEventData) { events.push({ type, data }); },
+    },
+  };
+  const signal = new AbortController().signal;
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 1, step: 1, signal },
+    async () => ({ kind: "enter", messages: [original] }),
+  );
+  const plannerRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1, signal },
+    async () => controllerRoute,
+  );
+  assert.deepEqual(plannerRequest, plannerRoute);
+  actualHeader = { config: plannerRequest };
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "request/header",
+    data: { turn: 1, step: 1, header: actualHeader },
+  });
+
+  const routeCardTool = ctx.captured.tools.find((tool: TestTool) => tool.name === "odai_route_card");
+  const frozen = await routeCardTool.execute({
+    action: "freeze",
+    observableBenefit: true,
+    target: "Implement the bounded dispatch fix",
+    evidence: ["planner verified the affected runtime path"],
+    scope: ["dsh/runtime only"],
+    accept: ["focused dispatch and handback tests pass"],
+    stop: "Stop on public contract mismatch",
+  }, { agent });
+  assert.equal(frozen.card.authorization.status, "authorized");
+  const frozenEventCard = findLastEvent(events, (event) => event.type === "odai/route-card-frozen").data.card;
+  assert.ok(isUnknownRecord(frozenEventCard));
+  assert.equal(frozenEventCard.id, frozen.card.id);
+  const returnTool = ctx.captured.tools.find((tool: TestTool) => tool.name === "odai_responsibility_return");
+  const returned = await returnTool.execute({
+    target: "executor",
+    summary: "The authorized implementation contract is frozen and ready.",
+    evidenceRefs: [`route-card:${frozen.card.id}`, "planner-readonly-evidence"],
+  }, { agent });
+  assert.equal(returned.target, "executor");
+  assert.equal(returned.routeCardId, frozen.card.id);
+  assert.equal(findLastEvent(events, (event) => event.type === "odai/responsibility-returned").data.target, "executor");
+
+  agent.phase.step = 2;
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 1, step: 2, signal },
+    async () => ({ kind: "enter", messages: [original] }),
+  );
+  const executorRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 2, signal },
+    async () => plannerRequest,
+  );
+  assert.deepEqual(executorRequest, executorRoute);
+  const chained = findLastEvent(events, (event) => event.type === "odai/responsibility-scope-restored");
+  assert.equal(chained.data.status, "chained");
+  assert.deepEqual(chained.data.baseRoute, controllerRoute);
+  const executorScope = findLastEvent(events, (event) => event.type === "odai/responsibility-scope-claimed");
+  assert.equal(executorScope.data.role, "executor");
+  assert.deepEqual(executorScope.data.baseRoute, controllerRoute);
+
+  actualHeader = { config: executorRequest };
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "request/header",
+    data: { turn: 1, step: 2, header: actualHeader },
+  });
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/message",
+    data: { turn: 1, step: 2, message: { content: [{ type: "text", text: "implemented and verified" }] } },
+  });
+  const restored = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 3, signal },
+    async () => executorRequest,
+  );
+  assert.deepEqual(restored, controllerRoute);
+});
+
+test("same-turn read-only terminal output is recovered to the controller when handback is missing", async () => {
+  const ctx = fakeContext();
+  apply(ctx, {
+    skillPath,
+    routing: {
+      roles: { reviewer: { provider: "openai", model: "reviewer-inline" } },
+      dispatch: { reviewer: "same-turn" },
+    },
+  });
+  const events: DshEvent[] = [responsibilityGapEvent("reviewer")];
+  const injected: DshMessage[] = [];
+  const agent = {
+    inject(message: DshMessage) { injected.push(message); },
+    session: {
+      header: {},
+      events,
+      append(type: string, data: RuntimeEventData) { events.push({ type, data }); },
+    },
+  };
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("请审查当前实现")] }),
+  );
+  const inherited = { provider: "openai", model: "controller" };
+  const reviewerRequest = await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 1 },
+    async () => inherited,
+  );
+  assert.equal(reviewerRequest.model, "reviewer-inline");
+  ctx.captured.handlers.get("session/event")(agent.session, {
+    type: "assistant/message",
+    data: { turn: 1, step: 1, message: { content: [{ type: "text", text: "looks good" }] } },
+  });
+  assert.equal(injected.length, 1);
+  assert.match(messageText(injected[0]), /unverified read-only draft/u);
+  assert.equal(findLastEvent(events, (event) => event.type === "odai/responsibility-return-missing").data.status, "recovery-injected");
+  assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+    { agent, turn: 1, step: 2 },
+    async () => reviewerRequest,
+  ), inherited);
 });
 
 test("resume restores every in-place responsibility's base route without reviving ownership", async () => {
@@ -4365,8 +4674,32 @@ test("the model can persist every user-specified responsibility mapping", async 
     { provider: "provider-a", model: "model-plan", reasoningEffort: "high", maxTokens: 2_048 },
   );
 
+  const dispatch = {
+    researcher: "same-turn",
+    planner: "child",
+    executor: "same-turn",
+    reviewer: "same-turn",
+    frontend: "child",
+  } as const;
+  for (const [responsibility, mode] of Object.entries(dispatch)) {
+    const configured = await tool.execute({ action: "set-dispatch", responsibility, dispatch: mode }, execution);
+    assert.ok(isUnknownRecord(configured.dispatch));
+    assert.equal(configured.dispatch[responsibility], mode);
+  }
+  const shownDispatch = await tool.execute({ action: "show" }, execution);
+  assert.deepEqual(shownDispatch.dispatch, dispatch);
+  assert.deepEqual(shownDispatch.dispatchSources, Object.fromEntries(
+    Object.keys(dispatch).map((responsibility) => [responsibility, "persisted-config"]),
+  ));
+  assert.match(blockText(tool.output.render({}, shownDispatch)[0]), /planner: child \[persisted-config\]/u);
+
   const removed = await tool.execute({ action: "remove", responsibility: "executor" }, execution);
   assert.equal(removed.roles.executor, undefined);
+  assert.ok(isUnknownRecord(removed.dispatch));
+  assert.equal(removed.dispatch.executor, "same-turn");
+  const resetDispatch = await tool.execute({ action: "reset-dispatch", responsibility: "executor" }, execution);
+  assert.ok(isUnknownRecord(resetDispatch.dispatch));
+  assert.equal(resetDispatch.dispatch.executor, undefined);
   assert.throws(
     () => tool.execute({
       action: "set",

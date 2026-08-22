@@ -2,6 +2,14 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-22 — DSH 0.2.8 responsibility dispatch and handback
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.8`，继续精确支持 `@deepseek-ai/dsh@0.1.0-rc.7`、`0.1.1-rc.1` 与 `0.1.1-rc.2`；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。
+- `researcher`、`planner`、`reviewer` 与 `frontend` 新增可持久化的逐职责 `same-turn` / `child` dispatch；`executor` 保持 controller-owned `same-turn` 写边界。路由存储升级为 schema 2，同时继续读取 schema 1，模型映射与 dispatch override 可独立设置和移除。
+- 新增只读职责 handback：same-turn researcher/planner/reviewer 必须把有界结果交回 controller；planner 只有在 authorized frozen route card 下才能交给 executor。缺失 handback 的终止文本被标记为未验证草稿并自动续回 controller；连续 planner→executor scope 保留原 controller base route。
+- 补齐 planner/frontend child、researcher/reviewer→controller、planner→executor、缺失 handback 恢复、schema 迁移与 executor child 拒绝测试；Agent Standard composition 测试按安装器既有 LF 规范化合同跨平台比较。
+- 全仓 DSH typecheck、Plugin/Runtime `199 passed / 0 failed / 2 Windows symlink skipped`、Agent `20/20`、版本策略与 canonical validator 全部通过；Plugin 与 Agent 的隔离 DSH load probe 通过，Plugin、Agent 与 CLI dry-run 包结束后均无生成目录或 `.tgz` 残留。未执行 npm publish。
+
 ## 2026-08-21 — DSH 0.2.7 routing evidence and rc.2
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.7`，精确支持 `@deepseek-ai/dsh@0.1.0-rc.7`、`0.1.1-rc.1` 与 `0.1.1-rc.2`，不再接受 rc.8；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。本版本保留既有治理、记忆、会话兼容与工具暴露契约，并修正 Planner/Reviewer 责任 gap 与原生证据路由。
