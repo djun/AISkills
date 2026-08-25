@@ -954,7 +954,21 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         interruption: responsibilityContinuation,
       });
       let routeRole = decision.targetRole ?? decision.role;
-      const roleTaskText = researchPacketText ? `${taskText}\n\n${researchPacketText}` : taskText;
+      const responsibilityTaskText = responsibilityGap?.responsibility === routeRole
+        ? [
+            "# Evidence-grounded responsibility gap",
+            JSON.stringify({
+              responsibility: responsibilityGap.responsibility,
+              gap: responsibilityGap.gap,
+              expectedChange: responsibilityGap.expectedChange,
+              evidenceRefs: responsibilityGap.evidenceRefs,
+            }, undefined, 2),
+            "",
+            "# Direct user task",
+            taskText,
+          ].join("\n")
+        : taskText;
+      const roleTaskText = researchPacketText ? `${responsibilityTaskText}\n\n${researchPacketText}` : responsibilityTaskText;
       let roleContext = decision.action === "direct"
         ? undefined
         : buildRoleContextPacket(agent, routeRole, roleTaskText);
@@ -1030,6 +1044,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
           acceptanceCount: localReviewerCoverage.acceptanceCount,
           diffCount: localReviewerCoverage.diffCount,
           testCount: localReviewerCoverage.testCount,
+          checkCount: localReviewerCoverage.checkCount,
           diagnostics: roleContext.diagnostics,
           truncated: roleContext.truncated,
           sufficient: false,
@@ -1063,8 +1078,8 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
                 `An independent reviewer was not started because the bounded packet is incomplete (${JSON.stringify(localReviewerCoverage)}).`,
                 `Evidence diagnostics: ${JSON.stringify(roleContext.diagnostics)}.`,
                 responsibilityGap?.responsibility === "reviewer"
-                  ? "The recorded reviewer gap remains pending and will be reassessed once new acceptance, write, diff, test, failure, or host-evidence diagnostics change the evidence state; do not resubmit it unchanged."
-                  : "Gather project-available acceptance, diff, tests, and matching native tool evidence before submitting a reviewer gap.",
+                  ? "The recorded reviewer gap remains pending and will be reassessed once new acceptance, write, diff, test, check, failure, or host-evidence diagnostics change the evidence state; do not resubmit it unchanged."
+                  : "Gather project-available acceptance, diff, tests or read-only checks, and matching native tool evidence before submitting a reviewer gap.",
                 "Remain on the current controller route only to gather or fix that evidence. A controller-local read-only check is not independent acceptance; do not claim reviewer approval or release on its basis.",
               ].join("\n"),
               "odai reviewer evidence is incomplete; controller continues locally",
@@ -1176,7 +1191,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         }
         rolePreflightVerified = health.status === "verified";
       }
-      roleContext ??= buildRoleContextPacket(agent, routeRole, taskText);
+      roleContext ??= buildRoleContextPacket(agent, routeRole, roleTaskText);
       const roleDispatch = effectiveRoleDispatch(routeRole, roleState.dispatch, config.routing.mode);
       const inPlaceUpgrade = roleDispatch === "same-turn";
       const contextMode = inPlaceUpgrade ? "same-turn" : "bounded-packet";
@@ -1192,6 +1207,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         acceptanceCount: roleContext.coverage.acceptanceCount,
         diffCount: roleContext.coverage.diffCount,
         testCount: roleContext.coverage.testCount,
+        checkCount: roleContext.coverage.checkCount,
         diagnostics: roleContext.diagnostics,
         truncated: roleContext.truncated,
         sufficient: roleContext.sufficient,
@@ -1229,7 +1245,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
                 `Evidence diagnostics: ${JSON.stringify(roleContext.diagnostics)}.`,
                 responsibilityGap?.responsibility === "reviewer"
                   ? "The recorded reviewer gap remains pending for reassessment after the evidence state changes; do not resubmit it unchanged."
-                  : "Gather acceptance, an actual patch diff, successful tests, and matching native tool evidence before submitting a reviewer gap.",
+                  : "Gather acceptance, an actual patch diff, successful tests or read-only checks, and matching native tool evidence before submitting a reviewer gap.",
                 "Do not claim independent acceptance.",
               ].join("\n"),
               "odai reviewer evidence packet is incomplete",

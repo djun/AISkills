@@ -31,7 +31,7 @@ With DSH already installed, run the single Agent package command below. The pack
 npx odai-dsh-agent install
 ```
 
-The installer checks `dsh -V` and currently accepts exactly `0.1.0-rc.7`, `0.1.1-rc.1`, or `0.1.1-rc.2`; `0.2.8` rejects rc.6 and rc.8. It records the detected version in the managed manifest and renders that release's exact Standard composition; any other developer-preview version fails closed.
+The installer checks `dsh -V` and currently accepts exactly `0.1.1-rc.2`; `0.2.9` rejects rc.7, rc.1, and every other developer-preview release. It records the detected version in the managed manifest and installs the rc.2 Standard composition directly.
 
 `DSH_HOME` is honored. An explicit location can be supplied without changing the environment:
 
@@ -41,7 +41,7 @@ npx odai-dsh-agent install --dsh-home /path/to/dsh-home
 
 Open a new DSH session and select `Odai` from the Agent preset picker. Existing sessions retain the preset they were composed with.
 
-In supported DSH rc.7, 0.1.1-rc.1, and 0.1.1-rc.2 releases, the one-shot `--profile headless` driver creates a global agent directly and neither mounts nor accepts a session Agent preset. Automated Agent runs must create a Web session with `agentPreset: odai`; use the profile-wide Plugin for one-shot headless tasks.
+In the supported DSH 0.1.1-rc.2 release, the one-shot `--profile headless` driver creates a global agent directly and neither mounts nor accepts a session Agent preset. Automated Agent runs must create a Web session with `agentPreset: odai`; use the profile-wide Plugin for one-shot headless tasks.
 
 The installer copies through a mode-tightened staging directory and atomically publishes the preset. Updates verify every previously managed file first, refuse to overwrite local edits, and always change the composition generation key so new sessions in a running DSH process do not reuse stale runtime code. If install or update finds recognized historical Odai audit records, it refuses to change the preset until every DSH process is stopped and the command is rerun with `--yes`. The confirmed migration adds DSH's official `ignorable: true` envelope marker, covers both plaintext and concatenated-frame Zstandard session artifacts, verifies each replacement, and retains a content-addressed backup without deleting messages or evidence. Confirmation alone is insufficient: migration also refuses when local process inspection fails or finds any active DSH process. Keep DSH stopped until the installer exits because historical runtimes do not participate in a migration lock. An unknown unmarked `odai/*` type blocks the operation instead of being assumed safe to ignore.
 

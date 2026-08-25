@@ -1,4 +1,4 @@
-import { decideRoute, extractLatestUserText } from "./router.mjs";
+import { classifyImplementationAuthorization, decideRoute, extractLatestUserText } from "./router.mjs";
 import { ROUTING_CONFIG_PROMPT, effectiveRoutingSnapshot } from "./routing-config.mjs";
 import { DEFAULT_OUTPUT_POLICY, effectiveOutputPolicy, renderOutputPolicyPrompt } from "./output-config.mjs";
 import type { OutputPolicy } from "./output-config.mjs";
@@ -124,6 +124,11 @@ export function createPromptRuntime(deps: PromptDependencies) {
     name: "odai:canonical-governance",
     order: -20,
     text: canonicalPrompt(baseSelection),
+  });
+  ctx.systemPrompt.section({
+    name: "odai:canonical-craft",
+    order: -19.5,
+    text: "",
   });
   ctx.systemPrompt.section({
     name: "odai:routing-configuration",
@@ -325,6 +330,12 @@ export function createPromptRuntime(deps: PromptDependencies) {
       logger.warn(`Odai skill source ${selection.mode} fell back to bundled governance (${selection.reasonCode})`);
     }
     const outputPrompt = renderOutputPolicyPrompt(outputSelection.policy);
+    const canonicalCraft = selection.bundle.referenceContracts.craft;
+    const craftPrompt = !childSession
+      && classifyImplementationAuthorization(directText).status === "authorized"
+      && typeof canonicalCraft === "string"
+      ? `# Canonical craft reference\n\n${canonicalCraft.trim()}`
+      : "";
     const routingPrompt = !activation.routingConfig
       ? ""
       : childSession
@@ -354,6 +365,7 @@ export function createPromptRuntime(deps: PromptDependencies) {
       ...reconciledDownstream,
       sections: reconciledDownstream.sections.map((section) => {
         if (section.name === "odai:canonical-governance") return { ...section, text: canonicalPrompt(selection) };
+        if (section.name === "odai:canonical-craft") return { ...section, text: craftPrompt };
         if (section.name === "odai:routing-configuration") return { ...section, text: routingPrompt };
         if (section.name === "odai:human-safety-continuity") return { ...section, text: continuityPrompt };
         if (section.name === "odai:responsibility-gap") return { ...section, text: childSession ? "" : RESPONSIBILITY_GAP_PROMPT };

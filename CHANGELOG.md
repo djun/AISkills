@@ -2,6 +2,14 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-25 — DSH 0.2.9 craft activation and reviewer checks
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.9`，当前候选仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`，不再携带 rc.7/rc.1 的 Agent composition 适配与发布矩阵；`0.2.8` 及更早兼容记录按事实保留。canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。
+- 明确授权的实施回合现在按需组合 canonical `references/craft.md`，让已有“复用项目约定、最小完整修改”owner 在执行前生效；纯审查回合保持不加载，常见中文“把……改清楚/处理了”实施请求也进入同一授权分类。canonical 文案与 owner 未复制或改写。
+- Reviewer 证据新增独立 `check` 类：原生成功 tool result 无需 stdout 再造 PASS 文本，引号内的 test-name 正则不会被误判为 shell pipe；`eslint`、`stylelint`、`tsc/vue-tsc --noEmit`、`prettier --check`、`node --check` 与 `git diff --check` 可提供只读 check，且不增加 `testCount`。失败 check、`--fix`、build、复合 shell、命令替换、后续写入与过期 diff 继续 fail-closed。
+- Routed child 的 bounded packet 现在携带当前 responsibility gap，并把最新 Planner handback 保留为独立 planning context；该上下文不增加 user-owned `acceptanceCount`，避免 Reviewer 丢失已冻结 A1/A2 后退回重复规划。
+- DSH strict typecheck、Plugin/Runtime `208/208`、Agent `14/14`、canonical validator、版本策略与双包 dry-run packaging 全部通过；researcher、planner、executor、reviewer、frontend 与 user gap 的责任矩阵均有机械覆盖，新增 check-only Reviewer child 集成回执通过。未执行 npm publish。
+
 ## 2026-08-22 — DSH 0.2.8 responsibility dispatch and handback
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.8`，继续精确支持 `@deepseek-ai/dsh@0.1.0-rc.7`、`0.1.1-rc.1` 与 `0.1.1-rc.2`；canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。

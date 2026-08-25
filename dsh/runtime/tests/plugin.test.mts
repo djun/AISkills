@@ -1639,7 +1639,7 @@ test("capability gateway recovers a missed expression on the next step", async (
   assert.equal(last(restrictions).deny.includes("odai_compaction_config"), false);
 });
 
-test("ordinary turns keep Odai system and tool overhead below the measured pre-adaptive baseline", async () => {
+test("implementation turns activate craft within the contextual prompt budget", async () => {
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "off" } });
   const text = "把按钮文案改清楚并运行现有测试";
@@ -1660,6 +1660,9 @@ test("ordinary turns keep Odai system and tool overhead below the measured pre-a
     async () => ({ sections: ctx.captured.sections }),
   );
   const section = (name: string) => assembled.sections.find((candidate: TestPromptSection) => candidate.name === name).text;
+  assert.match(section("odai:canonical-craft"), /通用制作工艺/u);
+  assert.match(section("odai:canonical-craft"), /复用当前项目的实现、依赖和约定/u);
+  assert.match(section("odai:canonical-craft"), /只改解决目标所需的最小完整部分/u);
   assert.equal(section("odai:routing-configuration"), "");
   assert.equal(section("odai:human-safety-continuity"), "");
   assert.equal(section("odai:route-card"), "");
@@ -1671,35 +1674,70 @@ test("ordinary turns keep Odai system and tool overhead below the measured pre-a
   const activeTools = ctx.captured.tools.filter((tool: TestToolSchema) => activeNames.has(tool.name));
   const systemTokens = estimateContextTokens(systemText) + 4;
   const toolTokens = estimateToolSchemaTokens(activeTools);
-  assert.ok(systemTokens <= 1_600, `ordinary Odai system budget ${systemTokens} exceeds 1600`);
-  assert.ok(toolTokens <= 600, `ordinary Odai tool budget ${toolTokens} exceeds 600`);
-  assert.ok(systemTokens + toolTokens <= 1_900, `ordinary Odai baseline ${systemTokens + toolTokens} exceeds 1900`);
-  assert.ok(systemTokens + toolTokens < 6_194 * 0.4, "adaptive context should remove at least 60% of measured Odai overhead");
+  assert.ok(systemTokens <= 2_000, `implementation Odai system budget ${systemTokens} exceeds 2000`);
+  assert.ok(toolTokens <= 600, `implementation Odai tool budget ${toolTokens} exceeds 600`);
+  assert.ok(systemTokens + toolTokens <= 2_400, `implementation Odai budget ${systemTokens + toolTokens} exceeds 2400`);
+  assert.ok(systemTokens + toolTokens < 6_194 * 0.4, "contextual implementation should remove at least 60% of measured Odai overhead");
+});
+
+test("read-only requests do not activate the canonical craft reference", async () => {
+  const ctx = fakeContext();
+  apply(ctx, { skillPath, routing: { mode: "off" } });
+  const text = "只审查现有实现，不要修改文件";
+  const events: DshEvent[] = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "user/message", seq: 2, data: userMessage(text) },
+  ];
+  const agent = {
+    session: {
+      header: {},
+      events,
+      append(type: string, data: RuntimeEventData) { events.push({ type, seq: events.length + 1, data }); },
+    },
+  };
+  const assembled = await ctx.captured.handlers.get("system-prompt/assemble")(
+    {},
+    { agent, signal: new AbortController().signal },
+    async () => ({ sections: ctx.captured.sections }),
+  );
+  assert.equal(
+    assembled.sections.find((section: TestPromptSection) => section.name === "odai:canonical-craft").text,
+    "",
+  );
+  const systemText = assembled.sections.map((section: TestPromptSection) => section.text).filter(Boolean).join("\n\n");
+  const activeNames = new Set<string>(activeOdaiToolNames(classifyContextActivation(text)));
+  const activeTools = ctx.captured.tools.filter((tool: TestToolSchema) => activeNames.has(tool.name));
+  const systemTokens = estimateContextTokens(systemText) + 4;
+  const toolTokens = estimateToolSchemaTokens(activeTools);
+  assert.ok(systemTokens <= 1_600, `read-only Odai system budget ${systemTokens} exceeds 1600`);
+  assert.ok(toolTokens <= 600, `read-only Odai tool budget ${toolTokens} exceeds 600`);
+  assert.ok(systemTokens + toolTokens <= 1_900, `read-only Odai budget ${systemTokens + toolTokens} exceeds 1900`);
 });
 
 test("plugin registers canonical prompt, monotonic guard, audit observer, and router", async () => {
   const ctx = fakeContext();
   apply(ctx, { skillPath, routing: { mode: "observe" } });
 
-  assert.equal(ctx.captured.sections.length, 9);
+  assert.equal(ctx.captured.sections.length, 10);
   assert.match(ctx.captured.sections[0].text, /odai canonical governance/u);
   assert.match(ctx.captured.sections[0].text, /already loaded by this runtime; do not call the skill tool/u);
-  assert.match(ctx.captured.sections[1].text, /naturally asks to inspect, set, change, or remove/u);
-  assert.match(ctx.captured.sections[1].text, /Never infer, recommend as chosen, or silently select/u);
-  assert.match(ctx.captured.sections[2].text, /user-controlled human-safety continuity/iu);
-  assert.match(ctx.captured.sections[2].text, /Never infer or automatically save a current mood/u);
-  assert.match(ctx.captured.sections[3].text, /Users provide goals, constraints, materials, and acceptance/u);
-  assert.match(ctx.captured.sections[4].text, /frozen route cards/u);
-  assert.match(ctx.captured.sections[4].text, /canonical executor reassessment proves observable net benefit/u);
-  assert.doesNotMatch(ctx.captured.sections[4].text, /earlier direct-routing choice expires/u);
-  assert.doesNotMatch(ctx.captured.sections[4].text, /task size alone never justifies delegation/u);
-  assert.match(ctx.captured.sections[5].text, /explicitly asks to inspect, set, or reset that source/u);
-  assert.equal(ctx.captured.sections[6].text, "");
-  assert.match(ctx.captured.sections[7].text, /compaction model configuration/u);
-  assert.match(ctx.captured.sections[7].text, /Never infer or silently choose/u);
-  assert.match(ctx.captured.sections[7].text, /controller, researcher, planner, executor, reviewer, frontend/u);
-  assert.match(ctx.captured.sections[8].text, /long-term semantic memory/u);
-  assert.match(ctx.captured.sections[8].text, /no hidden provider, model, embedding, subagent, or compaction call/u);
+  assert.equal(ctx.captured.sections[1].text, "");
+  assert.match(ctx.captured.sections[2].text, /naturally asks to inspect, set, change, or remove/u);
+  assert.match(ctx.captured.sections[2].text, /Never infer, recommend as chosen, or silently select/u);
+  assert.match(ctx.captured.sections[3].text, /user-controlled human-safety continuity/iu);
+  assert.match(ctx.captured.sections[3].text, /Never infer or automatically save a current mood/u);
+  assert.match(ctx.captured.sections[4].text, /Users provide goals, constraints, materials, and acceptance/u);
+  assert.match(ctx.captured.sections[5].text, /frozen route cards/u);
+  assert.match(ctx.captured.sections[5].text, /canonical executor reassessment proves observable net benefit/u);
+  assert.doesNotMatch(ctx.captured.sections[5].text, /earlier direct-routing choice expires/u);
+  assert.doesNotMatch(ctx.captured.sections[5].text, /task size alone never justifies delegation/u);
+  assert.match(ctx.captured.sections[6].text, /explicitly asks to inspect, set, or reset that source/u);
+  assert.equal(ctx.captured.sections[7].text, "");
+  assert.match(ctx.captured.sections[8].text, /compaction model configuration/u);
+  assert.match(ctx.captured.sections[8].text, /Never infer or silently choose/u);
+  assert.match(ctx.captured.sections[8].text, /controller, researcher, planner, executor, reviewer, frontend/u);
+  assert.match(ctx.captured.sections[9].text, /long-term semantic memory/u);
+  assert.match(ctx.captured.sections[9].text, /no hidden provider, model, embedding, subagent, or compaction call/u);
   const tools = new RequiredMap(ctx.captured.tools.map((tool: TestTool) => [tool.name, tool] as const));
   assert.deepEqual([...tools.keys()], [
     "odai_context_capability",
@@ -3193,8 +3231,22 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
     routing: { roles: { reviewer: { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "max" } } },
   });
   const events: DshEvent[] = [
-    responsibilityGapEvent("reviewer"),
+    responsibilityGapEvent("reviewer", {
+      gap: "Review planner acceptance A1 and A2 against the final patch.",
+      expectedChange: "Accept A1 and A2 or return precise blocking findings.",
+    }),
     { type: "user/message", data: userMessage("实现请求：保持默认行为并修复路由。") },
+    {
+      type: "odai/responsibility-returned",
+      data: {
+        returned: true,
+        scopeId: "planner-scope-1",
+        responsibility: "planner",
+        target: "controller",
+        summary: "Planner acceptance A1: reuse the canonical owner; A2: preserve the bounded source format.",
+        evidenceRefs: ["canonical-owner", "final-diff"],
+      },
+    },
     { type: "assistant/message", data: { content: [{ type: "text", text: "验收条件 A1：目标测试通过；A2：只修改目标模块。" }] } },
     ...nativeToolEvents("diff-1", "git diff -- dsh/runtime/src/router.mts", "diff --git a/router.mjs b/router.mjs\n+bounded change", { callSeq: 101 }),
     ...nativeToolEvents("test-1", "node --test dsh/runtime/tests/router.test.mts", "tests 14 pass 14 fail 0 exit code: 0", { callSeq: 111 }),
@@ -3207,6 +3259,9 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
   assert.equal(starts, 1);
   assert.ok(startRequest);
   assert.match(blockText(startRequest.prompt[0]), /Odai bounded role context packet/u);
+  assert.match(blockText(startRequest.prompt[0]), /Review planner acceptance A1 and A2 against the final patch/u);
+  assert.match(blockText(startRequest.prompt[0]), /Planner acceptance A1: reuse the canonical owner/u);
+  assert.match(blockText(startRequest.prompt[0]), /kinds: planner-handback, planning/u);
   assert.match(blockText(startRequest.prompt[0]), /kinds: tool, diff/u);
   assert.match(blockText(startRequest.prompt[0]), /kinds: tool, test/u);
   const contextEvent = findEvent(events, (event) => event.type === "odai/route-context");
@@ -3480,6 +3535,47 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
   assert.equal(failedContext.mode, "controller-local");
   assert.equal(failedEvents.some((event) => event.type === "odai/route-upgrade"), false);
   assert.equal(findEvent(failedEvents, (event) => event.type === "odai/route-result").data.independent, false);
+});
+
+test("reviewer child accepts a current read-only check without relabeling it as a test", async () => {
+  let starts = 0;
+  const ctx = fakeContext({
+    subagents: {
+      async start() {
+        starts += 1;
+        return {
+          localAgent: {
+            session: {
+              events: [{
+                type: "request/header",
+                data: { header: { config: { provider: "openai", model: "reviewer-model" } } },
+              }],
+            },
+          },
+          result: Promise.resolve({ stopReason: "completed", output: [{ type: "text", text: "reviewed" }] }),
+          async dispose() {},
+        };
+      },
+    },
+  });
+  apply(ctx, { skillPath, routing: { roles: { reviewer: { provider: "openai", model: "reviewer-model" } } } });
+  const events: DshEvent[] = [
+    responsibilityGapEvent("reviewer"),
+    { type: "user/message", data: userMessage("保持原格式和修改范围，修复路由证据识别。") },
+    ...nativeToolEvents("check-route-diff", "git diff -- dsh/runtime/src/routing-context.mts", "diff --git a/routing-context.mts b/routing-context.mts\n+bounded change", { callSeq: 181 }),
+    ...nativeToolEvents("check-route-eslint", "pnpm exec eslint dsh/runtime/src/routing-context.mts", "", { callSeq: 191 }),
+  ];
+  const agent = { session: { header: {}, events, append(type: string, data: RuntimeEventData) { events.push({ type, data }); } } };
+  await ctx.captured.handlers.get("agent/pre-step")(
+    { agent, turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: "enter", messages: [userMessage("请独立审查这次实现")] }),
+  );
+
+  assert.equal(starts, 1);
+  const context = findEvent(events, (event) => event.type === "odai/route-context").data;
+  assert.equal(context.testCount, 0);
+  assert.equal(context.checkCount, 1);
+  assert.equal(context.sufficient, true);
 });
 
 test("an unavailable frontend mapping falls back locally with an explicit non-receipt notice", async () => {

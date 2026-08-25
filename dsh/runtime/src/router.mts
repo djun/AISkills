@@ -166,6 +166,7 @@ const EXPLICIT_EXECUTION_CONTINUATION_PATTERNS = [
   /\b(?:continue|proceed|go ahead|follow the plan)\b/iu,
 ];
 const IMPLEMENTATION_AUTHORIZATION_PATTERNS = [
+  /(?:^|[，；。！？\n])(?:请)?把[^，；。！？\n]{1,48}(?:(?:处理|修改|更新|替换|删除)(?:一下|掉|好|了)?|改(?:成|为|好|掉|清楚))(?=$|[，；。！？\n]|并|然后|再|后)/iu,
   /(?:做(?:完|好|掉|这个|这项|这次|一个)|实现|修复|完成|落地|开发|添加|新增|替换|删除|执行|全都做好)/iu,
   /(?:请|麻烦|直接|开始|继续)(?:帮我)?(?:处理|修改|更新)|帮我(?:处理|修改|更新)|需要(?:处理|修改|更新)|可以(?:帮我)?(?:处理|修改|更新)|^(?:处理|修改|更新)(?:一下|这个|该|文件|代码|配置|依赖|问题|功能|实现|文档|测试)/iu,
   /\b(?:do it|implement|fix|complete|build|add|replace|remove|execute|ship)\b/iu,

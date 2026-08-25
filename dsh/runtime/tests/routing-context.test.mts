@@ -94,12 +94,16 @@ test("reviewer packets require requirements, acceptance, diff, tests, and tool e
     diffCount: 1,
     testCount: 1,
     failedTestCount: 0,
+    checkCount: 0,
+    failedCheckCount: 0,
     writeCount: 0,
     toolEvidenceCount: 2,
     latestWriteIndex: -1,
     latestDiffIndex: 3,
     latestTestIndex: 5,
     latestFailedTestIndex: -1,
+    latestCheckIndex: -1,
+    latestFailedCheckIndex: -1,
     currentEvidence: true,
   });
   assert.match(packet.digest, /^[a-f0-9]{64}$/u);
@@ -110,28 +114,26 @@ test("reviewer packets require requirements, acceptance, diff, tests, and tool e
   assert.match(rendered, /kinds: tool, test/u);
 });
 
-test("supported DSH native tool call/result replays produce the same grounded coverage", () => {
-  for (const release of ["0.1.0-rc.7", "0.1.1-rc.1", "0.1.1-rc.2"]) {
-    const packet = buildRoleContextPacket(
-      {
-        session: {
-          events: completeReviewEvents({
-            testCommand: "npm.cmd --prefix dsh/plugin test",
-          }).map((event) => event.type === "tool/call" && release !== "0.1.0-rc.7"
-            ? { ...event, data: { ...event.data, arguments: JSON.stringify(event.data.arguments) }, fixtureRelease: release }
-            : { ...event, fixtureRelease: release }),
-        },
+test("current DSH native tool call/result replays produce grounded coverage", () => {
+  const packet = buildRoleContextPacket(
+    {
+      session: {
+        events: completeReviewEvents({
+          testCommand: "npm.cmd --prefix dsh/plugin test",
+        }).map((event) => event.type === "tool/call"
+          ? { ...event, data: { ...event.data, arguments: JSON.stringify(event.data.arguments) } }
+          : event),
       },
-      "reviewer",
-      "review",
-    );
-    assert.equal(packet.sufficient, true, release);
-    assert.equal(packet.coverage.diffCount, 1, release);
-    assert.equal(packet.coverage.testCount, 1, release);
-  }
+    },
+    "reviewer",
+    "review",
+  );
+  assert.equal(packet.sufficient, true);
+  assert.equal(packet.coverage.diffCount, 1);
+  assert.equal(packet.coverage.testCount, 1);
 });
 
-test("real rc1 JSON arguments and raw stream chunks remain reviewable", () => {
+test("current JSON arguments and raw stream chunks remain reviewable", () => {
   const events = completeReviewEvents({
     testCommand: "npm run test:unit -- --run tests/store/auth.spec.ts",
     testOutput: "Test Files 2 passed\nTests 7 passed",
@@ -202,6 +204,117 @@ test("common JavaScript and JVM test entry points are recognized", () => {
     }, "reviewer", "review");
     assert.equal(packet.coverage.testCount, 1, command);
     assert.equal(packet.sufficient, true, command);
+  }
+});
+
+test("a successful native test result does not require a duplicate stdout verdict", () => {
+  const packet = buildRoleContextPacket({
+    session: { events: completeReviewEvents({ testOutput: "" }) },
+  }, "reviewer", "review");
+
+  assert.equal(packet.coverage.testCount, 1);
+  assert.equal(packet.coverage.failedTestCount, 0);
+  assert.equal(packet.diagnostics.testWithoutVerdictCount, 1);
+  assert.equal(packet.sufficient, true);
+});
+
+test("quoted test filters do not become shell mutations", () => {
+  const packet = buildRoleContextPacket({
+    session: {
+      events: completeReviewEvents({
+        testCommand: "node --test --test-name-pattern=\"pass|read-only\" dsh/runtime/tests/routing-context.test.mts",
+        testOutput: "",
+      }),
+    },
+  }, "reviewer", "review");
+
+  assert.equal(packet.coverage.testCount, 1);
+  assert.equal(packet.coverage.writeCount, 0);
+  assert.equal(packet.coverage.currentEvidence, true);
+  assert.equal(packet.sufficient, true);
+});
+
+test("read-only validators provide check evidence without masquerading as tests", () => {
+  for (const [index, command] of [
+    "pnpm exec eslint packages/core/src/hooks/useXStream.ts",
+    "pnpm exec vue-tsc -b --noEmit",
+    "git diff --check",
+    "npx prettier --check packages/core/src/hooks/useXStream.ts",
+    "node --check scripts/verify.mjs",
+  ].entries()) {
+    const events: DshEvent[] = [
+      { type: "user/message", data: userMessage("验收条件：保持原格式和范围，并通过对应静态检查。") },
+      ...nativeToolEvents(
+        `check-diff-${index}`,
+        "functions.bash",
+        { command: "git diff -- packages/core/src/hooks/useXStream.ts" },
+        "diff --git a/packages/core/src/hooks/useXStream.ts b/packages/core/src/hooks/useXStream.ts\n+bounded change",
+        { callSeq: 300 + (index * 20) },
+      ),
+      ...nativeToolEvents(
+        `check-${index}`,
+        "functions.bash",
+        { command },
+        "",
+        { callSeq: 310 + (index * 20) },
+      ),
+    ];
+    const packet = buildRoleContextPacket({ session: { events } }, "reviewer", "review");
+    assert.equal(packet.entries.some((entry) => entry.kinds.includes("check")), true, command);
+    assert.equal(packet.coverage.testCount, 0, command);
+    assert.equal(packet.coverage.checkCount, 1, command);
+    assert.equal(packet.coverage.failedCheckCount, 0, command);
+    assert.equal(packet.sufficient, true, command);
+  }
+});
+
+test("failed read-only checks block reviewer readiness", () => {
+  const events: DshEvent[] = [
+    { type: "user/message", data: userMessage("验收条件：保持原格式和范围，并通过静态检查。") },
+    ...nativeToolEvents(
+      "failed-check-diff",
+      "functions.bash",
+      { command: "git diff -- dsh/runtime/src/routing-context.mts" },
+      "diff --git a/dsh/runtime/src/routing-context.mts b/dsh/runtime/src/routing-context.mts\n+bounded change",
+      { callSeq: 400 },
+    ),
+    ...nativeToolEvents(
+      "failed-check",
+      "functions.bash",
+      { command: "pnpm exec eslint dsh/runtime/src/routing-context.mts" },
+      "lint failed\nexit code: 1",
+      { callSeq: 410 },
+    ),
+  ];
+  const packet = buildRoleContextPacket({ session: { events } }, "reviewer", "review");
+  assert.equal(packet.coverage.checkCount, 0);
+  assert.equal(packet.coverage.failedCheckCount, 1);
+  assert.equal(packet.coverage.currentEvidence, false);
+  assert.equal(packet.sufficient, false);
+});
+
+test("mutating validators and builds remain writes, not read-only checks", () => {
+  for (const [index, command] of [
+    "pnpm exec eslint --fix packages/core/src/hooks/useXStream.ts",
+    "npx prettier --write packages/core/src/hooks/useXStream.ts",
+    "pnpm build:core",
+    "pnpm exec eslint packages/core/src/hooks/useXStream.ts && touch changed.txt",
+    "pnpm exec eslint packages/core/src/hooks/useXStream.ts $(touch changed.txt)",
+    "pnpm exec eslint \"packages/core/$(touch changed.txt).ts\"",
+  ].entries()) {
+    const events = completeReviewEvents();
+    events.push(...nativeToolEvents(
+      `mutating-check-${index}`,
+      "functions.bash",
+      { command },
+      "completed",
+      { callSeq: 500 + (index * 10) },
+    ));
+    const packet = buildRoleContextPacket({ session: { events } }, "reviewer", "review");
+    assert.equal(packet.entries.some((entry) => entry.kinds.includes("check") && entry.text.includes(command)), false, command);
+    assert.equal(packet.coverage.writeCount, 1, command);
+    assert.equal(packet.coverage.currentEvidence, false, command);
+    assert.equal(packet.sufficient, false, command);
   }
 });
 

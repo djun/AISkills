@@ -27,72 +27,32 @@ function jsonRecord(text: string): Record<string, unknown> {
   return value;
 }
 
-test("Agent composition renders every supported DSH Standard contract", async () => {
-  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.0-rc.7", "0.1.1-rc.1", "0.1.1-rc.2"]);
+test("Agent composition targets only the supported DSH Standard contract", async () => {
+  assert.deepEqual(SUPPORTED_DSH_VERSIONS, ["0.1.1-rc.2"]);
   const source = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
   const normalizedSource = source.replace(/\r\n/gu, "\n");
-  const rc2 = renderAgentCompositionForDsh(source, "0.1.1-rc.2");
-  assert.equal(rc2, normalizedSource);
-  const rc1 = renderAgentCompositionForDsh(source, "0.1.1-rc.1");
-  assert.equal(rc1, normalizedSource);
-  assert.match(rc1, /Install the[\s\S]*matching Bundle[\s\S]*Host availability[\s\S]*alone grants no tool/u);
-  assert.match(rc1, /provider: codex[\s\S]*backgroundMode: one-shot/u);
-  assert.match(rc1, /provider: claude-code[\s\S]*backgroundMode: one-shot/u);
-  assert.doesNotMatch(rc1, /enableRunInBackground/u);
-  const rc7 = renderAgentCompositionForDsh(source, "0.1.0-rc.7");
-  assert.match(rc7, /An opting-in[\s\S]*Profile mounts each provider once on the host plane/u);
-  assert.doesNotMatch(rc7, /matching Bundle|Host availability/u);
-  assert.match(rc7, /provider: codex[\s\S]*backgroundMode: one-shot/u);
-  assert.match(rc7, /provider: claude-code[\s\S]*backgroundMode: one-shot/u);
-  assert.doesNotMatch(rc7, /enableRunInBackground/u);
+  assert.equal(renderAgentCompositionForDsh(source, "0.1.1-rc.2"), normalizedSource);
+  assert.throws(() => renderAgentCompositionForDsh(source, "0.1.0-rc.7"), /unsupported DSH version/u);
+  assert.throws(() => renderAgentCompositionForDsh(source, "0.1.1-rc.1"), /unsupported DSH version/u);
   assert.throws(() => renderAgentCompositionForDsh(source, "0.1.0-rc.6"), /unsupported DSH version/u);
   assert.throws(() => renderAgentCompositionForDsh(source, "0.1.0-rc.9"), /unsupported DSH version/u);
 });
 
-test("managed preset migrates across supported DSH releases without touching external state", async (context) => {
-  const sourceComposition = await readFile(resolve(import.meta.dirname, "../preset/odai/agent.cordis.yml"), "utf8");
-  const releases = ["0.1.0-rc.7", "0.1.1-rc.1", "0.1.1-rc.2"];
-  const transitions = releases.flatMap((fromVersion) => releases
-    .filter((toVersion) => toVersion !== fromVersion)
-    .map((toVersion) => [fromVersion, toVersion]));
-  for (const [fromVersion, toVersion] of transitions) {
-    await context.test(`${fromVersion} -> ${toVersion}`, async () => {
-      const scratch = await mkdtemp(resolve(tmpdir(), "odai-agent-version-transition-"));
-      const sourceRoot = resolve(scratch, "source");
-      const dshHome = resolve(scratch, "home");
-      const sentinels = [
-        resolve(dshHome, "odai/routing.json"),
-        resolve(dshHome, "odai/memory/store.json"),
-        resolve(dshHome, "odai/skill-evolution/user-generation.sentinel"),
-        resolve(dshHome, "odai/evidence/session.sentinel"),
-      ];
-      try {
-        await writeFixture(sourceRoot, "runtime");
-        await writeFile(resolve(sourceRoot, "agent.cordis.yml"), sourceComposition, "utf8");
-        for (const path of sentinels) {
-          await mkdir(resolve(path, ".."), { recursive: true });
-          await writeFile(path, `preserved by ${fromVersion} -> ${toVersion}\n`, "utf8");
-        }
-
-        const installed = await installAgentPreset({ dshHome, sourceRoot, dshVersion: fromVersion });
-        const fromComposition = await readFile(resolve(installed.target, "agent.cordis.yml"), "utf8");
-        assert.ok(fromComposition.startsWith(`${renderAgentCompositionForDsh(sourceComposition, fromVersion).trimEnd()}\n# odai-dsh-agent generation `));
-        assert.equal(installed.dshVersion, fromVersion);
-
-        const updated = await installAgentPreset({ dshHome, sourceRoot, dshVersion: toVersion });
-        const toComposition = await readFile(resolve(updated.target, "agent.cordis.yml"), "utf8");
-        assert.equal(updated.operation, "updated");
-        assert.equal(updated.dshVersion, toVersion);
-        assert.notEqual(toComposition, fromComposition);
-        assert.ok(toComposition.startsWith(`${renderAgentCompositionForDsh(sourceComposition, toVersion).trimEnd()}\n# odai-dsh-agent generation `));
-        assert.equal((await inspectAgentInstallation({ dshHome })).dshVersion, toVersion);
-        for (const path of sentinels) {
-          assert.equal(await readFile(path, "utf8"), `preserved by ${fromVersion} -> ${toVersion}\n`);
-        }
-      } finally {
-        await rm(scratch, { recursive: true, force: true });
-      }
-    });
+test("managed preset rejects removed DSH releases before writing", async () => {
+  const scratch = await mkdtemp(resolve(tmpdir(), "odai-agent-unsupported-version-"));
+  const sourceRoot = resolve(scratch, "source");
+  const dshHome = resolve(scratch, "home");
+  try {
+    await writeFixture(sourceRoot, "runtime");
+    for (const dshVersion of ["0.1.0-rc.7", "0.1.1-rc.1"]) {
+      await assert.rejects(
+        installAgentPreset({ dshHome, sourceRoot, dshVersion }),
+        /unsupported DSH version/u,
+      );
+    }
+    await assert.rejects(stat(resolve(dshHome, ".agent-presets/odai")), /ENOENT/u);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
   }
 });
 

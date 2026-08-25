@@ -31,9 +31,17 @@ const TEST_FAILURE_PATTERNS = [
   /(?:^|\n)[^\n]*fail(?:ed)?\s*[:=]?\s*[1-9]\d*/iu,
   /\b(?:tests?|test suite) failed\b/iu,
 ];
+const CHECK_COMMAND_PATTERNS = [
+  /^\s*git(?:\.exe)?\s+diff\s+--check(?:\s|$)/iu,
+  /^\s*(?:(?:npx|pnpm\s+exec|yarn\s+exec)(?:\.cmd)?|npm(?:\.cmd)?\s+exec(?:\s+--)?)\s+(?:--yes\s+)?(?:eslint|stylelint)(?:\.cmd)?(?:\s|$)/iu,
+  /^\s*(?:(?:npx|pnpm\s+exec|yarn\s+exec)(?:\.cmd)?|npm(?:\.cmd)?\s+exec(?:\s+--)?)\s+(?:--yes\s+)?(?:tsc|vue-tsc)(?:\.cmd)?\b[^\r\n]*\s--noEmit(?:\s|$)/iu,
+  /^\s*(?:npx(?:\.cmd)?|pnpm(?:\.cmd)?\s+exec|yarn(?:\.cmd)?\s+exec|npm(?:\.cmd)?\s+exec(?:\s+--)?)?\s*prettier(?:\.cmd)?\s+--check(?:\s|$)/iu,
+  /^\s*node(?:\.exe)?\s+--check(?:\s|$)/iu,
+];
+const CHECK_MUTATION_PATTERNS = [/(?:^|\s)--fix(?:\s|$)/iu, /(?:^|\s)(?:--output-file|-o)(?:\s|=)/u];
 const WRITE_TOOL_NAMES = new Set<string>(["edit", "write", "apply_patch"]);
 const SHELL_TOOL_NAMES = new Set<string>(["bash", "pwsh", "shell", "powershell"]);
-const SHELL_CONTROL_PATTERN = /[;&|<>]/u;
+const SHELL_CONTROL_CHARACTERS = ";&|<>\r\n()";
 const READ_ONLY_SHELL_COMMAND_PATTERNS = [
   /^\s*git(?:\.exe)?\s+(?:status|log|show|rev-parse|ls-files|branch)(?:\s|$)/iu,
   /^\s*(?:Get-[A-Za-z]+|Select-String|Test-Path)(?:\s|$)/iu,
@@ -46,6 +54,29 @@ const WRITE_COMMAND_PATTERNS = [
   /(?:^|\s)(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item)(?:\s|$)/iu,
   /(?:^|\s)(?:rm|mv|cp|mkdir|touch)(?:\s|$)/u,
 ];
+
+function hasShellControl(command: string): boolean {
+  let quote: "'" | "\"" | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (character === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else if (quote === "\"" && (character === "`" || (character === "$" && command[index + 1] === "("))) return true;
+      continue;
+    }
+    if (character === "'" || character === "\"") {
+      quote = character;
+      continue;
+    }
+    if (character === "`" || SHELL_CONTROL_CHARACTERS.includes(character ?? "")
+      || (character === "$" && command[index + 1] === "(")) return true;
+  }
+  return false;
+}
 
 export interface RoleContextEntry {
   readonly index: number;
@@ -62,12 +93,16 @@ export interface RoleContextCoverage {
   readonly diffCount: number;
   readonly testCount: number;
   readonly failedTestCount: number;
+  readonly checkCount: number;
+  readonly failedCheckCount: number;
   readonly writeCount: number;
   readonly toolEvidenceCount: number;
   readonly latestWriteIndex: number;
   readonly latestDiffIndex: number;
   readonly latestTestIndex: number;
   readonly latestFailedTestIndex: number;
+  readonly latestCheckIndex: number;
+  readonly latestFailedCheckIndex: number;
   readonly currentEvidence: boolean;
 }
 
@@ -270,6 +305,28 @@ function eventEvidence(
       text: JSON.stringify(event.data.card),
     };
   }
+  if (event?.type === "odai/responsibility-returned"
+    && event.data?.returned === true
+    && typeof event.data?.responsibility === "string"
+    && typeof event.data?.summary === "string") {
+    const responsibility = event.data.responsibility;
+    const evidenceRefs = Array.isArray(event.data.evidenceRefs)
+      ? event.data.evidenceRefs.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    const kinds = [`${responsibility}-handback`];
+    if (responsibility === "planner") kinds.push("planning");
+    if (responsibility === "researcher") kinds.push("research");
+    if (responsibility === "reviewer") kinds.push("review-finding");
+    const scopeId = typeof event.data.scopeId === "string" ? event.data.scopeId : "unknown";
+    return {
+      index,
+      source: "responsibility-handback",
+      kinds,
+      label: `${responsibility} responsibility handback ${scopeId}`,
+      identity: `responsibility-scope:${scopeId}`,
+      text: [event.data.summary, evidenceRefs.length > 0 ? `Evidence: ${evidenceRefs.join("; ")}` : ""].filter(Boolean).join("\n\n"),
+    };
+  }
   if (event?.type === "tool/result") {
     const result = nativeToolResult(event.data);
     if (!result) {
@@ -286,17 +343,20 @@ function eventEvidence(
     if (!decoded.parsed) diagnostics.unparsedToolArgumentsCount += 1;
     const command = decoded.command;
     const toolName = normalizedToolName(call.name);
-    const simpleCommand = command !== "" && !SHELL_CONTROL_PATTERN.test(command);
-    const diffCommand = simpleCommand && matchesAny(command, DIFF_COMMAND_PATTERNS);
+    const simpleCommand = command !== "" && !hasShellControl(command);
+    const checkCommand = simpleCommand
+      && matchesAny(command, CHECK_COMMAND_PATTERNS)
+      && !matchesAny(command, CHECK_MUTATION_PATTERNS);
+    const diffCommand = simpleCommand && !checkCommand && matchesAny(command, DIFF_COMMAND_PATTERNS);
     const testCommand = simpleCommand && matchesAny(command, TEST_COMMAND_PATTERNS);
     const explicitWrite = WRITE_TOOL_NAMES.has(toolName) || matchesAny(command, WRITE_COMMAND_PATTERNS);
     const unknownShellMutation = SHELL_TOOL_NAMES.has(toolName)
-      && !diffCommand && !testCommand
-      && (SHELL_CONTROL_PATTERN.test(command) || !matchesAny(command, READ_ONLY_SHELL_COMMAND_PATTERNS));
-    if (SHELL_TOOL_NAMES.has(toolName) && !diffCommand && !testCommand && !explicitWrite
+      && !diffCommand && !testCommand && !checkCommand
+      && (hasShellControl(command) || !matchesAny(command, READ_ONLY_SHELL_COMMAND_PATTERNS));
+    if (SHELL_TOOL_NAMES.has(toolName) && !diffCommand && !testCommand && !checkCommand && !explicitWrite
       && !matchesAny(command, READ_ONLY_SHELL_COMMAND_PATTERNS)) diagnostics.unclassifiedShellResultCount += 1;
     const writeCommand = explicitWrite || unknownShellMutation;
-    if (!result.successful && !testCommand && !writeCommand) return undefined;
+    if (!result.successful && !testCommand && !checkCommand && !writeCommand) return undefined;
     const output = textBlocks(event.data).join("\n").trim();
     const kinds: string[] = result.successful ? ["tool"] : [];
     if (result.successful && diffCommand) {
@@ -305,11 +365,15 @@ function eventEvidence(
     }
     if (writeCommand) kinds.push("write");
     if (testCommand) {
-      const testPassed = result.successful && matchesAny(output, TEST_SUCCESS_PATTERNS) && !matchesAny(output, TEST_FAILURE_PATTERNS);
-      if (result.successful && !matchesAny(output, TEST_SUCCESS_PATTERNS) && !matchesAny(output, TEST_FAILURE_PATTERNS)) {
+      const hasFailure = matchesAny(output, TEST_FAILURE_PATTERNS);
+      if (result.successful && !matchesAny(output, TEST_SUCCESS_PATTERNS) && !hasFailure) {
         diagnostics.testWithoutVerdictCount += 1;
       }
-      kinds.push(testPassed ? "test" : "test-failed");
+      kinds.push(result.successful && !hasFailure ? "test" : "test-failed");
+    }
+    if (checkCommand) {
+      const checkPassed = result.successful && !matchesAny(output, TEST_FAILURE_PATTERNS);
+      kinds.push(checkPassed ? "check" : "check-failed");
     }
     const identity = `tool-call:${result.callId}`;
     const text = [command ? `command: ${command}` : "", output || "(no textual result)"].filter(Boolean).join("\n\n");
@@ -344,21 +408,29 @@ function coverageFor(currentTask: string, entries: readonly RoleContextEntry[]):
   const diffEntries = matching("diff");
   const testEntries = matching("test");
   const failedTestEntries = matching("test-failed");
+  const checkEntries = matching("check");
+  const failedCheckEntries = matching("check-failed");
+  const verificationEntries = [...testEntries, ...checkEntries];
   const latestWriteIndex = latestIndex("write");
   const latestDiffIndex = latestIndex("diff");
   const latestTestIndex = latestIndex("test");
   const latestFailedTestIndex = latestIndex("test-failed");
+  const latestCheckIndex = latestIndex("check");
+  const latestFailedCheckIndex = latestIndex("check-failed");
+  const latestVerificationIndex = Math.max(latestTestIndex, latestCheckIndex);
+  const latestFailedVerificationIndex = Math.max(latestFailedTestIndex, latestFailedCheckIndex);
   const currentEvidence = acceptanceCount > 0
-    && latestDiffIndex >= 0 && latestTestIndex >= 0
-    && latestDiffIndex > latestWriteIndex && latestTestIndex > latestDiffIndex
-    && latestTestIndex > latestFailedTestIndex
-    && diffEntries.some((diff) => testEntries.some((testResult) => diff.identity !== testResult.identity));
+    && latestDiffIndex >= 0 && latestVerificationIndex >= 0
+    && latestDiffIndex > latestWriteIndex && latestVerificationIndex > latestDiffIndex
+    && latestVerificationIndex > latestFailedVerificationIndex
+    && diffEntries.some((diff) => verificationEntries.some((verification) => diff.identity !== verification.identity));
   return Object.freeze({
     requirements: Boolean(currentTask) || matching("requirement").length > 0,
     acceptanceCount, diffCount: diffEntries.length, testCount: testEntries.length,
-    failedTestCount: failedTestEntries.length, writeCount: matching("write").length,
+    failedTestCount: failedTestEntries.length, checkCount: checkEntries.length,
+    failedCheckCount: failedCheckEntries.length, writeCount: matching("write").length,
     toolEvidenceCount: matching("tool").length, latestWriteIndex, latestDiffIndex,
-    latestTestIndex, latestFailedTestIndex, currentEvidence,
+    latestTestIndex, latestFailedTestIndex, latestCheckIndex, latestFailedCheckIndex, currentEvidence,
   });
 }
 
@@ -411,7 +483,7 @@ export function buildRoleContextPacket(
   mutableDiagnostics.evidenceEventCount = allEvidence.length;
 
   const recent = allEvidence.slice(-maxEvents);
-  const anchors = ["requirement", "acceptance"].flatMap((kind) => {
+  const anchors = ["requirement", "acceptance", "planning"].flatMap((kind) => {
     const entry = allEvidence.findLast((candidate) => candidate.kinds.includes(kind));
     return entry ? [entry] : [];
   });
@@ -421,7 +493,7 @@ export function buildRoleContextPacket(
   mutableDiagnostics.selectedEvidenceCount = candidates.length;
   mutableDiagnostics.omittedEvidenceCount = Math.max(0, allEvidence.length - candidates.length);
 
-  const priorityKinds = ["requirement", "acceptance", "write", "diff", "test-failed", "test"];
+  const priorityKinds = ["requirement", "acceptance", "planning", "write", "diff", "test-failed", "check-failed", "test", "check"];
   const prioritized: RoleContextEntry[] = [];
   const prioritizedIndices = new Set<number>();
   for (const kind of priorityKinds) {
@@ -473,11 +545,15 @@ export function buildRoleContextPacket(
       diffCount: evidenceCoverage.diffCount,
       testCount: evidenceCoverage.testCount,
       failedTestCount: evidenceCoverage.failedTestCount,
+      checkCount: evidenceCoverage.checkCount,
+      failedCheckCount: evidenceCoverage.failedCheckCount,
       writeCount: evidenceCoverage.writeCount,
       latestWriteIndex: evidenceCoverage.latestWriteIndex,
       latestDiffIndex: evidenceCoverage.latestDiffIndex,
       latestTestIndex: evidenceCoverage.latestTestIndex,
       latestFailedTestIndex: evidenceCoverage.latestFailedTestIndex,
+      latestCheckIndex: evidenceCoverage.latestCheckIndex,
+      latestFailedCheckIndex: evidenceCoverage.latestFailedCheckIndex,
       currentEvidence: evidenceCoverage.currentEvidence,
     },
     markers: evidenceMarkers,
@@ -496,7 +572,8 @@ export function buildRoleContextPacket(
   });
   const digest = digestPacket(packetBody);
   const reviewerSufficient = coverage.requirements && coverage.acceptanceCount > 0
-    && coverage.diffCount > 0 && coverage.testCount > 0 && coverage.toolEvidenceCount > 0 && coverage.currentEvidence;
+    && coverage.diffCount > 0 && coverage.testCount + coverage.checkCount > 0
+    && coverage.toolEvidenceCount > 0 && coverage.currentEvidence;
   return Object.freeze({
     ...packetBody, digest, evidenceCount: entries.length, toolEvidenceCount: coverage.toolEvidenceCount,
     sufficient: role === "reviewer" ? reviewerSufficient : Boolean(task.text),

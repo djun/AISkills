@@ -35,6 +35,8 @@ function gap(
 
 test("implementation authorization distinguishes delivery, plan-only, and unknown requests", () => {
   assert.equal(classifyImplementationAuthorization("把这个修复完成并跑测试").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("把按钮文案改清楚并运行现有测试").status, "authorized");
+  assert.equal(classifyImplementationAuthorization("把这些问题一起校验并处理了").status, "authorized");
   assert.equal(classifyImplementationAuthorization("Please implement and verify the fix").status, "authorized");
   assert.equal(classifyImplementationAuthorization("只做规划，不要改文件").status, "plan-only");
   assert.equal(classifyImplementationAuthorization("只做代码审查，不要改文件").status, "plan-only");
