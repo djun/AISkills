@@ -27,3 +27,4 @@ dsh/agent/preset/odai/skills/
 plans/odai-*-runs
 
 .tmp/
+.pnpm-store/
