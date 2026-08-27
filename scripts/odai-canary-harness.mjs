@@ -2328,6 +2328,7 @@ function deterministicCanaryFailure(testCase, workdir, lastMessageText, status) 
       break;
     }
     case 21:
+    case 22:
       allowOnly();
       break;
     default:

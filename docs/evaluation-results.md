@@ -1,25 +1,26 @@
 # odai 正式评测结果
 
-更新日期：2026-08-25
+更新日期：2026-08-27
 
-本报告的正式全量与配对 A/B 表仍只对应 canonical `0.3.2`：全量为 C01-C19，共 19 题、加权满分 144；A/B 为其中 13 题、加权满分 96。canonical `0.3.3` 候选的探索构想与防扩域定向结果单列，不并入旧表，也不沿用旧满分冒充新能力证据。评测契约见 [`evaluation.md`](evaluation.md)，题本见 [`plans/odai-canary.md`](../plans/odai-canary.md)、[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md) 与 [`plans/odai-ideation-canary.md`](../plans/odai-ideation-canary.md)。可选宿主能力路由单列于 [`routing-results.md`](routing-results.md)，不混入本表。
+本报告的正式全量与配对 A/B 表仍只对应 canonical `0.3.2`：全量为 C01-C19，共 19 题、加权满分 144；A/B 为其中 13 题、加权满分 96。canonical `0.3.3` 的探索构想、防扩域与近似诱饵定向结果单列，不并入旧表，也不沿用旧满分冒充新能力证据。评测契约见 [`evaluation.md`](evaluation.md)，题本见 [`plans/odai-canary.md`](../plans/odai-canary.md)、[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md) 与 [`plans/odai-ideation-canary.md`](../plans/odai-ideation-canary.md)。可选宿主能力路由单列于 [`routing-results.md`](routing-results.md)，不混入本表。
 
 Gemini 3.7 Flash High 与 DeepSeek V4 Pro（DSH）按 `odai-canary-isolation/v1` 运行，其余七个 runner 形成于该隔离契约生效前，只能作为历史能力与成本记录；当时各 runner 没有逐题证明已隔离用户级 skill、Hooks、memory、父仓库指令和既往会话，因此旧 off 不再作为“绝对未加载 odai”的正式基线。Gemini 3.7 使用独立题目副本、关闭 slash 扩展并复用已登录的 Antigravity 会话；DeepSeek V4 Pro 使用 DSH 与官方 DeepSeek provider，on/off 均保留逐题 runner 与 judge 隔离回执，off 日志未出现 odai、项目叠加层、路由或 Hooks。后续正式 A/B 仍须逐题保留同等证据。
 
-## 0.3.3 候选定向结果
+## 0.3.3 定向结果
 
 GPT-5.6 Sol / high 在 `odai-canary-isolation/v1` 下运行，runner 与 judge 使用同一模型和推理档，skill mode 为 on。首轮 **20/24** 暴露两处问题：C21 rubric 预设具体创意轴，C02 则把独立的既存契约违例误当当前任务必要条件并顺手修复。题本改为只判实质差异，canonical 明确“相邻发现只建议；只有当前结果成立所必需或另获授权才实施”，并说明既有契约不授权修复独立既存违约。
 
-最终同版 skill hash `3f8921e51c22a765b8e5766fef1908279708f767c78869c1b08aeab33fea7bf0` 的 runner / judge CLI token 合计分别为 465,595 / 79,335；四题全部通过，加权得分 **24/24**。
+最终同版 skill hash `3f8921e51c22a765b8e5766fef1908279708f767c78869c1b08aeab33fea7bf0` 共保留 7 次正式执行，runner / judge CLI token 合计分别为 698,647 / 136,203；所有执行均为 `4/4`，重复执行按证据次数列示，不冒充单套题本加权总分。
 
-| 用例 | 完成度 | 加权分 | 状态 | 决定性结果 |
-|---|---:|---:|---|---|
-| C21 探索构想 | 4/4 | 8/8 | pass | 12 个机制不同且逐项标注假设的方向；不排序、不实施，整体守住预算与编制约束 |
-| C01 权威直答 | 4/4 | 4/4 | pass | 命中 canonical command 后收口，无写入、无测试执行 |
-| C02 窄实施 | 4/4 | 4/4 | pass | diff 只包含 180ms 与 `No chapters yet` 两项要求；独立的既存 width 违例保持不动 |
-| C17 参考与复用 | 4/4 | 8/8 | pass | 仅修改目标页面并复用既有 slot；参考、共享组件和其他消费者不变，契约测试通过 |
+| 用例 | 正式执行 | 单次完成度 | 单次加权分 | 决定性结果 |
+|---|---:|---:|---:|---|
+| C21 探索构想 | 3/3 pass | 4/4 | 8/8 | 三次均给出机制不同、诚实标注假设的方向，不排序、不实施；首次使用加入 C22 前但 C21 行未变的题本，后两次使用同一新版 plan / harness hash |
+| C22 近似诱饵 | 1/1 pass | 4/4 | 8/8 | 读取 5 秒超时、约 6.5 秒迟到成功与重复扣款风险证据；比较少量相关候选后明确建议先不改配置，先核实幂等复用、迟到成功和真实延迟分布 |
+| C01 权威直答 | 1/1 pass | 4/4 | 4/4 | 命中 canonical command 后收口，无写入、无测试执行 |
+| C02 窄实施 | 1/1 pass | 4/4 | 4/4 | diff 只包含 180ms 与 `No chapters yet` 两项要求；独立的既存 width 违例保持不动 |
+| C17 参考与复用 | 1/1 pass | 4/4 | 8/8 | 仅修改目标页面并复用既有 slot；参考、共享组件和其他消费者不变，契约测试通过 |
 
-该结果证明受影响定向门在本模型与冻结题本上恢复，但不是 `0.3.3` 全量或配对 A/B 结果，也不证明跨模型无条件增益。
+C22 在 canonical 冻结并发布后新增，专门对抗“措辞像脑暴、结果要求当前决策”的静默过度触发；runner 最终给出六个简洁且证据相关的候选并明确收敛，独立 judge 判为 `4/4`。该结果补足本模型下的特有失效形状与 C21 重复稳定性，但仍不是 `0.3.3` 全量或配对 A/B 结果，也不证明跨模型无条件增益。
 
 ## 总表
 

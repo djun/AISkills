@@ -8,7 +8,8 @@
 - canonical 恢复总控“谋有攻守”语义，并新增探索构想合同：用户目标是发散或头脑风暴时，非重复候选本身就是交付，候选不先受决策级证据门阻断；事实、假设和建议仍须分开，未要求收敛时不强选唯一路线，讨论不产生写入或实施授权。
 - 相邻发现默认只建议；只有它是当前结果成立的必要条件或另获授权才实施。既有契约约束本次改动不新增破坏，但不授权顺手修复与当前结果独立的既存违约。C21 题本只判断方向是否实质不同，不再要求命中预设创意类别。
 - GPT-5.6 Sol / high 首轮定向样本为 20/24；收紧题本与必要条件授权边界后，最终同版 hash 的 C21、C01、C02、C17 分别取得 8/8、4/4、4/4、8/8，总计 24/24。
-- DSH strict typecheck、Plugin/Runtime `208/208`、Agent `14/14`、canonical validator、版本与兼容矩阵、Plugin/Agent 真实 DSH load、双安装 coexistence 及双包 dry-run packaging 全部通过；生成目录和 tgz 均已清理。未执行 npm publish。
+- DSH strict typecheck、Plugin/Runtime `208/208`、Agent `14/14`、canonical validator、版本与兼容矩阵、Plugin/Agent 真实 DSH load、双安装 coexistence 及双包 dry-run packaging 全部通过；生成目录和 tgz 均已清理。Plugin 与 Agent `0.2.10` 已从同一 commit `473dd291fa92cbbe7f99baf33b001d4d4613ef49` 发布，registry `gitHead` 核验一致。
+- 发布后新增 C22 近似诱饵，验证请求虽含“多给几个思路”但要求当前决策时，模型会读取证据、比较相关候选并明确收敛；C22 为 8/8，同版 C21 补至三次独立执行且均为 8/8。
 
 ## 2026-08-25 — DSH 0.2.9 craft activation and reviewer checks
 
