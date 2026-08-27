@@ -1,10 +1,25 @@
 # odai 正式评测结果
 
-更新日期：2026-08-14
+更新日期：2026-08-25
 
-本报告只保留当前采用的普通模型全量与配对 A/B 结果。全量为 C01-C19，共 19 题、加权满分 144；A/B 为其中 13 题、加权满分 96。评测契约见 [`evaluation.md`](evaluation.md)，题本见 [`plans/odai-canary.md`](../plans/odai-canary.md) 与 [`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)。可选宿主能力路由单列于 [`routing-results.md`](routing-results.md)，不混入本表。
+本报告的正式全量与配对 A/B 表仍只对应 canonical `0.3.2`：全量为 C01-C19，共 19 题、加权满分 144；A/B 为其中 13 题、加权满分 96。canonical `0.3.3` 候选的探索构想与防扩域定向结果单列，不并入旧表，也不沿用旧满分冒充新能力证据。评测契约见 [`evaluation.md`](evaluation.md)，题本见 [`plans/odai-canary.md`](../plans/odai-canary.md)、[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md) 与 [`plans/odai-ideation-canary.md`](../plans/odai-ideation-canary.md)。可选宿主能力路由单列于 [`routing-results.md`](routing-results.md)，不混入本表。
 
 Gemini 3.7 Flash High 与 DeepSeek V4 Pro（DSH）按 `odai-canary-isolation/v1` 运行，其余七个 runner 形成于该隔离契约生效前，只能作为历史能力与成本记录；当时各 runner 没有逐题证明已隔离用户级 skill、Hooks、memory、父仓库指令和既往会话，因此旧 off 不再作为“绝对未加载 odai”的正式基线。Gemini 3.7 使用独立题目副本、关闭 slash 扩展并复用已登录的 Antigravity 会话；DeepSeek V4 Pro 使用 DSH 与官方 DeepSeek provider，on/off 均保留逐题 runner 与 judge 隔离回执，off 日志未出现 odai、项目叠加层、路由或 Hooks。后续正式 A/B 仍须逐题保留同等证据。
+
+## 0.3.3 候选定向结果
+
+GPT-5.6 Sol / high 在 `odai-canary-isolation/v1` 下运行，runner 与 judge 使用同一模型和推理档，skill mode 为 on。首轮 **20/24** 暴露两处问题：C21 rubric 预设具体创意轴，C02 则把独立的既存契约违例误当当前任务必要条件并顺手修复。题本改为只判实质差异，canonical 明确“相邻发现只建议；只有当前结果成立所必需或另获授权才实施”，并说明既有契约不授权修复独立既存违约。
+
+最终同版 skill hash `3f8921e51c22a765b8e5766fef1908279708f767c78869c1b08aeab33fea7bf0` 的 runner / judge CLI token 合计分别为 465,595 / 79,335；四题全部通过，加权得分 **24/24**。
+
+| 用例 | 完成度 | 加权分 | 状态 | 决定性结果 |
+|---|---:|---:|---|---|
+| C21 探索构想 | 4/4 | 8/8 | pass | 12 个机制不同且逐项标注假设的方向；不排序、不实施，整体守住预算与编制约束 |
+| C01 权威直答 | 4/4 | 4/4 | pass | 命中 canonical command 后收口，无写入、无测试执行 |
+| C02 窄实施 | 4/4 | 4/4 | pass | diff 只包含 180ms 与 `No chapters yet` 两项要求；独立的既存 width 违例保持不动 |
+| C17 参考与复用 | 4/4 | 8/8 | pass | 仅修改目标页面并复用既有 slot；参考、共享组件和其他消费者不变，契约测试通过 |
+
+该结果证明受影响定向门在本模型与冻结题本上恢复，但不是 `0.3.3` 全量或配对 A/B 结果，也不证明跨模型无条件增益。
 
 ## 总表
 

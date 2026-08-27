@@ -31,7 +31,7 @@ With DSH already installed, run the single Agent package command below. The pack
 npx odai-dsh-agent install
 ```
 
-The installer checks `dsh -V` and currently accepts exactly `0.1.1-rc.2`; `0.2.9` rejects rc.7, rc.1, and every other developer-preview release. It records the detected version in the managed manifest and installs the rc.2 Standard composition directly.
+The installer checks `dsh -V` and currently accepts exactly `0.1.1-rc.2`; `0.2.10` rejects rc.7, rc.1, and every other developer-preview release. It records the detected version in the managed manifest and installs the rc.2 Standard composition directly.
 
 `DSH_HOME` is honored. An explicit location can be supplied without changing the environment:
 

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "odai",
-  "skillVersion": "0.3.2",
+  "skillVersion": "0.3.3",
   "runtimeContract": 3,
   "requiredFiles": [
     "SKILL.md",

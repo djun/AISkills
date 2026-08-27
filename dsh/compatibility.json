@@ -121,7 +121,8 @@
     },
     {
       "packageVersions": [
-        "0.2.9"
+        "0.2.9",
+        "0.2.10"
       ],
       "surfaces": [
         "plugin",

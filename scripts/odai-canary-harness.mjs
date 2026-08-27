@@ -1994,6 +1994,12 @@ console.log("release contract pass");
       refundReleaseTest: readText(path.join(workdir, "tests", "test_release_contract.mjs")),
     });
   }
+  if (testCase.id === 21) {
+    writeText(path.join(workdir, "README.md"), `# Independent ideation fixture
+
+The user's prompt contains the complete discussion context. No repository file is an authority for the requested brainstorming, and this task requires no file modification.
+`);
+  }
   if (skillMode === "on") copySkill(root, workdir);
   initGit(workdir);
   if (testCase.id === 13) {
@@ -2321,6 +2327,9 @@ function deterministicCanaryFailure(testCase, workdir, lastMessageText, status) 
       );
       break;
     }
+    case 21:
+      allowOnly();
+      break;
     default:
       break;
   }

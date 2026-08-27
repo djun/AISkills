@@ -151,7 +151,7 @@ function assemblyFor(ctx: CapturedContext) {
 }
 
 test("bundle manifest validates complete content and full SemVer precedence", () => {
-  assert.equal(bundled.manifest.skillVersion, "0.3.2");
+  assert.equal(bundled.manifest.skillVersion, "0.3.3");
   assert.equal(bundled.manifest.runtimeContract, 3);
   assert.equal(bundled.manifest.requiredFiles.length, 29);
   assert.match(bundled.roleContracts.researcher, /来源账本只是检索索引/u);

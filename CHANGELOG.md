@@ -2,6 +2,14 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-27 — DSH 0.2.10 advisor and ideation contract
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.10`，继续仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`；canonical skill 升为 `0.3.3`，runtime contract 保持 `3`。
+- canonical 恢复总控“谋有攻守”语义，并新增探索构想合同：用户目标是发散或头脑风暴时，非重复候选本身就是交付，候选不先受决策级证据门阻断；事实、假设和建议仍须分开，未要求收敛时不强选唯一路线，讨论不产生写入或实施授权。
+- 相邻发现默认只建议；只有它是当前结果成立的必要条件或另获授权才实施。既有契约约束本次改动不新增破坏，但不授权顺手修复与当前结果独立的既存违约。C21 题本只判断方向是否实质不同，不再要求命中预设创意类别。
+- GPT-5.6 Sol / high 首轮定向样本为 20/24；收紧题本与必要条件授权边界后，最终同版 hash 的 C21、C01、C02、C17 分别取得 8/8、4/4、4/4、8/8，总计 24/24。
+- DSH strict typecheck、Plugin/Runtime `208/208`、Agent `14/14`、canonical validator、版本与兼容矩阵、Plugin/Agent 真实 DSH load、双安装 coexistence 及双包 dry-run packaging 全部通过；生成目录和 tgz 均已清理。未执行 npm publish。
+
 ## 2026-08-25 — DSH 0.2.9 craft activation and reviewer checks
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.9`，当前候选仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`，不再携带 rc.7/rc.1 的 Agent composition 适配与发布矩阵；`0.2.8` 及更早兼容记录按事实保留。canonical skill 保持 `0.3.2`，runtime contract 保持 `3`。
