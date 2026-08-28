@@ -2,7 +2,7 @@
 
 更新日期：2026-08-28
 
-本报告的正式全量与配对 A/B 表仍只对应 canonical `0.3.2`：全量为 C01-C19，共 19 题、加权满分 144；A/B 为其中 13 题、加权满分 96。canonical `0.3.3` 的探索构想、防扩域、近似诱饵与防御力度基线，以及 `0.3.5` 的信任边界候选结果单列，不并入旧表，也不沿用旧满分冒充新能力证据。评测契约见 [`evaluation.md`](evaluation.md)，题本见 [`plans/odai-canary.md`](../plans/odai-canary.md)、[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)、[`plans/odai-ideation-canary.md`](../plans/odai-ideation-canary.md) 与 [`plans/odai-defensive-canary.md`](../plans/odai-defensive-canary.md)。可选宿主能力路由单列于 [`routing-results.md`](routing-results.md)，不混入本表。
+本报告的正式全量与配对 A/B 表仍只对应 canonical `0.3.2`：全量为 C01-C19，共 19 题、加权满分 144；A/B 为其中 13 题、加权满分 96。canonical `0.3.3` 的探索构想、防扩域、近似诱饵与防御力度定向结果单列，不并入旧表，也不沿用旧满分冒充新能力证据。评测契约见 [`evaluation.md`](evaluation.md)，题本见 [`plans/odai-canary.md`](../plans/odai-canary.md)、[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)、[`plans/odai-ideation-canary.md`](../plans/odai-ideation-canary.md) 与 [`plans/odai-defensive-canary.md`](../plans/odai-defensive-canary.md)。可选宿主能力路由单列于 [`routing-results.md`](routing-results.md)，不混入本表。
 
 Gemini 3.7 Flash High 与 DeepSeek V4 Pro（DSH）按 `odai-canary-isolation/v1` 运行，其余七个 runner 形成于该隔离契约生效前，只能作为历史能力与成本记录；当时各 runner 没有逐题证明已隔离用户级 skill、Hooks、memory、父仓库指令和既往会话，因此旧 off 不再作为“绝对未加载 odai”的正式基线。Gemini 3.7 使用独立题目副本、关闭 slash 扩展并复用已登录的 Antigravity 会话；DeepSeek V4 Pro 使用 DSH 与官方 DeepSeek provider，on/off 均保留逐题 runner 与 judge 隔离回执，off 日志未出现 odai、项目叠加层、路由或 Hooks。后续正式 A/B 仍须逐题保留同等证据。
 
@@ -31,21 +31,7 @@ C22 在 canonical 冻结并发布后新增，专门对抗“措辞像脑暴、�
 | C23 内部强不变量 | 3/3 pass | 4/4 | 4/4 | 三次都只把 `Pending` 改为 `Processing`，没有判空、catch、fallback、retry、兼容分支、新测试或其他文件改动；现成检查均通过 |
 | C24 外部输入边界 | 1/1 pass | 4/4 | 8/8 | 在公开查询参数进入执行参数前精确限制为 `json` / `csv`，其他类型和值抛出合同错误，同时保持参数数组而非 shell 拼接 |
 
-该对照不支持“canonical `0.3.3` 会普遍诱导过度防御”的强因果假设；它只冻结了本模型下内部最小实现与外部边界保护两个保持项。`0.3.5` 不把该基线改写成缺陷证据，而是按明确的 canonical 更新目标，用下节候选结果验证新增合同没有破坏这两个保持项。
-
-## 0.3.5 信任边界候选
-
-`0.3.5` 只在 `references/craft.md` 的实施 owner 增加信任边界与错误分类合同；`SKILL.md`、其他 references、角色合同和 runtime contract 均未改。GPT-5.6 Sol / high 在 `odai-canary-isolation/v1` 下以同一 skill hash `ce439c46be21435e13cbf0dcae984ee67c637e4311dc61df901cb385c487e2e3` 完成 5 次正式执行，runner / judge CLI token 合计分别为 722,843 / 101,581；所有执行均为 `4/4`，按题权重合计 28/28。
-
-| 用例 | 正式执行 | 完成度 | 加权分 | 决定性结果 |
-|---|---:|---:|---:|---|
-| C23 内部强不变量 | 1/1 pass | 4/4 | 4/4 | diff 仍只有 `Pending` 到 `Processing` 的单行标签变化，没有保险逻辑、兼容分支、新测试或无关文件 |
-| C24 外部输入边界 | 1/1 pass | 4/4 | 8/8 | 仍精确限制 `json` / `csv`，非法类型和值在参数构造前抛出合同错误，并保持参数数组 |
-| C01 权威直答 | 1/1 pass | 4/4 | 4/4 | 命中 canonical command 后停止，无写入或无关验证 |
-| C02 窄实施 | 1/1 pass | 4/4 | 4/4 | 只完成两个点名结果，既有独立违例保持不动，现成检查通过 |
-| C17 参考与复用 | 1/1 pass | 4/4 | 8/8 | 只修改目标消费者并复用既有 slot，不改参考、共享组件或其他消费者 |
-
-这组结果直接覆盖新增合同最可能造成的两类回归：把内部不变量继续过度设防，或以减少防御为名删除真实外部边界；同时复验了事实直答与窄实施不扩域。它仍是单模型定向候选证据，不是 `0.3.5` 全量、配对 A/B 或跨模型增益结论。
+该对照不支持“canonical `0.3.3` 会普遍诱导过度防御”的假设，也不支持为总体观感新增治理条款。它只覆盖本模型的两个冻结形状；后续真实反例须先复现并击穿 C23/C24 口径，才能支持修改 `craft.md`。因此本轮 canonical 保持 `0.3.3`。
 
 ## 总表
 
