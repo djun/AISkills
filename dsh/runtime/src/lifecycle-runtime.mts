@@ -15,6 +15,7 @@ import type { RouteDecision } from "./router.mjs";
 import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
 import { classifyModelRouteFailure, probeModelRoute } from "./model-route.mjs";
 import { selectSharedOutputPolicyForTurn } from "./output-policy-state.mjs";
+import { prepareSessionOutputControl } from "./output-session.mjs";
 import {
   isSubagentSession, outputText, pluginMessage,
   renderOutputLimitInterruptionNotice, renderResearchTaskContract, routeFromConfig,
@@ -127,7 +128,7 @@ interface LifecycleDependencies {
   responsibilityScopeOwners: WeakMap<DshSession, DshAgent>;
   responsibilityScopes: WeakMap<DshAgent, ResponsibilityScope>;
   routeProtections: WeakMap<DshAgent, RouteProtection>;
-  selectOutputForAgent(): { policy: { maxTokens?: number } };
+  selectOutputForAgent(agent?: DshAgent, turn?: number): { policy: { maxTokens?: number } };
   stopDanglingResponsibilityScope(agent: DshAgent, reason: string): RuntimeEventData | undefined;
   stopResponsibilityScope(agent: DshAgent, reason: string, position?: RuntimeEventData): ResponsibilityScope | undefined;
 }
@@ -140,6 +141,18 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
   ) => {
     let proposed = await next();
     const childRole = routedRoleOf(agent);
+    if (!childRole && !isSubagentSession(agent)) {
+      if (agent.session) responsibilityScopeOwners.set(agent.session, agent);
+      const directMessage = latestDirectUserMessage(agent);
+      prepareSessionOutputControl({
+        events: evidence.events(agent),
+        text: directMessage ? extractLatestUserText([directMessage]) : "",
+        turn,
+        step,
+        userMessageId: typeof directMessage?.id === "string" ? directMessage.id : undefined,
+        append(type, data) { appendEvent(agent, type, data); },
+      });
+    }
     const childRoleState = childRole ? configuredRole(agent, childRole, turn) : undefined;
     if (childRole && !childRoleState?.route) {
       throw new Error(childRoleState?.error
@@ -308,7 +321,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
     }
     if (childRole || isSubagentSession(agent)) return finalize(request);
 
-    const outputSelection = await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
+    const outputSelection = await selectSharedOutputPolicyForTurn(agent, turn, () => selectOutputForAgent(agent, turn));
     const configuredMaxTokens = outputSelection.policy.maxTokens;
     if (scopedResponsibilityMaxTokens !== undefined) {
       if (!hasSessionEvent(agent, "odai/output-budget-overridden", (data) => data?.turn === turn && data?.step === step)) {
@@ -504,6 +517,36 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
           && Number.isSafeInteger(usage?.usage?.outputTokens)
           ? usage?.usage?.outputTokens
           : undefined;
+        const usageStep = usage?.step;
+        const rawControllerOutputTokens = usage?.usage?.outputTokens;
+        const controllerBudget = usage?.turn === event.data.turn
+          && Number.isSafeInteger(usageStep) && Number.isSafeInteger(rawControllerOutputTokens)
+          ? events.findLast((candidate) => (
+            candidate.type === "odai/output-budget-applied"
+            && candidate.data?.turn === event.data.turn
+            && candidate.data?.step === usageStep
+            && candidate.data?.budgetSource === "controller-policy"
+            && candidate.data?.responsibility === undefined
+            && Number.isSafeInteger(candidate.data?.effectiveMaxTokens)
+          ))?.data
+          : undefined;
+        const controllerOutputTokens = controllerBudget ? rawControllerOutputTokens : undefined;
+        if (controllerBudget && !events.some((candidate) => (
+          candidate.type === "odai/controller-output-interrupted"
+          && candidate.data?.turn === controllerBudget.turn
+          && candidate.data?.step === controllerBudget.step
+        ))) {
+          appendEvent(owner, "odai/controller-output-interrupted", {
+            turn: controllerBudget.turn,
+            step: controllerBudget.step,
+            reason: "max-tokens",
+            configuredMaxTokens: controllerBudget.configuredMaxTokens,
+            effectiveMaxTokens: controllerBudget.effectiveMaxTokens,
+            ...(typeof controllerOutputTokens === "number" ? { outputTokens: controllerOutputTokens } : {}),
+            budgetSource: "controller-policy",
+            scope: "turn",
+          });
+        }
         if (stopped?.reason === "terminal-response"
           && Number.isSafeInteger(stopped.stopStep)
           && receipt?.step === stopped.stopStep

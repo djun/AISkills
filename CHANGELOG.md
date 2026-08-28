@@ -2,6 +2,12 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-28 — DSH 0.2.13 session output recovery candidate
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 的未发布候选同步升为 `0.2.13`，继续仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`；canonical skill 保持 `0.3.5`，runtime contract 保持 `3`，CLI 保持 `0.0.2`。
+- DSH runtime 在模型生成前处理 authenticated session-scoped ceiling 指令：`这个会话放开上限` 只移除当前会话的 Odai Controller ceiling，`这个会话恢复输出上限` 恢复共享策略；不改持久化 output store，不暴露全局持久化配置工具，不移除更低的 host request ceiling，也不影响 child 或职责预算。
+- 普通 Controller 回合仅在原始 `turn/end=max-tokens` 与当轮 `odai/output-budget-applied` 共同证明由 controller policy 截断时记录 interruption；紧邻的纯 `继续` 只获得一个 ceiling-free recovery turn。夹带新目标/范围、隔轮继续和 preexisting request ceiling 均不复用该恢复状态。
+
 ## 2026-08-28 — canonical 0.3.5 / DSH 0.2.12 intent alignment
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为并发布 `0.2.12`，继续仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`；双包所含 canonical skill 升为 `0.3.5`，runtime contract 保持 `3`，CLI 保持 `0.0.2`，registry `gitHead` 均为 `dd5037c26e1fc175abb1ec874dfc87deac26e89b`。

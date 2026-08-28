@@ -23,8 +23,8 @@ test("repository policy covers every current owned version carrier", () => {
     result.versions.map(({ path, field, version }) => `${path}#${field}=${version}`),
     [
       "cli/package.json#version=0.0.2",
-      "dsh/plugin/package.json#version=0.2.12",
-      "dsh/agent/package.json#version=0.2.12",
+      "dsh/plugin/package.json#version=0.2.13",
+      "dsh/agent/package.json#version=0.2.13",
       "skills/odai/manifest.json#skillVersion=0.3.5",
       "skills/odai/manifest.json#runtimeContract=3",
     ],

@@ -1304,6 +1304,270 @@ test("controller output policy is default-concise, turn-stable, request-bounded,
   );
 });
 
+test("session-scoped output ceiling directives apply before generation without changing shared economy", async () => {
+  const configPath = resolve(testDshHome, "session-output-ceiling", "output.json");
+  mkdirSync(resolve(testDshHome, "session-output-ceiling"), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify({ schemaVersion: 1, policy: { concise: true, maxTokens: 500 } })}\n`, "utf8");
+  const originalStore = readFileSync(configPath, "utf8");
+  const ctx = fakeContext();
+  apply(ctx, { skillPath, routing: { mode: "off" }, output: { configPath } });
+  const assemble = ctx.captured.handlers.get("system-prompt/assemble");
+  const request = ctx.captured.handlers.get("agent/request");
+  const events: DshEvent[] = [];
+  const restrictions = new RequiredArray<TestRestriction>();
+  const agent = {
+    phase: { turn: 1 },
+    ctx: { tools: { restrict(filter: TestRestriction) { restrictions.push(filter); return () => {}; } } },
+    session: {
+      header: {},
+      events,
+      append(type: string, data: RuntimeEventData) { events.push({ type, data }); },
+    },
+  };
+  const context = { agent, signal: new AbortController().signal };
+  const downstream = async () => ({ sections: ctx.captured.sections });
+  let hostSeq = 0;
+  const addUser = (turn: number, id: string, text: string) => {
+    events.push({ type: "turn/start", seq: hostSeq += 1, data: { turn } });
+    events.push({
+      type: "user/message",
+      seq: hostSeq += 1,
+      data: { ...userMessage(text), id },
+    });
+  };
+
+  addUser(1, "uncap-1", "这个会话放开上限");
+  const uncapped = await assemble({}, context, downstream);
+  const uncappedPrompt = uncapped.sections.find((section: TestPromptSection) => section.name === "odai:controller-output-policy").text;
+  assert.match(uncappedPrompt, /session-scoped controller output ceiling is disabled/iu);
+  assert.doesNotMatch(uncappedPrompt, /ceiling request of 500 tokens/iu);
+  assert.ok(last(restrictions).deny.includes("odai_output_config"));
+  assert.deepEqual(
+    await request({ agent, turn: 1, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 8_000 },
+  );
+  assert.equal(readFileSync(configPath, "utf8"), originalStore);
+  const child = {
+    phase: { turn: 1 },
+    session: { header: { origin: "subagent", delegationDepth: 1 }, events: [] },
+  };
+  assert.deepEqual(
+    await request({ agent: child, turn: 1, step: 1 }, async () => ({ provider: "child", model: "worker", maxTokens: 4_000 })),
+    { provider: "child", model: "worker", maxTokens: 4_000 },
+  );
+  await assemble({}, context, downstream);
+  assert.equal(events.filter((event) => event.type === "odai/output-session-ceiling-configured").length, 1);
+  assert.deepEqual(findEvent(events, (event) => event.type === "odai/output-session-ceiling-configured").data, {
+    turn: 1,
+    step: 1,
+    action: "uncap",
+    userMessageId: "uncap-1",
+    authorizationSource: "authenticated-direct-user-message",
+    scope: "session",
+  });
+
+  agent.phase.turn = 2;
+  addUser(2, "ordinary-2", "现在回答刚才的问题");
+  const stillUncapped = await assemble({}, context, downstream);
+  assert.match(
+    stillUncapped.sections.find((section: TestPromptSection) => section.name === "odai:controller-output-policy").text,
+    /session-scoped controller output ceiling is disabled/iu,
+  );
+  assert.deepEqual(
+    await request({ agent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller" })),
+    { provider: "base", model: "controller" },
+  );
+
+  agent.phase.turn = 3;
+  addUser(3, "restore-3", "这个会话恢复输出上限");
+  const restored = await assemble({}, context, downstream);
+  assert.match(
+    restored.sections.find((section: TestPromptSection) => section.name === "odai:controller-output-policy").text,
+    /ceiling request of 500 tokens/iu,
+  );
+  assert.ok(last(restrictions).deny.includes("odai_output_config"));
+  assert.deepEqual(
+    await request({ agent, turn: 3, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 500 },
+  );
+  assert.equal(readFileSync(configPath, "utf8"), originalStore);
+
+  const questionEvents: DshEvent[] = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    {
+      type: "user/message",
+      seq: 2,
+      data: { ...userMessage("这个会话能不能放开上限？"), id: "question-1" },
+    },
+  ];
+  const questionRestrictions = new RequiredArray<TestRestriction>();
+  const questionAgent = {
+    phase: { turn: 1 },
+    ctx: { tools: { restrict(filter: TestRestriction) { questionRestrictions.push(filter); return () => {}; } } },
+    session: {
+      header: {},
+      events: questionEvents,
+      append(type: string, data: RuntimeEventData) { questionEvents.push({ type, data }); },
+    },
+  };
+  await assemble({}, { agent: questionAgent, signal: context.signal }, downstream);
+  assert.equal(last(questionRestrictions).deny.includes("odai_output_config"), false);
+  assert.equal(questionEvents.some((event) => event.type === "odai/output-session-ceiling-configured"), false);
+  assert.deepEqual(
+    await request({ agent: questionAgent, turn: 1, step: 1 }, async () => ({ provider: "base", model: "controller" })),
+    { provider: "base", model: "controller", maxTokens: 500 },
+  );
+});
+
+test("a verified controller max-token interruption grants one uncapped pure-continuation recovery turn", async () => {
+  const configPath = resolve(testDshHome, "controller-output-recovery", "output.json");
+  mkdirSync(resolve(testDshHome, "controller-output-recovery"), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify({ schemaVersion: 1, policy: { concise: true, maxTokens: 500 } })}\n`, "utf8");
+  const ctx = fakeContext();
+  apply(ctx, { skillPath, routing: { mode: "off" }, output: { configPath } });
+  const request = ctx.captured.handlers.get("agent/request");
+  const observe = ctx.captured.handlers.get("session/event");
+  const assemble = ctx.captured.handlers.get("system-prompt/assemble");
+  const downstream = async () => ({ sections: ctx.captured.sections });
+  const events: DshEvent[] = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "user/message", seq: 2, data: { ...userMessage("请给我一个很短的回答"), id: "task-1" } },
+  ];
+  const agent = {
+    phase: { turn: 1 },
+    session: {
+      header: {},
+      events,
+      append(type: string, data: RuntimeEventData) { events.push({ type, data }); },
+    },
+  };
+  assert.deepEqual(
+    await request({ agent, turn: 1, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 500 },
+  );
+  observe(agent.session, {
+    type: "assistant/message",
+    data: { turn: 1, step: 1, usage: { outputTokens: 500 } },
+  });
+  observe(agent.session, {
+    type: "turn/end",
+    data: { turn: 1, reason: { kind: "max-tokens" } },
+  });
+  assert.deepEqual(findEvent(events, (event) => event.type === "odai/controller-output-interrupted").data, {
+    turn: 1,
+    step: 1,
+    reason: "max-tokens",
+    configuredMaxTokens: 500,
+    effectiveMaxTokens: 500,
+    outputTokens: 500,
+    budgetSource: "controller-policy",
+    scope: "turn",
+  });
+
+  agent.phase.turn = 2;
+  events.push({ type: "turn/start", seq: 10, data: { turn: 2 } });
+  events.push({ type: "user/message", seq: 11, data: { ...userMessage("继续"), id: "continue-2" } });
+  const recoveryPrompt = await assemble({}, { agent, signal: new AbortController().signal }, downstream);
+  assert.match(
+    recoveryPrompt.sections.find((section: TestPromptSection) => section.name === "odai:controller-output-policy").text,
+    /one-turn output recovery is active/iu,
+  );
+  assert.deepEqual(
+    await request({ agent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 8_000 },
+  );
+  assert.deepEqual(
+    await request({ agent, turn: 2, step: 2 }, async () => ({ provider: "base", model: "controller", maxTokens: 300 })),
+    { provider: "base", model: "controller", maxTokens: 300 },
+  );
+  assert.equal(events.filter((event) => event.type === "odai/controller-output-recovery").length, 1);
+
+  agent.phase.turn = 3;
+  events.push({ type: "turn/start", seq: 20, data: { turn: 3 } });
+  events.push({ type: "user/message", seq: 21, data: { ...userMessage("继续"), id: "continue-3" } });
+  assert.deepEqual(
+    await request({ agent, turn: 3, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 500 },
+  );
+
+  const hostEvents: DshEvent[] = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "user/message", seq: 2, data: { ...userMessage("执行一个受 host 限制的短答"), id: "host-task-1" } },
+  ];
+  const hostAgent = {
+    phase: { turn: 1 },
+    session: {
+      header: {},
+      events: hostEvents,
+      append(type: string, data: RuntimeEventData) { hostEvents.push({ type, data }); },
+    },
+  };
+  assert.deepEqual(
+    await request({ agent: hostAgent, turn: 1, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 500 },
+  );
+  assert.deepEqual(
+    await request({ agent: hostAgent, turn: 1, step: 2 }, async () => ({ provider: "base", model: "controller", maxTokens: 300 })),
+    { provider: "base", model: "controller", maxTokens: 300 },
+  );
+  observe(hostAgent.session, {
+    type: "assistant/message",
+    data: { turn: 1, step: 2, usage: { outputTokens: 300 } },
+  });
+  observe(hostAgent.session, {
+    type: "turn/end",
+    data: { turn: 1, reason: { kind: "max-tokens" } },
+  });
+  assert.equal(hostEvents.some((event) => event.type === "odai/controller-output-interrupted"), false);
+  hostAgent.phase.turn = 2;
+  hostEvents.push({ type: "turn/start", seq: 10, data: { turn: 2 } });
+  hostEvents.push({ type: "user/message", seq: 11, data: { ...userMessage("继续"), id: "host-continue-2" } });
+  assert.deepEqual(
+    await request({ agent: hostAgent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 500 },
+  );
+
+  const resumedControllerEvents: DshEvent[] = [
+    { type: "turn/start", seq: 1, data: { turn: 1 } },
+    { type: "user/message", seq: 2, data: { ...userMessage("职责返回后由 Controller 回答"), id: "resumed-task-1" } },
+    {
+      type: "odai/responsibility-scope-stopped",
+      data: { scopeId: "stopped-planner-1", turn: 1, startStep: 1, stopStep: 1, responsibility: "planner", reason: "returned" },
+    },
+  ];
+  const resumedControllerAgent = {
+    phase: { turn: 1 },
+    session: {
+      header: {},
+      events: resumedControllerEvents,
+      append(type: string, data: RuntimeEventData) { resumedControllerEvents.push({ type, data }); },
+    },
+  };
+  assert.deepEqual(
+    await request({ agent: resumedControllerAgent, turn: 1, step: 2 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 500 },
+  );
+  observe(resumedControllerAgent.session, {
+    type: "assistant/message",
+    data: { turn: 1, step: 2, usage: { outputTokens: 500 } },
+  });
+  observe(resumedControllerAgent.session, {
+    type: "turn/end",
+    data: { turn: 1, reason: { kind: "max-tokens" } },
+  });
+  assert.equal(
+    resumedControllerEvents.some((event) => event.type === "odai/controller-output-interrupted" && event.data?.step === 2),
+    true,
+  );
+  resumedControllerAgent.phase.turn = 2;
+  resumedControllerEvents.push({ type: "turn/start", seq: 10, data: { turn: 2 } });
+  resumedControllerEvents.push({ type: "user/message", seq: 11, data: { ...userMessage("继续"), id: "resumed-continue-2" } });
+  assert.deepEqual(
+    await request({ agent: resumedControllerAgent, turn: 2, step: 1 }, async () => ({ provider: "base", model: "controller", maxTokens: 8_000 })),
+    { provider: "base", model: "controller", maxTokens: 8_000 },
+  );
+});
+
 test("host evolution bypass disables selection and mutations", async () => {
   const previous = process.env.ODAI_DISABLE_EVOLUTION;
   process.env.ODAI_DISABLE_EVOLUTION = "1";

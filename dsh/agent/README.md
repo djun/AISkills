@@ -31,7 +31,7 @@ With DSH already installed, run the single Agent package command below. The pack
 npx odai-dsh-agent install
 ```
 
-The installer checks `dsh -V` and currently accepts exactly `0.1.1-rc.2`; `0.2.12` rejects rc.7, rc.1, and every other developer-preview release. It records the detected version in the managed manifest and installs the rc.2 Standard composition directly.
+The installer checks `dsh -V` and currently accepts exactly `0.1.1-rc.2`; `0.2.13` rejects rc.7, rc.1, and every other developer-preview release. It records the detected version in the managed manifest and installs the rc.2 Standard composition directly.
 
 `DSH_HOME` is honored. An explicit location can be supplied without changing the environment:
 
@@ -78,6 +78,8 @@ The Agent defaults to **soft concise** output and shares three controller output
 Natural requests include `use normal output`, `use soft concise output`, `enable economy mode`, and `set economy mode to 1200 tokens`. Removing the persisted override restores soft concise. Existing pre-mode stores that combined `concise: false` with a ceiling remain readable for compatibility, but new named-mode changes cannot create that legacy combination. The selected mode is stable within one turn and changes from the next user turn.
 
 An economy ceiling only tightens an existing lower host request value and is not a locally enforceable hard billing boundary. A provider may count hidden reasoning inside it, exceed or ignore it, or end before useful final text, especially at a high reasoning effort; strict compliance must be checked from per-request usage. Odai enables economy only when requested and never invents a non-default custom value. The mode does not alter child-agent role budgets, compaction, checkpoints, or other internal context; an incomplete token-capped compaction fails closed instead of replacing history.
+
+An authenticated `这个会话放开上限` directive removes only Odai's controller ceiling before the current request and for the rest of that session, without changing the shared output store or exposing the persistent configuration tool; `这个会话恢复输出上限` restores shared-policy inheritance. After a verified ordinary-controller `max-tokens` stop, the immediately following pure `继续` receives one ceiling-free recovery turn. Existing lower host limits, responsibility overrides, other sessions, and revised or new tasks remain unchanged.
 
 A same-provider/model compaction inherits controller reasoning while keeping its independent summary budget. Odai leaves prompt-cache retention unset by default; `ODAI_COMPACTION_CACHE_RETENTION` can explicitly select `short`, `long`, or `none`. `provider-default` means Odai adds no retention, while any explicit incoming retention remains authoritative; configured retention still applies when host routing has already supplied reasoning. Custom preset compositions can set the same value through runtime `compaction.cacheRetention`. The first controller request after a landed summary still rebuilds the changed summary prefix.
 

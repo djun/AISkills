@@ -1,8 +1,18 @@
 import { classifyImplementationAuthorization, decideRoute, extractLatestUserText } from "./router.mjs";
 import { ROUTING_CONFIG_PROMPT, effectiveRoutingSnapshot } from "./routing-config.mjs";
-import { DEFAULT_OUTPUT_POLICY, effectiveOutputPolicy, renderOutputPolicyPrompt } from "./output-config.mjs";
+import {
+  DEFAULT_OUTPUT_POLICY,
+  classifySessionOutputCeilingDirective,
+  effectiveOutputPolicy,
+  renderOutputPolicyPrompt,
+} from "./output-config.mjs";
 import type { OutputPolicy } from "./output-config.mjs";
 import { selectSharedOutputPolicyForTurn } from "./output-policy-state.mjs";
+import {
+  applySessionOutputControl,
+  prepareSessionOutputControl,
+  renderSessionOutputControlPrompt,
+} from "./output-session.mjs";
 import { COMPACTION_CONFIG_PROMPT } from "./compaction-config.mjs";
 import { RESPONSIBILITY_GAP_PROMPT } from "./responsibility-gap.mjs";
 import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
@@ -57,6 +67,7 @@ interface OutputSelection {
   source: string;
   status?: string;
   reasonCode?: string;
+  sessionCeiling?: "uncapped" | "recovery";
 }
 
 interface MemorySettings {
@@ -209,18 +220,20 @@ export function createPromptRuntime(deps: PromptDependencies) {
     const upstream = await selectUpstreamForAgent(agent, context);
     return applySkillEvolutionSelection(upstream, config.governance.evolutionRoot, { disabled: evolutionDisabled });
   };
-  const selectOutputForAgent = (): OutputSelection => {
+  const selectOutputForAgent = (agent?: DshAgent, turn = agent ? currentAgentTurn(agent) : undefined): OutputSelection => {
+    let selection: OutputSelection;
     try {
-      return effectiveOutputPolicy(config.output.configPath);
+      selection = effectiveOutputPolicy(config.output.configPath);
     } catch (error) {
       logger.warn(`Odai output configuration is invalid; using the default policy: ${error instanceof Error ? error.message : String(error)}`);
-      return Object.freeze({
+      selection = Object.freeze({
         policy: DEFAULT_OUTPUT_POLICY,
         source: "default",
         status: "fallback",
         reasonCode: "output-config-invalid",
       });
     }
+    return agent ? applySessionOutputControl(selection, evidence.events(agent), turn) : selection;
   };
   const memorySettingsSnapshots = new WeakMap<DshAgent, { turn?: number; settings: MemorySettings }>();
   const memorySettingsFor = (agent: DshAgent, turn = currentAgentTurn(agent)): MemorySettings => {
@@ -270,8 +283,20 @@ export function createPromptRuntime(deps: PromptDependencies) {
     const childSession = isSubagentSession(agent);
     const directMessage = latestDirectUserMessage(agent);
     const directText = directMessage ? extractLatestUserText([directMessage]) : "";
-    const activation = contextActivationFor(agent, directText, turn);
+    const classifiedActivation = contextActivationFor(agent, directText, turn);
+    const sessionOutputDirective = classifySessionOutputCeilingDirective(directText);
+    const activation = sessionOutputDirective && classifiedActivation.outputConfig
+      ? Object.freeze({ ...classifiedActivation, outputConfig: false })
+      : classifiedActivation;
     const proposedStep = (currentAgentStep(agent) ?? 0) + 1;
+    prepareSessionOutputControl({
+      events: evidence.events(agent),
+      text: directText,
+      turn,
+      step: proposedStep,
+      userMessageId: typeof directMessage?.id === "string" ? directMessage.id : undefined,
+      append(type, data) { appendEvent(agent, type, data); },
+    });
     const exposureEvents = evidence.events(agent);
     const pendingGap = pendingResponsibilityGap(agent, turn, proposedStep);
     const routeCandidate = decideRoute({ text: directText, proposal: pendingGap });
@@ -302,7 +327,7 @@ export function createPromptRuntime(deps: PromptDependencies) {
     const selection: SkillSelection = await selectSharedSkillForTurn(agent, () => selectForAgent(agent, context));
     const outputSelection: OutputSelection = childSession
       ? Object.freeze({ policy: DEFAULT_OUTPUT_POLICY, source: "default" })
-      : await selectSharedOutputPolicyForTurn(agent, turn, selectOutputForAgent);
+      : await selectSharedOutputPolicyForTurn(agent, turn, () => selectOutputForAgent(agent, turn));
     const selectionEvidence = {
       ...(turn === undefined ? {} : { turn }),
       requestedMode: selection.mode,
@@ -329,7 +354,10 @@ export function createPromptRuntime(deps: PromptDependencies) {
     if (selection.status === "fallback") {
       logger.warn(`Odai skill source ${selection.mode} fell back to bundled governance (${selection.reasonCode})`);
     }
-    const outputPrompt = renderOutputPolicyPrompt(outputSelection.policy);
+    const outputPrompt = [
+      renderOutputPolicyPrompt(outputSelection.policy),
+      renderSessionOutputControlPrompt(outputSelection),
+    ].filter(Boolean).join("\n\n");
     const canonicalCraft = selection.bundle.referenceContracts.craft;
     const craftPrompt = !childSession
       && classifyImplementationAuthorization(directText).status === "authorized"
@@ -359,6 +387,7 @@ export function createPromptRuntime(deps: PromptDependencies) {
         ...(turn === undefined ? {} : { turn }),
         source: outputSelection.source,
         policy: outputSelection.policy,
+        ...(outputSelection.sessionCeiling ? { sessionCeiling: outputSelection.sessionCeiling } : {}),
       });
     }
     return {

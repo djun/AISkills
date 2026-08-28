@@ -17,6 +17,23 @@ const STORE_SCHEMA_VERSION = 1;
 const POLICY_FIELDS = new Set<string>(["concise", "maxTokens"]);
 const OUTPUT_MODES = new Set<string>(["normal", "concise", "economy"]);
 const DEFAULT_ECONOMY_MAX_TOKENS = 500;
+const SESSION_SCOPE_CUE = /(?:(?:这个|当前|本次|本)(?:会话|对话)|(?:会话|对话)(?:内|里)|\b(?:this|current)\s+(?:chat|conversation|session)\b)/iu;
+const OUTPUT_LIMIT_CUE = /(?:(?:输出|回复|回答|token).{0,8}(?:上限|限制)|(?:上限|限制)|\b(?:output|token)?\s*(?:limit|cap|ceiling)\b)/iu;
+const SESSION_UNCAP_CUE = /(?:放开|取消|移除|解除|不设|不要|不限|\b(?:remove|lift|disable|drop|clear|uncap)\b)/iu;
+const SESSION_INHERIT_CUE = /(?:恢复|重新启用|重启|\b(?:restore|reinstate|re-enable|enable)\b)/iu;
+const QUESTION_CUE = /(?:[?？]|请问|能不能|可不可以|可以吗|是否|为什么|为何|怎么|如何|想知道|想了解|告诉我|解释|会发生什么|意味着什么|如果|假如|\b(?:can|could|would|why|how|whether|if|tell me|explain|wonder|want to know|what happens|what would happen|what does .{0,24} mean|is it possible)\b)/iu;
+
+export type SessionOutputCeilingDirective = "uncap" | "inherit";
+
+export function classifySessionOutputCeilingDirective(text: unknown): SessionOutputCeilingDirective | undefined {
+  if (typeof text !== "string" || !SESSION_SCOPE_CUE.test(text) || !OUTPUT_LIMIT_CUE.test(text) || QUESTION_CUE.test(text)) {
+    return undefined;
+  }
+  const inherit = SESSION_INHERIT_CUE.test(text);
+  const uncap = SESSION_UNCAP_CUE.test(text);
+  if (inherit === uncap) return undefined;
+  return inherit ? "inherit" : "uncap";
+}
 
 export interface OutputPolicy {
   readonly concise: boolean;

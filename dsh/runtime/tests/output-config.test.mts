@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import {
+  classifySessionOutputCeilingDirective,
   createOutputConfigTool,
   effectiveOutputPolicy,
   readOutputPolicyStore,
@@ -13,12 +14,131 @@ import {
   resolveOutputPolicy,
 } from "../build/output-config.mjs";
 import { selectSharedOutputPolicyForTurn } from "../build/output-policy-state.mjs";
+import { applySessionOutputControl, prepareSessionOutputControl } from "../build/output-session.mjs";
 import { acquireOwnedStoreLock } from "../build/store-lock.mjs";
-import type { DshAgent, ToolExecution } from "../build/runtime-types.mjs";
+import type { DshAgent, DshEvent, RuntimeEventData, ToolExecution } from "../build/runtime-types.mjs";
 
 function testExecution(): ToolExecution {
   return { name: "odai_output_config", agent: { session: { header: {}, events: [], append() {} } } };
 }
+
+test("session ceiling directives require an explicit declarative session-scoped change", () => {
+  for (const text of [
+    "这个会话放开上限",
+    "当前对话取消输出限制",
+    "Remove the output cap for this session",
+  ]) {
+    assert.equal(classifySessionOutputCeilingDirective(text), "uncap", text);
+  }
+  for (const text of [
+    "这个会话恢复输出上限",
+    "当前对话重新启用 token 限制",
+    "Restore the output limit for this session",
+  ]) {
+    assert.equal(classifySessionOutputCeilingDirective(text), "inherit", text);
+  }
+  for (const text of [
+    "这个会话能不能放开上限？",
+    "这个会话放开上限？",
+    "为什么当前会话有输出限制？",
+    "请问当前会话放开上限",
+    "我想知道这个会话取消输出上限会发生什么",
+    "Tell me what happens if I remove the output cap for this session",
+    "这个会话取消并恢复输出上限",
+    "全局取消输出上限",
+    "把 economy 上限改成 2000",
+  ]) {
+    assert.equal(classifySessionOutputCeilingDirective(text), undefined, text);
+  }
+});
+
+test("controller output recovery requires an immediately preceding verified interruption and pure continuation", () => {
+  const invalidInterruptions: RuntimeEventData[] = [
+    { turn: 1, step: 1, budgetSource: "controller-policy" },
+    { turn: 1, step: 1, budgetSource: "controller-policy", reason: "other", configuredMaxTokens: 500, effectiveMaxTokens: 500, outputTokens: 500, scope: "turn" },
+    { turn: 1, budgetSource: "controller-policy", reason: "max-tokens", configuredMaxTokens: 500, effectiveMaxTokens: 500, outputTokens: 500, scope: "turn" },
+    { turn: 1, step: 1, budgetSource: "preexisting-request-ceiling", reason: "max-tokens", configuredMaxTokens: 500, effectiveMaxTokens: 500, outputTokens: 500, scope: "turn" },
+  ];
+  for (const data of invalidInterruptions) {
+    const invalidEvents: DshEvent[] = [{ type: "odai/controller-output-interrupted", data }];
+    prepareSessionOutputControl({
+      events: invalidEvents,
+      text: "继续",
+      turn: 2,
+      step: 1,
+      userMessageId: "continue-invalid-2",
+      append(type, appended) { invalidEvents.push({ type, data: appended as RuntimeEventData }); },
+    });
+    assert.equal(invalidEvents.some((event) => event.type === "odai/controller-output-recovery"), false);
+  }
+
+  const events: DshEvent[] = [{
+    type: "odai/controller-output-interrupted",
+    data: {
+      turn: 1,
+      step: 1,
+      reason: "max-tokens",
+      configuredMaxTokens: 500,
+      effectiveMaxTokens: 500,
+      outputTokens: 500,
+      budgetSource: "controller-policy",
+      scope: "turn",
+    },
+  }];
+  const append = (type: string, data: object) => events.push({ type, data: data as RuntimeEventData });
+  prepareSessionOutputControl({
+    events,
+    text: "继续修复登录页",
+    turn: 2,
+    step: 1,
+    userMessageId: "revised-2",
+    append,
+  });
+  assert.equal(events.some((event) => event.type === "odai/controller-output-recovery"), false);
+
+  prepareSessionOutputControl({
+    events,
+    text: "继续",
+    turn: 3,
+    step: 1,
+    userMessageId: "late-3",
+    append,
+  });
+  assert.equal(events.some((event) => event.type === "odai/controller-output-recovery"), false);
+
+  prepareSessionOutputControl({
+    events,
+    text: "继续",
+    turn: 2,
+    step: 1,
+    userMessageId: "continue-2",
+    append,
+  });
+  prepareSessionOutputControl({
+    events,
+    text: "继续",
+    turn: 2,
+    step: 2,
+    userMessageId: "continue-2",
+    append,
+  });
+  assert.equal(events.filter((event) => event.type === "odai/controller-output-recovery").length, 1);
+});
+
+test("session output consumers ignore malformed declarative evidence", () => {
+  const selection = { policy: { concise: true, maxTokens: 500 }, source: "persisted" };
+  for (const data of [
+    { action: "uncap", turn: 1, step: 1, userMessageId: "uncap-1" },
+    { action: "uncap", turn: 1, step: 1, userMessageId: "", scope: "session" },
+    { action: "uncap", turn: 1, userMessageId: "uncap-1", scope: "session" },
+    { action: "other", turn: 1, step: 1, userMessageId: "uncap-1", scope: "session" },
+  ]) {
+    assert.deepEqual(
+      applySessionOutputControl(selection, [{ type: "odai/output-session-ceiling-configured", data }], 1),
+      selection,
+    );
+  }
+});
 
 test("output policy validates explicit user-owned values and renders bounded guidance", () => {
   assert.deepEqual(resolveOutputPolicy({ concise: true }), { concise: true });
