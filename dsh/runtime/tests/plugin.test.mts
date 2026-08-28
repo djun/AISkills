@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { resolve } from "node:path";
@@ -2125,7 +2125,8 @@ test("an invalid user routing store keeps governance loaded and repairs through 
     model: "model-plan",
   });
 
-  writeFileSync(`${configPath}.lock`, "other-process\n", "utf8");
+  writeFileSync(`${configPath}.lock`, `${process.pid}:live-owner\n`, "utf8");
+  utimesSync(`${configPath}.lock`, new Date(0), new Date(0));
   await assert.rejects(tool.execute({
     action: "set",
     responsibility: "reviewer",

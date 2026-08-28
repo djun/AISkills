@@ -5,6 +5,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -190,6 +192,42 @@ test("bundle manifest validates complete content and full SemVer precedence", ()
   }
 });
 
+test("bundle files cannot escape lexical or realpath boundaries", (t) => {
+  const scratch = fixtureRoot("bundle-boundary");
+  try {
+    const lexicalRoot = resolve(scratch, "lexical");
+    installBundle(lexicalRoot, bundled.manifest.skillVersion);
+    const lexicalManifestPath = resolve(lexicalRoot, "manifest.json");
+    const lexicalManifest: unknown = JSON.parse(readFileSync(lexicalManifestPath, "utf8"));
+    if (!isUnknownRecord(lexicalManifest) || !Array.isArray(lexicalManifest.requiredFiles)) {
+      throw new TypeError("fixture manifest must expose requiredFiles");
+    }
+    lexicalManifest.requiredFiles.push("../outside.md");
+    writeFileSync(lexicalManifestPath, `${JSON.stringify(lexicalManifest, null, 2)}\n`, "utf8");
+    assert.throws(() => loadSkillBundle(resolve(lexicalRoot, "SKILL.md")), /unsafe required file/u);
+
+    const symlinkRoot = resolve(scratch, "symlink");
+    installBundle(symlinkRoot, bundled.manifest.skillVersion);
+    const outside = resolve(scratch, "outside-craft.md");
+    const craftPath = resolve(symlinkRoot, "references/craft.md");
+    writeFileSync(outside, "outside bundle content\n", "utf8");
+    rmSync(craftPath);
+    try {
+      symlinkSync(outside, craftPath, "file");
+    } catch (error) {
+      const code = isUnknownRecord(error) && typeof error.code === "string" ? error.code : undefined;
+      if (code && ["EPERM", "EACCES", "ENOTSUP"].includes(code)) {
+        t.skip(`symlinks unavailable: ${code}`);
+        return;
+      }
+      throw error;
+    }
+    assert.throws(() => loadSkillBundle(resolve(symlinkRoot, "SKILL.md")), /escapes through a symlink/u);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("auto source keeps project pins scoped and selects newer user installs elsewhere", async () => {
   const scratch = fixtureRoot("source-scope");
   try {
@@ -317,6 +355,16 @@ test("source configuration is atomic, explicit, repairable, and denied to child 
     assert.equal((await tool.execute({ action: "set", source: "auto" }, rootExecution)).source, "auto");
     assert.equal(effectiveSkillSource(configPath, "bundled"), "auto");
     assert.deepEqual(readSkillSourceStore(configPath), { schemaVersion: 1, source: "auto" });
+
+    const lockPath = `${configPath}.lock`;
+    writeFileSync(lockPath, `${process.pid}:live-owner\n`, "utf8");
+    utimesSync(lockPath, new Date(0), new Date(0));
+    assert.throws(
+      () => tool.execute({ action: "set", source: "user" }, rootExecution),
+      /is being updated; retry/u,
+    );
+    rmSync(lockPath);
+
     assert.throws(
       () => tool.execute({ action: "set", source: "user" }, testExecution("subagent")),
       /child agents may not change/u,

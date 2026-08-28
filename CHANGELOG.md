@@ -2,6 +2,13 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
+## 2026-08-28 — DSH 0.2.11 owned configuration locks
+
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.11`，继续仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`；canonical skill 保持 `0.3.3`，runtime contract 保持 `3`。
+- 防御力度专项以冻结的 `0.3.3` 运行：内部封闭类型窄改 C23 连续三次均为精确单行补丁且取得 4/4，外部公开输入边界 C24 保留精确 allowlist 并取得 4/4。现有 canonical 已能区分内部不变量与真实信任边界，因此不为总体观感新增治理条款。
+- routing 与 skill-source 配置入口删除两套按 mtime 猜测 stale、释放时无条件删除的私有锁，统一复用 PID+UUID owner、活进程判断、claim 串行化和后继保护的 shared store lock；补充旧 mtime 但仍存活 writer 的入口回归，以及 skill bundle lexical / realpath escape 的保持测试。
+- Skill bundle、持久状态、child 写入、配置修复与发布身份/gitHead 守卫均有独立失败后果并保持。双包发布事务虽会全量构建八次，但当前不能证明简单去重仍发布被测试和加载的同一 artifact，因此本版不改发布编排。
+
 ## 2026-08-27 — DSH 0.2.10 advisor and ideation contract
 
 - `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为 `0.2.10`，继续仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`；canonical skill 升为 `0.3.3`，runtime contract 保持 `3`。

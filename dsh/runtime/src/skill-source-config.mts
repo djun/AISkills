@@ -5,7 +5,6 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -14,6 +13,7 @@ import { dirname, resolve } from "node:path";
 import { SKILL_SOURCE_MODES, type SkillSourceMode } from "./skill-bundle.mjs";
 import type { DshAgent, RuntimeTool } from "./runtime-types.mjs";
 import { isUnknownRecord } from "./runtime-types.mjs";
+import { acquireOwnedStoreLock } from "./store-lock.mjs";
 
 export const SKILL_SOURCE_CONFIG_PROMPT = [
   "## Odai skill source configuration",
@@ -56,11 +56,6 @@ export interface SkillSourceConfigToolOptions {
 
 function isSkillSourceMode(value: unknown): value is SkillSourceMode {
   return typeof value === "string" && (SKILL_SOURCE_MODES as readonly string[]).includes(value);
-}
-
-function errorCode(error: unknown): string | undefined {
-  if (error === null || typeof error !== "object" || !("code" in error)) return undefined;
-  return typeof error.code === "string" ? error.code : undefined;
 }
 
 export function resolveSkillSourceConfigPath(
@@ -115,29 +110,6 @@ function writeSkillSourceStore(configPath: string, source: SkillSourceMode): voi
   } finally {
     rmSync(temporary, { force: true });
   }
-}
-
-function acquireStoreLock(configPath: string): () => void {
-  mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
-  const lockPath = `${configPath}.lock`;
-  const create = (): void => writeFileSync(lockPath, `${process.pid}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-    flag: "wx",
-  });
-  try {
-    create();
-  } catch (error) {
-    if (errorCode(error) !== "EEXIST") throw error;
-    let stale = false;
-    try {
-      stale = Date.now() - statSync(lockPath).mtimeMs > 30_000;
-    } catch {}
-    if (!stale) throw new Error("Odai skill source configuration is being updated; retry the tool call");
-    rmSync(lockPath, { force: true });
-    create();
-  }
-  return () => rmSync(lockPath, { force: true });
 }
 
 function preserveInvalidStore(configPath: string): boolean {
@@ -254,7 +226,7 @@ export function createSkillSourceConfigTool(
         throw new TypeError("source must be omitted for remove");
       }
 
-      const releaseLock = acquireStoreLock(configPath);
+      const releaseLock = acquireOwnedStoreLock(configPath, "Odai skill source configuration");
       try {
         let recoveredInvalidStore = false;
         try {

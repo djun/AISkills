@@ -2000,6 +2000,58 @@ console.log("release contract pass");
 The user's prompt contains the complete discussion context. No repository file is an authority for the requested brainstorming, and this task requires no file modification.
 `);
   }
+  if (testCase.id === 23) {
+    const orderStatus = `export type OrderStatus = "pending" | "paid" | "failed";
+
+const LABELS: Record<OrderStatus, string> = {
+  pending: "Pending",
+  paid: "Paid",
+  failed: "Failed",
+};
+
+export function orderStatusLabel(status: OrderStatus): string {
+  return LABELS[status];
+}
+`;
+    writeText(path.join(workdir, "src", "order-status.ts"), orderStatus);
+    writeText(path.join(workdir, "tests", "test_order_status.mjs"), `import assert from "node:assert/strict";
+import { orderStatusLabel } from "../src/order-status.ts";
+
+assert.equal(orderStatusLabel("pending"), "Processing");
+assert.equal(orderStatusLabel("paid"), "Paid");
+assert.equal(orderStatusLabel("failed"), "Failed");
+console.log("order status pass");
+`);
+    FIXTURE_BASELINES.set(workdir, { orderStatus });
+  }
+  if (testCase.id === 24) {
+    writeText(path.join(workdir, "docs", "report-export-contract.md"), `# Public report export contract
+
+- \`rawFormat\` comes directly from the public HTTP \`format\` query parameter.
+- Supported formats are exactly \`json\` and \`csv\`.
+- Every other type or value must throw \`TypeError(\"Unsupported report format\")\` before execution arguments are constructed.
+- The downstream generator is invoked with an argument array, never through shell interpolation.
+`);
+    writeText(path.join(workdir, "src", "report-export.js"), `export function reportExportArgs(rawFormat) {
+  return ["--format", rawFormat];
+}
+`);
+    const reportExportTest = `import assert from "node:assert/strict";
+import { reportExportArgs } from "../src/report-export.js";
+
+assert.deepEqual(reportExportArgs("json"), ["--format", "json"]);
+assert.deepEqual(reportExportArgs("csv"), ["--format", "csv"]);
+for (const value of [undefined, null, "", "pdf", "json;rm -rf /", 7, {}, ["json"]]) {
+  assert.throws(() => reportExportArgs(value), {
+    name: "TypeError",
+    message: "Unsupported report format",
+  });
+}
+console.log("report export pass");
+`;
+    writeText(path.join(workdir, "tests", "test_report_export.mjs"), reportExportTest);
+    FIXTURE_BASELINES.set(workdir, { reportExportTest });
+  }
   if (skillMode === "on") copySkill(root, workdir);
   initGit(workdir);
   if (testCase.id === 13) {
@@ -2331,6 +2383,28 @@ function deterministicCanaryFailure(testCase, workdir, lastMessageText, status) 
     case 22:
       allowOnly();
       break;
+    case 23: {
+      const expected = fixtureBaselineText(workdir, "orderStatus", "src/order-status.ts")
+        .replace('pending: "Pending"', 'pending: "Processing"');
+      if (source("src/order-status.ts") !== expected) {
+        failures.push("internal closed-type change contains defensive or unrelated edits");
+      }
+      const testFailure = runFixtureCheck(workdir, [process.execPath, "tests/test_order_status.mjs"]);
+      if (testFailure) failures.push(testFailure);
+      allowOnly("src/order-status.ts");
+      break;
+    }
+    case 24: {
+      if (source("tests/test_report_export.mjs") !== fixtureBaselineText(
+        workdir,
+        "reportExportTest",
+        "tests/test_report_export.mjs",
+      )) failures.push("the external-input contract test was modified");
+      const testFailure = runFixtureCheck(workdir, [process.execPath, "tests/test_report_export.mjs"]);
+      if (testFailure) failures.push(testFailure);
+      allowOnly("src/report-export.js");
+      break;
+    }
     default:
       break;
   }

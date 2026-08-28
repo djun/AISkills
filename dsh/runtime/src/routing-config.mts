@@ -6,7 +6,6 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -21,6 +20,7 @@ import {
 } from "./output-config.mjs";
 import type { DshAgent, ModelRoute, ResponsibilityDispatch, RuntimeTool, UnknownRecord } from "./runtime-types.mjs";
 import { isUnknownRecord } from "./runtime-types.mjs";
+import { acquireOwnedStoreLock } from "./store-lock.mjs";
 
 export const CONFIGURABLE_ROLES = Object.freeze(["researcher", "planner", "executor", "reviewer", "frontend"] as const);
 export type ConfigurableRole = (typeof CONFIGURABLE_ROLES)[number];
@@ -81,11 +81,6 @@ const DISPATCH_VALUES = new Set<ResponsibilityDispatch>(["same-turn", "child"]);
 
 function isConfigurableRole(value: unknown): value is ConfigurableRole {
   return typeof value === "string" && (CONFIGURABLE_ROLES as readonly string[]).includes(value);
-}
-
-function errorCode(error: unknown): string | undefined {
-  if (error === null || typeof error !== "object" || !("code" in error)) return undefined;
-  return typeof error.code === "string" ? error.code : undefined;
 }
 
 export function resolveRoleRoute(value: unknown, role: unknown): Readonly<ModelRoute> | undefined {
@@ -249,32 +244,6 @@ function writeRoutingStore(configPath: string, roles: Readonly<RoleRoutes>, disp
   }
 }
 
-function acquireRoutingStoreLock(configPath: string): () => void {
-  mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
-  const lockPath = `${configPath}.lock`;
-  const create = (): void => writeFileSync(lockPath, `${process.pid}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-    flag: "wx",
-  });
-  try {
-    create();
-  } catch (error) {
-    if (errorCode(error) !== "EEXIST") throw error;
-    const stale = (() => {
-      try {
-        return Date.now() - statSync(lockPath).mtimeMs > 30_000;
-      } catch {
-        return false;
-      }
-    })();
-    if (!stale) throw new Error("Odai routing configuration is being updated; retry the tool call");
-    rmSync(lockPath, { force: true });
-    create();
-  }
-  return () => rmSync(lockPath, { force: true });
-}
-
 function preserveInvalidRoutingStore(configPath: string): void {
   if (!existsSync(configPath)) return;
   renameSync(configPath, `${configPath}.invalid-${Date.now()}-${randomUUID()}`);
@@ -290,7 +259,7 @@ export function invalidatePersistedRoleRoute(
   expectedRoute: ModelRoute,
 ): RoleRouteInvalidationResult {
   if (!isConfigurableRole(role)) throw new TypeError(`unknown odai routing responsibility: ${String(role)}`);
-  const releaseLock = acquireRoutingStoreLock(configPath);
+  const releaseLock = acquireOwnedStoreLock(configPath, "Odai routing configuration");
   try {
     const current = readRoutingStore(configPath);
     const persisted = current.roles[role];
@@ -558,7 +527,7 @@ export function createRoutingConfigTool(
         : undefined;
 
       const commit = (validationStatus?: string): RoutingConfigResult => {
-        const releaseLock = acquireRoutingStoreLock(configPath);
+        const releaseLock = acquireOwnedStoreLock(configPath, "Odai routing configuration");
         try {
           let current: Pick<RoutingStore, "roles" | "dispatch">;
           let recoveredInvalidStore = false;

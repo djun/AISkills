@@ -1,6 +1,6 @@
 # odai 评测说明
 
-更新日期：2026-08-27
+更新日期：2026-08-28
 
 ## 当前契约
 
@@ -8,6 +8,7 @@
 - A/B：[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)，C01/C02/C03/C04/C05/C10/C11/C12/C13/C14/C17/C18/C19；加权满分 96。
 - A/B 与全量相同 ID 的题面、验收、失败门、层级和权重必须一致。
 - 探索构想专项：[`plans/odai-ideation-canary.md`](../plans/odai-ideation-canary.md)，C21-C22，加权满分 16；C21 验证显式发散，C22 验证近似发散措辞下的证据收敛，二者不并入既有 C01-C19 总分。canonical 变更时还须复跑 C01、C02 与 C17，证明事实直答和窄实施没有因探索规则扩域。
+- 防御力度专项：[`plans/odai-defensive-canary.md`](../plans/odai-defensive-canary.md)，C23-C24，加权满分 12；C23 验证内部强不变量上的最小实现，C24 验证外部不可信输入的必要保护。两题互为保持项，不并入既有 C01-C19 总分。
 - runner 只看到自然用户请求和独立 fixture，不看到验收、失败门、分值或预期答案。on 臂只加载冻结的 odai 能力包及该题声明的项目材料；是否发现并借力由 odai 自行判断。off 臂不提供 odai、ribao、`.odai/local.md`、托管路由或任何其他项目 skill。
 - 每题使用全新 fixture、runner 会话和 judge 会话。所有正式平台统一执行 `odai-canary-isolation/v1`：只复用鉴权或模型连接材料，不继承用户级或父仓库的 skill、Hooks、memory、插件、MCP、AGENTS / CLAUDE 指令、旧会话、另一臂输出或派生状态。runner 与 judge 都须有机械隔离回执；未知自定义 adapter 或缺少回执时记基础设施无效，不计分。
 - 正式 `--run` 的输出与工作副本必须位于仓库树之外；harness 拒绝把 runner 放在仓库 `.tmp/` 或其他子目录，防止会向父目录发现规则的宿主加载本仓库 AGENTS、skills、Hooks 或插件。原始证据仍由该外部临时目录保存。
