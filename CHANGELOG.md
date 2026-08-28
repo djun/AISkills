@@ -2,9 +2,9 @@
 
 本文只记已冻结版本的对外能力、架构、迁移和评测口径。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
-## 2026-08-28 — canonical 0.3.5 / DSH 0.2.12 intent alignment candidate
+## 2026-08-28 — canonical 0.3.5 / DSH 0.2.12 intent alignment
 
-- `odai-dsh-agent` 与 `odai-dsh-plugin` 的未发布候选同步升为 `0.2.12`，继续仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`；canonical skill 升为 `0.3.5`，runtime contract 保持 `3`，CLI 保持 `0.0.2`。已发布事实仍为双包 `0.2.11` 与 canonical `0.3.3`，registry `gitHead` 均为 `257b2aaf6e7de3bb8d66a0bb89dfc8efffb3cfe6`。
+- `odai-dsh-agent` 与 `odai-dsh-plugin` 同步升为并发布 `0.2.12`，继续仅精确支持 `@deepseek-ai/dsh@0.1.1-rc.2`；双包所含 canonical skill 升为 `0.3.5`，runtime contract 保持 `3`，CLI 保持 `0.0.2`，registry `gitHead` 均为 `dd5037c26e1fc175abb1ec874dfc87deac26e89b`。
 - canonical 明确探索、决定与实施不自动切换；行动要求充分且唯一的意图证据。方向性改进若存在多个合理交付物，先说明分歧并共同定案；实施、提交或发布授权在目标唯一后才生效，不能让目标变唯一。用户纠正会使受影响的旧计划、验收、授权与完成证据失效。
 - DSH responsibility gap 与 planner→executor handback 绑定最近的 authenticated direct user message；新任务或“继续，但修改目标/范围”的修订会清除旧 route card，只有未夹带修订的明确继续才保留旧执行上下文。Reviewer packet 保留完整 user question / answer，只接受 question / answer ID 唯一、无缺失且无额外答案的一一对应；incomplete packet 只报告一次并保持待静默重新评估，后续新任务消费旧 proposal，阻断重复 reviewer 循环。
 - 意图专项使用严格 `pass-score=4`：C25-C31 最终 **7/7、52/52**。决定性 C31 在同时暴露 canonical、runtime、evaluation 与 submission/publishing 后，`0.3.3` 为 **3/4 fail**，`0.3.5` 为 **4/4 pass**；C26 明确窄改仍是一行 diff 与命中测试，未退化成普遍确认。相称验证 C32-C34 为 **3/3、16/16**：局部 CSS / 窄代码不跑无关 build 或全量，共享 token 则覆盖所有相关消费者，因此不为该问题再堆 canonical 同义规则。
