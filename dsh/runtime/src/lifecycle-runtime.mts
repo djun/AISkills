@@ -5,6 +5,7 @@ import {
   decideRoute,
   extractLatestUserText,
   extractRoutingText,
+  isExecutionContinuation,
   renderMissingRouteConfigNotice,
   renderRouteFailureNotice,
   renderRouteNotice,
@@ -101,13 +102,11 @@ function isSubagentsService(value: unknown): value is SubagentsService {
   return value !== null && typeof value === "object" && "start" in value && typeof value.start === "function";
 }
 
-function latestReviewerDeferral(events: readonly DshEvent[], stateDigest: string): string | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event?.type !== "odai/responsibility-gap-deferred" || event.data?.stateDigest !== stateDigest) continue;
-    return typeof event.data.evidenceDigest === "string" ? event.data.evidenceDigest : undefined;
-  }
-  return undefined;
+function hasReviewerDeferral(events: readonly DshEvent[], stateDigest: string): boolean {
+  return events.some((event) => (
+    event?.type === "odai/responsibility-gap-deferred"
+    && event.data?.stateDigest === stateDigest
+  ));
 }
 
 interface LifecycleDependencies {
@@ -946,7 +945,22 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         }
       }
 
-      const frozenCard = responsibilityContinuation?.routeCard ?? activeRouteCard(evidence.events(agent));
+      let frozenCard = responsibilityContinuation?.routeCard ?? activeRouteCard(evidence.events(agent));
+      if (!responsibilityContinuation
+        && frozenCard
+        && authenticatedDirectMessage
+        && frozenCard.authorization.userMessageId !== authenticatedDirectMessage.id
+        && !isExecutionContinuation(authenticatedDirectText)) {
+        appendEvent(agent, "odai/route-card-cleared", {
+          turn,
+          step,
+          cardId: frozenCard.id,
+          reason: "SUPERSEDED_BY_DIRECT_USER_TASK",
+          supersededAuthorizationMessageId: frozenCard.authorization.userMessageId,
+          currentTaskMessageId: authenticatedDirectMessage.id,
+        });
+        frozenCard = undefined;
+      }
       let decision = sameTurnResearchDecision ?? decideRoute({
         text: taskText,
         routeCard: frozenCard,
@@ -972,9 +986,8 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       let roleContext = decision.action === "direct"
         ? undefined
         : buildRoleContextPacket(agent, routeRole, roleTaskText);
-      const priorReviewerEvidenceDigest = responsibilityGap?.responsibility === "reviewer"
-        ? latestReviewerDeferral(evidence.events(agent), responsibilityGap.stateDigest)
-        : undefined;
+      const reviewerAlreadyDeferred = responsibilityGap?.responsibility === "reviewer"
+        && hasReviewerDeferral(evidence.events(agent), responsibilityGap.stateDigest);
       let localReviewerCoverage;
       if (config.routing.mode === "auto"
         && routeRole === "reviewer"
@@ -998,8 +1011,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
           && Boolean(routeRole === "reviewer" ? configuredRole(agent, routeRole, turn).route : undefined));
       const reviewerEvidenceIncomplete = routeRole === "reviewer" && roleContext !== undefined
         && !roleContext.sufficient && reviewerCanAwaitEvidence;
-      const reviewerEvidenceUnchanged = reviewerEvidenceIncomplete
-        && priorReviewerEvidenceDigest === roleContext?.evidenceDigest;
+      const reviewerDeferralAlreadyReported = reviewerEvidenceIncomplete && reviewerAlreadyDeferred;
       appendEvent(agent, "odai/route-decided", {
         turn,
         step,
@@ -1031,7 +1043,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       if (decision.action === "direct") {
         if (!localReviewerCoverage) return routedDownstream;
         if (!roleContext) throw new Error("reviewer fallback is missing its context packet");
-        if (reviewerEvidenceUnchanged) return routedDownstream;
+        if (reviewerDeferralAlreadyReported) return routedDownstream;
         appendEvent(agent, "odai/route-context", {
           turn,
           step,
@@ -1214,7 +1226,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       });
 
       if (routeRole === "reviewer" && roleDispatch === "child" && decision.action === "delegate" && !roleContext.sufficient) {
-        if (reviewerEvidenceUnchanged) return routedDownstream;
+        if (reviewerDeferralAlreadyReported) return routedDownstream;
         appendEvent(agent, "odai/route-result", {
           turn,
           step,

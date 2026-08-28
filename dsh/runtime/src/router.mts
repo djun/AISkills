@@ -165,6 +165,10 @@ const EXPLICIT_EXECUTION_CONTINUATION_PATTERNS = [
   /(?:继续|接着|就按|按(?:照)?(?:(?:这个|该|上述|上面|前面|刚才)的?)?(?:方案|计划|卡片))/iu,
   /\b(?:continue|proceed|go ahead|follow the plan)\b/iu,
 ];
+const EXECUTION_REVISION_PATTERNS = [
+  /(?:但(?:是)?|不过|然而|改(?:成|为)|换(?:成|为)|不要|别|去掉|删除|新增|加上|追加|同时|还要|也要|范围)/iu,
+  /\b(?:but|however|instead|switch|replace|remove|drop|add|also|scope)\b|\bchange\s+(?:the|this|that|its|to|from)\b/iu,
+];
 const IMPLEMENTATION_AUTHORIZATION_PATTERNS = [
   /(?:^|[，；。！？\n])(?:请)?把[^，；。！？\n]{1,48}(?:(?:处理|修改|更新|替换|删除)(?:一下|掉|好|了)?|改(?:成|为|好|掉|清楚))(?=$|[，；。！？\n]|并|然后|再|后)/iu,
   /(?:做(?:完|好|掉|这个|这项|这次|一个)|实现|修复|完成|落地|开发|添加|新增|替换|删除|执行|全都做好)/iu,
@@ -304,11 +308,12 @@ export function classifyPendingReviewerText(text: unknown): "continue" | "supers
   return "dormant";
 }
 
-function isExecutionContinuation(text: string): boolean {
-  if (matchesAny(text, NEW_TASK_PATTERNS)) return false;
-  if (matchesAny(text, EXPLICIT_EXECUTION_CONTINUATION_PATTERNS)) return true;
-  return matchesAny(text, EXECUTION_ACTION_PATTERNS)
-    && matchesAny(text, ROUTE_CARD_REFERENCE_PATTERNS);
+export function isExecutionContinuation(text: string): boolean {
+  const explicit = stripQuotedMaterial(text).trim();
+  if (!explicit || matchesAny(explicit, NEW_TASK_PATTERNS) || matchesAny(explicit, EXECUTION_REVISION_PATTERNS)) return false;
+  if (matchesAny(explicit, EXPLICIT_EXECUTION_CONTINUATION_PATTERNS)) return true;
+  return matchesAny(explicit, EXECUTION_ACTION_PATTERNS)
+    && matchesAny(explicit, ROUTE_CARD_REFERENCE_PATTERNS);
 }
 
 export function classifyImplementationAuthorization(text: unknown): Readonly<ImplementationAuthorization> {

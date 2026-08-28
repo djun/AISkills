@@ -78,6 +78,88 @@ function hasShellControl(command: string): boolean {
   return false;
 }
 
+function simpleAndChain(command: string): readonly string[] | undefined {
+  const segments: string[] = [];
+  let quote: "'" | "\"" | undefined;
+  let start = 0;
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (character === "\\" && quote !== "'") {
+      index += 1;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else if (quote === "\"" && (character === "`" || (character === "$" && command[index + 1] === "("))) return undefined;
+      continue;
+    }
+    if (character === "'" || character === "\"") {
+      quote = character;
+      continue;
+    }
+    if (character === "&" && command[index + 1] === "&") {
+      const segment = command.slice(start, index).trim();
+      if (!segment) return undefined;
+      segments.push(segment);
+      start = index + 2;
+      index += 1;
+      continue;
+    }
+    if (character === "`" || SHELL_CONTROL_CHARACTERS.replaceAll("&", "").includes(character ?? "")
+      || character === "&" || (character === "$" && command[index + 1] === "(")) return undefined;
+  }
+  if (quote) return undefined;
+  const finalSegment = command.slice(start).trim();
+  if (!finalSegment) return undefined;
+  segments.push(finalSegment);
+  return Object.freeze(segments);
+}
+
+function parsedRecord(value: unknown): UnknownRecord | undefined {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return isUnknownRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasDecisionValue(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (!isUnknownRecord(value)) return value !== undefined && value !== null;
+  return ["answer", "value", "selected", "custom"].some((key) => hasDecisionValue(value[key]));
+}
+
+function completeUserDecision(arguments_: unknown, output: string): string | undefined {
+  const call = parsedRecord(arguments_);
+  const result = parsedRecord(output);
+  const rawQuestions = call?.questions;
+  if (!Array.isArray(rawQuestions) || rawQuestions.length === 0
+    || !rawQuestions.every(isUnknownRecord) || !result) return undefined;
+  const questions = rawQuestions;
+  const questionIds = questions.map((question) => (
+    typeof question.id === "string" ? question.id.trim() : ""
+  ));
+  if (questionIds.some((id) => !id) || new Set(questionIds).size !== questions.length
+    || questions.some((question) => typeof question.question !== "string" || !question.question.trim())) return undefined;
+
+  const rawAnswers = result.answers;
+  if (!Array.isArray(rawAnswers) && !isUnknownRecord(rawAnswers)) return undefined;
+  const answerIds = Array.isArray(rawAnswers)
+    ? rawAnswers.map((answer) => (isUnknownRecord(answer) && typeof answer.id === "string" ? answer.id.trim() : ""))
+    : Object.keys(rawAnswers);
+  if (answerIds.some((id) => !id) || answerIds.length !== questionIds.length
+    || new Set(answerIds).size !== answerIds.length
+    || answerIds.some((id) => !questionIds.includes(id))) return undefined;
+
+  const answerFor = (id: string): unknown => Array.isArray(rawAnswers)
+    ? rawAnswers.find((answer) => isUnknownRecord(answer) && answer.id === id)
+    : rawAnswers[id];
+  if (questionIds.some((id) => !hasDecisionValue(answerFor(id)))) return undefined;
+  return JSON.stringify({ questions, answers: rawAnswers });
+}
+
 export interface RoleContextEntry {
   readonly index: number;
   readonly source: string;
@@ -343,7 +425,29 @@ function eventEvidence(
     if (!decoded.parsed) diagnostics.unparsedToolArgumentsCount += 1;
     const command = decoded.command;
     const toolName = normalizedToolName(call.name);
+    if (result.successful && toolName === "ask_user_question") {
+      const decision = completeUserDecision(call.arguments, textBlocks(event.data).join("\n").trim());
+      if (decision) {
+        const identity = `tool-call:${result.callId}`;
+        return {
+          index,
+          source: "user-decision",
+          kinds: ["tool", "requirement", "acceptance", "user-decision"],
+          label: `authenticated user decision (${identity})`,
+          identity,
+          text: decision,
+        };
+      }
+    }
     const simpleCommand = command !== "" && !hasShellControl(command);
+    const andChain = command === "" ? undefined : simpleAndChain(command);
+    const compoundReadOnly = Boolean(andChain && andChain.length > 1 && andChain.every((segment) => (
+      !matchesAny(segment, CHECK_MUTATION_PATTERNS)
+      && (matchesAny(segment, READ_ONLY_SHELL_COMMAND_PATTERNS)
+        || matchesAny(segment, CHECK_COMMAND_PATTERNS)
+        || matchesAny(segment, DIFF_COMMAND_PATTERNS)
+        || matchesAny(segment, TEST_COMMAND_PATTERNS))
+    )));
     const checkCommand = simpleCommand
       && matchesAny(command, CHECK_COMMAND_PATTERNS)
       && !matchesAny(command, CHECK_MUTATION_PATTERNS);
@@ -351,9 +455,9 @@ function eventEvidence(
     const testCommand = simpleCommand && matchesAny(command, TEST_COMMAND_PATTERNS);
     const explicitWrite = WRITE_TOOL_NAMES.has(toolName) || matchesAny(command, WRITE_COMMAND_PATTERNS);
     const unknownShellMutation = SHELL_TOOL_NAMES.has(toolName)
-      && !diffCommand && !testCommand && !checkCommand
+      && !diffCommand && !testCommand && !checkCommand && !compoundReadOnly
       && (hasShellControl(command) || !matchesAny(command, READ_ONLY_SHELL_COMMAND_PATTERNS));
-    if (SHELL_TOOL_NAMES.has(toolName) && !diffCommand && !testCommand && !checkCommand && !explicitWrite
+    if (SHELL_TOOL_NAMES.has(toolName) && !diffCommand && !testCommand && !checkCommand && !compoundReadOnly && !explicitWrite
       && !matchesAny(command, READ_ONLY_SHELL_COMMAND_PATTERNS)) diagnostics.unclassifiedShellResultCount += 1;
     const writeCommand = explicitWrite || unknownShellMutation;
     if (!result.successful && !testCommand && !checkCommand && !writeCommand) return undefined;

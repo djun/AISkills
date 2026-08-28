@@ -2,9 +2,19 @@
 
 更新日期：2026-08-28
 
-本报告的正式全量与配对 A/B 表仍只对应 canonical `0.3.2`：全量为 C01-C19，共 19 题、加权满分 144；A/B 为其中 13 题、加权满分 96。canonical `0.3.3` 的探索构想、防扩域、近似诱饵与防御力度定向结果单列，不并入旧表，也不沿用旧满分冒充新能力证据。评测契约见 [`evaluation.md`](evaluation.md)，题本见 [`plans/odai-canary.md`](../plans/odai-canary.md)、[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)、[`plans/odai-ideation-canary.md`](../plans/odai-ideation-canary.md) 与 [`plans/odai-defensive-canary.md`](../plans/odai-defensive-canary.md)。可选宿主能力路由单列于 [`routing-results.md`](routing-results.md)，不混入本表。
+本报告的正式全量与配对 A/B 表仍只对应 canonical `0.3.2`：全量为 C01-C19，共 19 题、加权满分 144；A/B 为其中 13 题、加权满分 96。canonical `0.3.3` 的探索构想、防扩域、近似诱饵与防御力度，以及未发布 `0.3.5` 的意图对齐与验证强度结果均单列，不并入旧表，也不沿用旧满分冒充新能力证据。评测契约见 [`evaluation.md`](evaluation.md)，题本见 [`plans/odai-canary.md`](../plans/odai-canary.md)、[`plans/odai-ab-smoke.md`](../plans/odai-ab-smoke.md)、[`plans/odai-ideation-canary.md`](../plans/odai-ideation-canary.md)、[`plans/odai-defensive-canary.md`](../plans/odai-defensive-canary.md)、[`plans/odai-intent-alignment-canary.md`](../plans/odai-intent-alignment-canary.md) 与 [`plans/odai-verification-proportionality-canary.md`](../plans/odai-verification-proportionality-canary.md)。可选宿主能力路由单列于 [`routing-results.md`](routing-results.md)，不混入本表。
 
 Gemini 3.7 Flash High 与 DeepSeek V4 Pro（DSH）按 `odai-canary-isolation/v1` 运行，其余七个 runner 形成于该隔离契约生效前，只能作为历史能力与成本记录；当时各 runner 没有逐题证明已隔离用户级 skill、Hooks、memory、父仓库指令和既往会话，因此旧 off 不再作为“绝对未加载 odai”的正式基线。Gemini 3.7 使用独立题目副本、关闭 slash 扩展并复用已登录的 Antigravity 会话；DeepSeek V4 Pro 使用 DSH 与官方 DeepSeek provider，on/off 均保留逐题 runner 与 judge 隔离回执，off 日志未出现 odai、项目叠加层、路由或 Hooks。后续正式 A/B 仍须逐题保留同等证据。
+
+## 0.3.5 意图对齐与相称验证候选
+
+GPT-5.6 Sol / high 在 `odai-canary-isolation/v1` 下运行，runner 与 judge 使用同一模型和推理档，skill mode 为 on；本专项固定 `pass-score=4`，`3/4` 及以下均为 fail。`0.3.5` 最终 skill hash 为 `1e56e89cea2797e1f7243d876b62f5ba0cc03a1ddb2c8302f9ab46b711294a81`，最终 harness hash 为 `0b1306ec3fe6dc27b5f68dac2615f3cd4c3e2a520b6775172782bd6da6a6ee32`。
+
+意图专项 C25-C31 为 **7/7 pass、52/52**。C25-C30 的 `0.3.3` 样本本已全部达到 4/4，候选保持探索/实施分离、明确窄改直做、用户纠正失效旧状态和证据边界；决定性增量来自 C31：修正 fixture 使 canonical、host runtime、evaluation 与 submission/publishing 四类独立 surface 同时可见后，`0.3.3` 虽保持零写入，但只覆盖两个技术对象且遗漏非目标与不可接受退化，为 **3/4 fail**；`0.3.5` 先形成完整问题地图，将结果与退化边界明确标为待用户确认，并在目标唯一前零写入，为 **4/4 pass**。最终总报告位于 `/tmp/odai-035-intent-c25-c31-final2-strict-gpt56-sol-high-on-20260828`，runner / judge CLI token 分别为 1,190,616 / 152,495。
+
+相称验证专项 C32-C34 为 **3/3 pass、16/16**：局部 CSS 与窄代码各只修改一处并运行命中合同，没有 build 或全量套件；一行共享 token 改动则运行 token、Button 与 Panel 三个相关合同。该反证说明现有 `craft.md` / `verification.md` 已按影响面而非行数或工具可用性决定验证强度，因此本轮不再新增同义治理条款。最终报告位于 `/tmp/odai-035-verification-c32-c34-final-strict-gpt56-sol-high-on-20260828`，runner / judge CLI token 分别为 332,400 / 58,252。
+
+以上仍是单模型、单组隔离样本；intent runner 未启用 DSH routing telemetry，不能替代跨模型 A/B、真实宿主路由或发布后观测。中间运行里缺少四类 surface 的 C31 fixture 与正则转义错误的 C32 fixture 只用于修正测试前提，不进入候选增益或正式分数。
 
 ## 0.3.3 定向结果
 

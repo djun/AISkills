@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   RESPONSIBILITY_GAP_PROMPT,
+  bindResponsibilityGapToTask,
   createResponsibilityGapTool,
   resolveResponsibilityGap,
 } from "../build/responsibility-gap.mjs";
@@ -36,6 +37,24 @@ test("responsibility gaps are structured, grounded, and content addressed", () =
   assert.match(RESPONSIBILITY_GAP_PROMPT, /rollout-order compatibility/iu);
   assert.match(RESPONSIBILITY_GAP_PROMPT, /rollback boundaries/iu);
   assert.match(RESPONSIBILITY_GAP_PROMPT, /never replace native acceptance, write, diff, or test evidence/iu);
+  assert.match(RESPONSIBILITY_GAP_PROMPT, /binds every proposal to the latest authenticated direct-user task/iu);
+});
+
+test("responsibility gap identity is bound to the direct user task", () => {
+  const proposal = resolveResponsibilityGap({
+    responsibility: "reviewer",
+    gap: "Review the current target against its acceptance.",
+    evidenceRefs: ["current-target"],
+    expectedChange: "Return blocking findings or acceptance.",
+  });
+  const first = bindResponsibilityGapToTask(proposal, "user-task-1");
+  const second = bindResponsibilityGapToTask(proposal, "user-task-2");
+
+  assert.equal(first.taskMessageId, "user-task-1");
+  assert.equal(second.taskMessageId, "user-task-2");
+  assert.notEqual(first.stateDigest, proposal.stateDigest);
+  assert.notEqual(first.stateDigest, second.stateDigest);
+  assert.throws(() => bindResponsibilityGapToTask(proposal, "x".repeat(201)), /at most 200/u);
 });
 
 test("only the controller can submit a responsibility or user-decision gap", async () => {

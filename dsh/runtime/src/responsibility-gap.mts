@@ -10,6 +10,7 @@ export const RESPONSIBILITY_GAP_PROMPT = [
   "Keep work direct when the controller can close it reliably. Call odai_responsibility_gap only when current evidence shows an independent capability or user-decision gap that can change a concrete result; keywords, complexity, risk, configured models, and price are insufficient. The runtime decides direct, inline, same-turn, child, or user-question handling.",
   "Independently deployed contracts, authentication or state-machine changes, rollout-order compatibility, and rollback boundaries are concrete planner gaps when a separate plan can change implementation or acceptance; do not reduce them to task complexity.",
   "evidenceRefs identify the proposal state for audit and deduplication; they never replace native acceptance, write, diff, or test evidence required by a routed reviewer.",
+  "The runtime binds every proposal to the latest authenticated direct-user task. A later user message must explicitly continue that task; otherwise the older pending proposal is superseded.",
   "Use responsibility=user only for a missing user-owned choice, priority, or unacceptable outcome, then ask exactly the accepted concise question. Do not ask users for repository facts or implementation details the project can determine. Do not resubmit unchanged state.",
 ].join("\n");
 
@@ -22,6 +23,7 @@ export interface ResponsibilityGapProposal {
   readonly evidenceRefs: readonly string[];
   readonly expectedChange: string;
   readonly question?: string;
+  readonly taskMessageId?: string;
   readonly stateDigest: string;
 }
 
@@ -69,8 +71,20 @@ export function resolveResponsibilityGap(value: unknown): Readonly<Responsibilit
   return Object.freeze({ ...proposal, stateDigest: stateDigest(proposal) });
 }
 
+export function bindResponsibilityGapToTask(
+  proposal: Readonly<ResponsibilityGapProposal>,
+  taskMessageId: string,
+): Readonly<ResponsibilityGapProposal> {
+  const normalizedTaskMessageId = nonEmpty(taskMessageId, "taskMessageId");
+  if (normalizedTaskMessageId.length > 200) throw new TypeError("taskMessageId must be at most 200 characters");
+  const { stateDigest: _stateDigest, ...unbound } = proposal;
+  const bound = { ...unbound, taskMessageId: normalizedTaskMessageId };
+  return Object.freeze({ ...bound, stateDigest: stateDigest(bound) });
+}
+
 export interface ResponsibilityGapToolOptions {
   isChild?(agent: DshAgent): boolean;
+  bindToTask?(agent: DshAgent, proposal: Readonly<ResponsibilityGapProposal>): Readonly<ResponsibilityGapProposal>;
   onProposed?(agent: DshAgent, proposal: Readonly<ResponsibilityGapProposal>, execution: ToolExecution): void;
 }
 
@@ -78,6 +92,7 @@ export function createResponsibilityGapTool(
   options: ResponsibilityGapToolOptions = {},
 ): RuntimeTool<unknown, ResponsibilityGapResult> {
   const isChild = typeof options.isChild === "function" ? options.isChild : () => false;
+  const bindToTask = typeof options.bindToTask === "function" ? options.bindToTask : (_agent: DshAgent, proposal: Readonly<ResponsibilityGapProposal>) => proposal;
   const onProposed = typeof options.onProposed === "function" ? options.onProposed : () => {};
   return {
     name: "odai_responsibility_gap",
@@ -116,7 +131,7 @@ export function createResponsibilityGapTool(
     execute(arguments_, execution) {
       if (!execution.agent) throw new Error("odai_responsibility_gap requires an owning agent session");
       if (isChild(execution.agent)) throw new Error("child agents may not own Odai responsibility or user-decision gaps");
-      const proposal = resolveResponsibilityGap(arguments_);
+      const proposal = bindToTask(execution.agent, resolveResponsibilityGap(arguments_));
       onProposed(execution.agent, proposal, execution);
       return Promise.resolve({
         recorded: true,

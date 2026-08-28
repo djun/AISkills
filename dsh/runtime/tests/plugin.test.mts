@@ -2951,6 +2951,9 @@ test("an authorized planner card and executor gap continue automatically without
     evidenceRefs: [`route-card:${frozen.card.id}`, `user-message:${original.id}`],
     expectedChange: "Implement the frozen scope and run its acceptance checks.",
   }, { agent });
+  const executorGap = findLastEvent(events, (event) => event.type === "odai/responsibility-gap").data;
+  assert.equal(executorGap.taskMessageId, original.id);
+  assert.match(String(executorGap.stateDigest), /^[a-f0-9]{64}$/u);
 
   agent.phase.step = 2;
   const signal = new AbortController().signal;
@@ -3204,6 +3207,58 @@ test("an executor provider failure after an applied receipt releases the route c
   assert.equal((await routeCard.execute({ action: "clear", cardId: frozen.card.id }, { agent })).status, "cleared");
 });
 
+test("a new or revised direct user task supersedes an older executor route card", async () => {
+  for (const [replacementText, replacementId] of [
+    ["先不要实施旧目标；现在只讨论新的方向。", "new-task"],
+    ["继续这个计划，但改成只处理文档。", "revised-task"],
+  ]) {
+    const ctx = fakeContext();
+    apply(ctx, { skillPath });
+    const original = { ...userMessage("请实现并验证旧目标"), id: `old-${replacementId}` };
+    const events: DshEvent[] = [
+      { type: "turn/start", seq: 1, data: { turn: 1 } },
+      { type: "user/message", seq: 2, data: original },
+      { type: "step/start", seq: 3, data: { step: 1 } },
+    ];
+    const agent = {
+      phase: { turn: 1, step: 1 },
+      session: {
+        header: {},
+        events,
+        append(type: string, data: RuntimeEventData) { events.push({ type, seq: events.length + 1, data }); },
+      },
+    };
+    const routeCard = ctx.captured.tools.find((tool: TestToolSchema) => tool.name === "odai_route_card");
+    const frozen = await routeCard.execute({
+      action: "freeze",
+      observableBenefit: true,
+      target: "Implement the old target",
+      evidence: ["old task evidence"],
+      scope: ["old target only"],
+      accept: ["old target passes"],
+      stop: "Stop on scope change",
+    }, { agent });
+    assert.equal(frozen.card.authorization.userMessageId, original.id);
+
+    const replacement = { ...userMessage(replacementText), id: replacementId };
+    events.push(
+      { type: "turn/start", seq: 20, data: { turn: 2 } },
+      { type: "user/message", seq: 21, data: replacement },
+    );
+    agent.phase.turn = 2;
+    agent.phase.step = 1;
+    await ctx.captured.handlers.get("agent/pre-step")(
+      { agent, turn: 2, step: 1, signal: new AbortController().signal },
+      async () => ({ kind: "enter", messages: [replacement] }),
+    );
+
+    assert.equal((await routeCard.execute({ action: "clear" }, { agent })).status, "absent");
+    const superseded = findLastEvent(events, (event) => event.type === "odai/route-card-cleared").data;
+    assert.equal(superseded.cardId, frozen.card.id);
+    assert.equal(superseded.reason, "SUPERSEDED_BY_DIRECT_USER_TASK");
+  }
+});
+
 test("reviewer starts a child only from a complete hash-addressed evidence packet", async () => {
   let starts = 0;
   let startRequest: TestSubagentRequest | undefined;
@@ -3435,9 +3490,9 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
     { agent: fallbackAgent, turn: 3, step: 1, signal: new AbortController().signal },
     async () => ({ kind: "enter", messages: [userMessage("继续；A1 还必须覆盖回滚")] }),
   );
-  assert.equal(clarifiedFallback.messages.length, 2);
+  assert.equal(clarifiedFallback.messages.length, 1);
   assert.equal(fallbackStarts, 0);
-  assert.equal(fallbackEvents.filter((event) => event.type === "odai/responsibility-gap-deferred").length, 2);
+  assert.equal(fallbackEvents.filter((event) => event.type === "odai/responsibility-gap-deferred").length, 1);
   fallbackEvents.push(
     ...nativeToolEvents("diff-after-deferral", "git diff -- dsh/runtime/src/router.mts", "diff --git a/router.mjs b/router.mjs\n+bounded change", { callSeq: 201 }),
     ...nativeToolEvents("test-after-deferral", "node --test dsh/runtime/tests/router.test.mts", "tests 14 pass 14 fail 0 exit code: 0", { callSeq: 211 }),
@@ -3496,7 +3551,10 @@ test("reviewer starts a child only from a complete hash-addressed evidence packe
     { agent: executeAgent, turn: 2, step: 1, signal: new AbortController().signal },
     async () => ({ kind: "enter", messages: [userMessage("现在几点？")] }),
   );
-  assert.equal(executeEvents.some((event) => event.type === "odai/responsibility-gap-consumed"), false);
+  assert.equal(executeEvents.some((event) => (
+    event.type === "odai/responsibility-gap-consumed"
+    && event.data?.reason === "SUPERSEDED_BY_DIRECT_USER_TASK"
+  )), true);
   assert.equal(executeStarts, 0);
   executeEvents.push(
     { type: "turn/start", seq: 330, data: { turn: 3 } },

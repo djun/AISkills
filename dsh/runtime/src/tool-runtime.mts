@@ -11,7 +11,7 @@ import { HUMAN_CARE_REFERENCE_PATH, createHumanCareTool } from "./human-care.mjs
 import { HUMAN_SAFETY_REFERENCE_PATH, createHumanSafetyTool } from "./human-safety.mjs";
 import { createHumanSafetyContinuityTool } from "./human-safety-continuity.mjs";
 import { activeRouteCard, createRouteCardTool, unsettledRouteCard } from "./route-card.mjs";
-import { createResponsibilityGapTool, resolveResponsibilityGap } from "./responsibility-gap.mjs";
+import { bindResponsibilityGapToTask, createResponsibilityGapTool, resolveResponsibilityGap } from "./responsibility-gap.mjs";
 import type { ResponsibilityGapProposal } from "./responsibility-gap.mjs";
 import { createResponsibilityReturnTool } from "./responsibility-return.mjs";
 import type { ResponsibilityReturnResult } from "./responsibility-return.mjs";
@@ -70,6 +70,15 @@ export function installToolRuntime(deps: ToolRuntimeDependencies): void {
       return routeProtections.get(agent) ?? activeRouteProtection(agent, evidence.events(agent));
     },
   });
+  const gapForCurrentTask = (
+    agent: DshAgent,
+    proposal: Readonly<ResponsibilityGapProposal>,
+  ): Readonly<ResponsibilityGapProposal> => {
+    const message = latestDirectUserMessage(agent);
+    return message && typeof message.id === "string" && message.id
+      ? bindResponsibilityGapToTask(proposal, message.id)
+      : proposal;
+  };
   ctx.tools.register(createContextCapabilityTool({
     isChild: isSubagent,
     onRequested(agent: DshAgent, capability: string) {
@@ -114,6 +123,7 @@ export function installToolRuntime(deps: ToolRuntimeDependencies): void {
   }));
   ctx.tools.register(createResponsibilityGapTool({
     isChild: isSubagent,
+    bindToTask: gapForCurrentTask,
     onProposed(agent: DshAgent, proposal: RuntimeEventData) {
       const turn = currentAgentTurn(agent);
       const step = currentAgentStep(agent);
@@ -145,7 +155,7 @@ export function installToolRuntime(deps: ToolRuntimeDependencies): void {
         ...result,
       });
       if (result.target === "executor") {
-        const proposal = resolveResponsibilityGap({
+        const proposal = gapForCurrentTask(agent, resolveResponsibilityGap({
           responsibility: "executor",
           gap: result.summary,
           evidenceRefs: [
@@ -153,7 +163,7 @@ export function installToolRuntime(deps: ToolRuntimeDependencies): void {
             ...result.evidenceRefs,
           ],
           expectedChange: "Implement the authorized frozen route card and return verifiable evidence to the controller.",
-        });
+        }));
         appendEvent(agent, "odai/responsibility-gap", {
           ...(turn === undefined ? {} : { turn }),
           ...(step === undefined ? {} : { step }),

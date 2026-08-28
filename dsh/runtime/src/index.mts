@@ -214,19 +214,16 @@ export function apply(ctx: DshRuntimeContext, rawConfig: unknown): void {
       ));
       if (!deferred) continue;
       const message = latestDirectUserMessage(agent);
-      const transition = message
-        ? classifyPendingReviewerText(extractLatestUserText([message]))
-        : "dormant";
+      if (!message) return undefined;
+      const transition = classifyPendingReviewerText(extractLatestUserText([message]));
       if (transition === "continue") return event.data;
-      if (transition === "supersede") {
-        appendEvent(agent, "odai/responsibility-gap-consumed", {
-          turn,
-          step,
-          responsibility: "reviewer",
-          stateDigest: event.data.stateDigest,
-          reason: "SUPERSEDED_BY_DIRECT_USER_TASK",
-        });
-      }
+      appendEvent(agent, "odai/responsibility-gap-consumed", {
+        turn,
+        step,
+        responsibility: "reviewer",
+        stateDigest: event.data.stateDigest,
+        reason: "SUPERSEDED_BY_DIRECT_USER_TASK",
+      });
       return undefined;
     }
     return undefined;

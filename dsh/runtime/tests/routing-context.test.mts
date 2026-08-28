@@ -189,6 +189,86 @@ test("user acceptance, namespaced tools, and external workspace paths produce cu
   assert.equal(packet.sufficient, true);
 });
 
+test("ask_user_question preserves the full user decision as acceptance evidence", () => {
+  const events: DshEvent[] = [
+    { type: "user/message", data: userMessage("先讨论真实目标，不要实施。") },
+    ...nativeToolEvents(
+      "ask-user-1",
+      "functions.ask_user_question",
+      {
+        questions: [{
+          id: "scope",
+          header: "目标范围",
+          question: "这次总体检查应覆盖哪些层面？",
+          multi_select: true,
+          options: [
+            { label: "Canonical Skill", description: "检查跨宿主治理语义。" },
+            { label: "DSH Runtime", description: "检查状态、路由与证据。" },
+          ],
+        }],
+      },
+      JSON.stringify({
+        answers: [{ id: "scope", selected: ["Canonical Skill", "DSH Runtime"], custom: "还要覆盖评测与发布" }],
+      }),
+      { callSeq: 60 },
+    ),
+  ];
+  const packet = buildRoleContextPacket({ session: { events } }, "reviewer", "review");
+  const rendered = renderRoleContextPacket(packet);
+
+  assert.equal(packet.coverage.acceptanceCount, 2);
+  assert.match(rendered, /这次总体检查应覆盖哪些层面/u);
+  assert.match(rendered, /Canonical Skill/u);
+  assert.match(rendered, /还要覆盖评测与发布/u);
+  assert.match(rendered, /user-decision/u);
+
+  const incomplete = buildRoleContextPacket({ session: { events: [
+    { type: "user/message", data: userMessage("先讨论真实目标，不要实施。") },
+    ...nativeToolEvents(
+      "ask-user-empty",
+      "functions.ask_user_question",
+      { questions: [{ id: "scope", question: "覆盖哪些层面？" }] },
+      JSON.stringify({ answers: [] }),
+      { callSeq: 70 },
+    ),
+  ] } }, "reviewer", "review");
+  assert.equal(incomplete.coverage.acceptanceCount, 1);
+  assert.doesNotMatch(renderRoleContextPacket(incomplete), /user-decision/u);
+
+  const malformedDecisions = [
+    {
+      questions: [{ id: "scope", question: "范围？" }, { id: "scope", question: "仍是范围？" }],
+      answers: [{ id: "scope", selected: ["Canonical Skill"] }],
+    },
+    {
+      questions: [{ id: "scope", question: "范围？" }],
+      answers: [{ id: "scope", selected: ["Canonical Skill"] }, { id: "scope", selected: ["DSH Runtime"] }],
+    },
+    {
+      questions: [{ id: "scope", question: "范围？" }],
+      answers: [{ id: "scope", selected: ["Canonical Skill"] }, { id: "extra", selected: ["DSH Runtime"] }],
+    },
+    {
+      questions: [{ id: "scope", question: "范围？" }, "malformed question"],
+      answers: [{ id: "scope", selected: ["Canonical Skill"] }],
+    },
+  ];
+  for (const [index, malformed] of malformedDecisions.entries()) {
+    const packet = buildRoleContextPacket({ session: { events: [
+      { type: "user/message", data: userMessage("先讨论真实目标，不要实施。") },
+      ...nativeToolEvents(
+        `ask-user-malformed-${index}`,
+        "functions.ask_user_question",
+        { questions: malformed.questions },
+        JSON.stringify({ answers: malformed.answers }),
+        { callSeq: 80 + index * 10 },
+      ),
+    ] } }, "reviewer", "review");
+    assert.equal(packet.coverage.acceptanceCount, 1);
+    assert.doesNotMatch(renderRoleContextPacket(packet), /user-decision/u);
+  }
+});
+
 test("common JavaScript and JVM test entry points are recognized", () => {
   for (const command of [
     "npx vitest run tests/store/auth.spec.ts",
@@ -562,6 +642,13 @@ test("read-only process and formatter checks do not stale reviewer evidence", ()
     { command: "lsof -nP -iTCP:5173 -sTCP:LISTEN" },
     "(no output)",
     { callSeq: 190 },
+  ));
+  events.push(...nativeToolEvents(
+    "compound-read",
+    "functions.bash",
+    { command: "git status --short && git diff --stat" },
+    "M dsh/runtime/src/router.mts\n router.mts | 2 +-",
+    { callSeq: 195 },
   ));
   const packet = buildRoleContextPacket({ session: { events } }, "reviewer", "review");
   assert.equal(packet.coverage.writeCount, 0);

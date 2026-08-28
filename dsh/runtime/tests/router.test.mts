@@ -10,6 +10,7 @@ import {
   decideRoute,
   extractLatestUserText,
   extractRoutingText,
+  isExecutionContinuation,
   renderDelegationPrompt,
   renderMissingRouteConfigNotice,
   renderRouteFailureNotice,
@@ -100,6 +101,21 @@ test("pending reviewer text distinguishes continuation, supersession, and dorman
   }
   for (const text of ["现在几点？", "解释一下这个术语", "为 API 添加测试", "审查 API", "把『开始另一个任务』改短"]) {
     assert.equal(classifyPendingReviewerText(text), "dormant", text);
+  }
+});
+
+test("execution continuation rejects target or scope revisions", () => {
+  for (const text of ["继续", "按上述计划执行", "continue with the previous plan", "go ahead with it", "go ahead with that change"]) {
+    assert.equal(isExecutionContinuation(text), true, text);
+  }
+  for (const text of [
+    "继续这个计划，但改成只处理文档",
+    "按上述计划执行，同时加上发布",
+    "continue with the plan, but change the scope",
+    "continue with the plan; change the target to documentation",
+    "go ahead with it and also remove the compatibility layer",
+  ]) {
+    assert.equal(isExecutionContinuation(text), false, text);
   }
 });
 
