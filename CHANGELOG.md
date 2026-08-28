@@ -14,7 +14,7 @@
 - canonical 明确探索、决定与实施不自动切换；行动要求充分且唯一的意图证据。方向性改进若存在多个合理交付物，先说明分歧并共同定案；实施、提交或发布授权在目标唯一后才生效，不能让目标变唯一。用户纠正会使受影响的旧计划、验收、授权与完成证据失效。
 - DSH responsibility gap 与 planner→executor handback 绑定最近的 authenticated direct user message；新任务或“继续，但修改目标/范围”的修订会清除旧 route card，只有未夹带修订的明确继续才保留旧执行上下文。Reviewer packet 保留完整 user question / answer，只接受 question / answer ID 唯一、无缺失且无额外答案的一一对应；incomplete packet 只报告一次并保持待静默重新评估，后续新任务消费旧 proposal，阻断重复 reviewer 循环。
 - 意图专项使用严格 `pass-score=4`：C25-C31 最终 **7/7、52/52**。决定性 C31 在同时暴露 canonical、runtime、evaluation 与 submission/publishing 后，`0.3.3` 为 **3/4 fail**，`0.3.5` 为 **4/4 pass**；C26 明确窄改仍是一行 diff 与命中测试，未退化成普遍确认。相称验证 C32-C34 为 **3/3、16/16**：局部 CSS / 窄代码不跑无关 build 或全量，共享 token 则覆盖所有相关消费者，因此不为该问题再堆 canonical 同义规则。
-- canonical validator 为 0 warnings，入口估算 2671 tokens；DSH strict typecheck、Plugin/Runtime `213/213`、Agent `14/14`、CLI phase-0、版本/静态合同/harness 测试、Plugin/Agent 实际 pack 与 CLI dry-run packaging 全部通过。由最终双包 tgz 安装的 rc.2 release matrix 验证 official session compatibility、Plugin / Agent load、188 包 pure graph 与 Standard / Odai coexistence；未执行 npm publish。
+- canonical validator 为 0 warnings，入口估算 2671 tokens；DSH strict typecheck、Plugin/Runtime `213/213`、Agent `14/14`、CLI phase-0、版本/静态合同/harness 测试、Plugin/Agent 实际 pack 与 CLI dry-run packaging 全部通过。由最终双包 tgz 安装的 rc.2 release matrix 验证 official session compatibility、Plugin / Agent load、188 包 pure graph 与 Standard / Odai coexistence；随后双包已从同一 commit 发布。
 
 ## 2026-08-28 — DSH 0.2.11 owned configuration locks
 
