@@ -386,3 +386,33 @@ test("Control Center retains local CLI model evidence in its child projection", 
   assert.equal(trace.currentRoles.frontend.route.model, "claude-opus-5");
   assert.equal(trace.currentRoles.frontend.route.reasoningEffort, undefined);
 });
+test("route editor creates API or local CLI mappings and blocks invalid forms", async () => {
+  const client = await loadClient("odai-dsh-plugin", ["odai-dsh-plugin"]);
+  const { localCliAllowed } = client;
+  // The client runs in another realm; compare plain JSON values.
+  const routeEditorPayload = (role, form) => { const value = client.routeEditorPayload(role, form); return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); };
+  const api = { backend: "provider", cli: "claude", provider: " openai ", model: " gpt-6-astra ", effort: "", maxTokens: "", timeoutSeconds: "" };
+  assert.deepEqual(routeEditorPayload("planner", api), { action: "set", responsibility: "planner", provider: "openai", model: "gpt-6-astra" });
+  assert.deepEqual(routeEditorPayload("planner", { ...api, effort: "high", maxTokens: "4096" }),
+    { action: "set", responsibility: "planner", provider: "openai", model: "gpt-6-astra", reasoningEffort: "high", maxTokens: 4096 });
+  // A new local CLI mapping needs no provider; API-only maxTokens is never sent.
+  const cli = { ...api, backend: "local-cli", provider: "", maxTokens: "4096" };
+  assert.deepEqual(routeEditorPayload("creative", { ...cli, model: " opus ", effort: "high", timeoutSeconds: "600" }),
+    { action: "set", responsibility: "creative", backend: "local-cli", cli: "claude", model: "opus", reasoningEffort: "high", timeoutSeconds: 600 });
+  for (const id of ["codex", "antigravity", "grok"]) {
+    assert.deepEqual(routeEditorPayload("frontend", { ...cli, cli: id, model: "m" }), { action: "set", responsibility: "frontend", backend: "local-cli", cli: id, model: "m" });
+  }
+  for (const role of ["planner", "frontend", "creative"]) assert.equal(localCliAllowed(role), true, role);
+  for (const role of ["researcher", "reviewer"]) {
+    assert.equal(localCliAllowed(role), false, role);
+    assert.equal(routeEditorPayload(role, { ...cli, model: "m" }), undefined, role);
+  }
+  for (const invalid of [
+    { ...api, model: "  " },
+    { ...api, provider: "" },
+    { ...api, maxTokens: "0" },
+    { ...cli, model: "m", cli: "gemini" },
+    { ...cli, model: "m", timeoutSeconds: "7201" },
+    { ...cli, model: "m", timeoutSeconds: "1.5" },
+  ]) assert.equal(routeEditorPayload("frontend", invalid), undefined, JSON.stringify(invalid));
+});

@@ -1,6 +1,6 @@
 # 职责路由接入本机 CLI
 
-状态（2026-10-15）：阶段 1、1b、2、3 均已实现，源码回归与双包打包预检通过，纳入 `0.2.51` 候选，尚未发布。提交前复核：运行时 / Plugin 330 项、Agent 24 项、跨宿主路由 14 组均通过；canonical skills 校验与双包 pack dry-run 通过，产物含 local-cli 模块及 creative 合同。剩余为真实安装与端到端验证；Grok 未实测，Antigravity 的浏览器、联网和生成工具边界未逐项验证。本文件是跨轮交接用的计划；实现细节以 `dsh/runtime` 源码与测试为准，完成后按实际结果更新或删减本文件。
+状态（2026-10-15）：阶段 1、1b、2、3 均已实现并验收；双包 `0.2.51` 已发布（registry：Plugin 07:34:39Z、Agent 07:36:40Z）并由用户装入 DSH web profile。发布后补的 Control Center 本机 CLI 映射表单归入未发布候选 `0.2.52`（见文末“发布后补充”）。剩余：真实 DSH 中的端到端使用验证；Grok 未实测。
 
 ## 要解决的问题
 
@@ -287,3 +287,9 @@
 - 总控、planner、reviewer、researcher：保持 GPT（API 渠道）。
 - creative：本机 Claude Code（如 `opus` / `high`），阶段 2 后可用。
 - frontend：本机 Antigravity（如 `gemini-3.8-flash-high`），阶段 1b 后可用；此前保持现状。
+
+## 发布后补充（0.2.52 候选）
+
+- 用户在 Control Center 发现映射表单新建时只能填 API 渠道，无法选择本机 CLI（底层配置工具已支持，表单只显示已有的 CLI 映射）。总控补上“渠道（API）/本机 CLI”接入方式切换与 CLI 下拉（planner、frontend、creative；researcher、reviewer 不提供），保存请求由可测的 `routeEditorPayload` 生成；本机 CLI 不经 API 预检，按钮为“保存”。
+- 验证：Control Center 客户端测试 14/14（含新表单用例）、Plugin 331/331、Agent 24/24、客户端语法检查通过；界面外观未目视验证。
+- 版本：双包升至 `0.2.52`，CHANGELOG 在 0.2.52 条目记录 0.2.51 的 registry 发布时间；版本策略校验通过。

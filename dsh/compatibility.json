@@ -249,7 +249,7 @@
       "sourceDshVersion": "0.1.7-rc.1"
     },
     {
-      "packageVersions": ["0.2.50", "0.2.51"],
+      "packageVersions": ["0.2.50", "0.2.51", "0.2.52"],
       "surfaces": ["plugin", "agent"],
       "dshRange": "*",
       "dshVersions": ["0.1.7-rc.1", "0.2.0-rc.1"],
