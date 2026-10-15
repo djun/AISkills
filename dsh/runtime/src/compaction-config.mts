@@ -12,7 +12,7 @@ import { dirname, resolve } from "node:path";
 
 import { requireModelRoute, sameModelRoute, type ResolveCallConfig } from "./model-route.mjs";
 import { acquireOwnedStoreLock } from "./store-lock.mjs";
-import type { DshAgent, DshMessage, DshSessionsService, ModelRoute, RuntimeTool, UnknownRecord } from "./runtime-types.mjs";
+import type { DshAgent, DshMessage, DshSessionsService, ApiModelRoute, RuntimeTool, UnknownRecord } from "./runtime-types.mjs";
 import { ODAI_MESSAGE_SOURCE_KIND, isUnknownRecord } from "./runtime-types.mjs";
 
 const STORE_SCHEMA_VERSION = 1;
@@ -22,7 +22,7 @@ const STATE_PROTOCOL_SOURCE = Object.freeze({
   form: "instructions",
 });
 
-export interface CompactionTarget extends ModelRoute {
+export interface CompactionTarget extends ApiModelRoute {
   provider: string;
   model: string;
   reasoningEffort?: string;

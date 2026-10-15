@@ -72,7 +72,13 @@ const DIRECT_USER_TASK_HEADING = "\n# Direct user task";
 interface AgentRequestEvent { agent: DshAgent; turn: number; step: number; signal: AbortSignal }
 interface AgentRequestErrorEvent extends AgentRequestEvent { provider: string; failure: UnknownRecord }
 interface AgentTurnEvent { agent: DshAgent; turn: number }
-interface RequestOptions extends UnknownRecord, Partial<ModelRoute> { messages?: readonly DshMessage[] }
+interface RequestOptions extends UnknownRecord {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
+  maxTokens?: number;
+  messages?: readonly DshMessage[];
+}
 interface StepResult extends UnknownRecord { kind: string; messages: readonly DshMessage[] }
 interface RouteFailure { kind: string; code: string; message: string }
 interface RoleState { route?: ModelRoute; source?: string; dispatch?: ResponsibilityDispatch; dispatchSource?: string; error?: string; detail?: string; id?: string; baseRoute?: ModelRoute }
@@ -83,6 +89,7 @@ function effectiveRoleDispatch(
   configured: ResponsibilityDispatch | undefined,
   routingMode: RuntimeConfig["routing"]["mode"],
 ): ResponsibilityDispatch {
+  if (role === "creative") return "child";
   if (configured) return configured;
   if (role === "researcher" || role === "reviewer") return "child";
   if (role === "planner") return routingMode === "auto" ? "same-turn" : "child";
@@ -186,6 +193,9 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
     if (["researcher", "reviewer"].includes(childRole ?? "") && !isManagedRoleChild(agent)) {
       throw new Error(`ODAI_MANAGED_RESPONSIBILITY_REQUIRED: ${childRole} requires odai_responsibility_gap and managed evidence validation; a native description label cannot bypass it`);
     }
+    if (childRoleState?.route?.backend === "local-cli") {
+      throw new Error(`ODAI_LOCAL_CLI_MANAGED_DISPATCH_REQUIRED: ${childRole} uses local-cli; use odai_responsibility_gap instead of a native odai-${childRole}: label`);
+    }
     let scope = responsibilityScopes.get(agent);
     if (scope && !responsibilityScopeOwnsRequest(scope, turn, step)) {
       stopResponsibilityScope(agent, "ownership-boundary", { step });
@@ -233,6 +243,9 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       : scope
         ? scope.route
         : undefined;
+    if (roleRoute?.backend === "local-cli") {
+      throw new Error("ODAI_LOCAL_CLI_CHILD_REQUIRED: local-cli cannot upgrade a same-turn request; use odai_responsibility_gap");
+    }
     const routeSource = childRole ? childRoleState?.source : scope?.source;
     let routeMode = childRole ? "child" : sameRequestModelRoute(proposed, roleRoute) ? "inline" : "same-turn";
     let scopedResponsibilityMaxTokens = upgradeRole ? roleRoute?.maxTokens : undefined;
@@ -1004,6 +1017,8 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
 
       let decision = sameTurnResearchDecision ?? decideRoute({
         text: taskText,
+        creativeConfigured: Boolean(configuredRole(agent, "creative", turn).route),
+        creativeText: (extractLatestUserText(downstream.messages) || authenticatedDirectText).slice(0, config.routing.maxInputChars),
         proposal: responsibilityGap,
         interruption: responsibilityContinuation,
       });
@@ -1186,7 +1201,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
       const canonicalRoleContract = roleBundle.roleContracts[routeRole];
       const roleContract = dshRoleContract(routeRole, canonicalRoleContract);
       let rolePreflightVerified = false;
-      if (routeRole === "frontend" && decision.action === "upgrade") {
+      if (roleRoute.backend !== "local-cli" && routeRole === "frontend" && decision.action === "upgrade") {
         const health = await probeModelRoute(
           (candidate: ModelRoute, candidateSignal?: AbortSignal) => ctx.llm.resolveCallConfig(candidate, candidateSignal),
           roleRoute,
@@ -1240,7 +1255,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         ...scopePrefixFor(roleTaskText),
         evidenceEvents: evidence.events(agent),
       });
-      const roleDispatch = effectiveRoleDispatch(routeRole, roleState.dispatch, config.routing.mode);
+      const roleDispatch = roleRoute.backend === "local-cli" ? "child" : effectiveRoleDispatch(routeRole, roleState.dispatch, config.routing.mode);
       const inPlaceUpgrade = roleDispatch === "same-turn";
       const contextMode = inPlaceUpgrade ? "same-turn" : "bounded-packet";
       appendEvent(agent, "odai/route-context", {
@@ -1367,7 +1382,7 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         ? decision
         : Object.freeze({ ...decision, role: routeRole, mode: "delegate", action: "delegate" });
       const subagents = isSubagentsService(ctx.subagents) ? ctx.subagents : undefined;
-      const result: Readonly<RoutedRoleOutcome> = subagents
+      const result: Readonly<RoutedRoleOutcome> = subagents || roleRoute.backend === "local-cli"
         ? await runRoutedRole({
             subagents,
             provider: config.routing.provider,
@@ -1401,11 +1416,22 @@ export function installLifecycleRuntime(deps: LifecycleDependencies): void {
         ...(result.routeReceiptError ? { routeReceiptError: result.routeReceiptError } : {}),
         ...(result.actualRoute ? { actualRoute: result.actualRoute } : {}),
         ...(result.taskError ? { error: result.taskError } : {}),
+        ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }),
+        ...(result.usage ? { usage: result.usage } : {}),
+        ...(result.cliReportedCostUsd === undefined ? {} : { cliReportedCostUsd: result.cliReportedCostUsd }),
+        ...(result.deniedActionsCount === undefined ? {} : { deniedActionsCount: result.deniedActionsCount }),
+        ...(result.reasoningEffortVerification ? { reasoningEffortVerification: result.reasoningEffortVerification } : {}),
       });
 
       if (result.status === "completed") {
         const childText = outputText(result.output);
-        const heading = renderRouteNotice(delegationDecision, config.routing.mode, result.actualRoute);
+        const heading = [
+          renderRouteNotice(delegationDecision, config.routing.mode, result.actualRoute, "child"),
+          ...(result.reasoningEffortVerification === "verified"
+            ? [`Reasoning effort: ${result.actualRoute?.reasoningEffort ?? "unspecified"} (verified from CLI session evidence).`]
+            : result.reasoningEffortVerification === "requested-only"
+              ? [`Reasoning effort: ${roleRoute.reasoningEffort ?? "unspecified"} (requested only; CLI does not verify actual effort).`] : []),
+        ].join("\n");
         return {
           kind: "enter",
           messages: [

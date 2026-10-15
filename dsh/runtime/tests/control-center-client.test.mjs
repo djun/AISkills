@@ -349,3 +349,40 @@ test("uiConversation lifecycle mounts late, remounts on replacement, and cleans 
   harness.dispose();
   assert.equal(harness.listeners.size, 0);
 });
+
+
+test("Control Center projects creative API and local CLI children with the creative role label", async () => {
+  const client = await loadClient("odai-dsh-plugin", ["odai-dsh-plugin"]);
+  for (const route of [
+    { provider: "openai", model: "creative-model" },
+    { backend: "local-cli", cli: "claude", model: "claude-opus-5" },
+    { backend: "local-cli", cli: "codex", model: "gpt-6.1-sol" },
+    { backend: "local-cli", cli: "antigravity", model: "gemini-3.8-flash-high" },
+    { backend: "local-cli", cli: "grok", model: "grok-code" },
+  ]) {
+    const trace = client.projectTrace([{ seq: 1, type: "odai/route-result", data: {
+      turn: 1, step: 1, role: "creative", action: "delegate", status: "completed", routeReceiptStatus: "applied",
+      actualRoute: route,
+    } }]);
+    assert.equal(trace.currentRoles.creative.role, "creative");
+    assert.equal(trace.currentRoles.creative.state, "child");
+    assert.match(trace.currentRoles.creative.title, /^创意/);
+    assert.equal(trace.currentRoles.creative.route.model, route.model);
+    assert.equal(trace.currentRoles.creative.route.backend, route.backend);
+    assert.equal(trace.currentRoles.creative.route.provider, route.provider);
+    assert.equal(trace.currentRoles.creative.route.cli, route.cli);
+  }
+});
+
+test("Control Center retains local CLI model evidence in its child projection", async () => {
+  const client = await loadClient("odai-dsh-plugin", ["odai-dsh-plugin"]);
+  const trace = client.projectTrace([{ seq: 1, type: "odai/route-result", data: {
+    turn: 1, step: 1, role: "frontend", action: "delegate", status: "completed", routeReceiptStatus: "applied",
+    actualRoute: { backend: "local-cli", cli: "claude", model: "claude-opus-5" }, reasoningEffortVerification: "requested-only",
+  } }]);
+  assert.equal(trace.currentRoles.frontend.state, "child");
+  assert.equal(trace.currentRoles.frontend.route.backend, "local-cli");
+  assert.equal(trace.currentRoles.frontend.route.cli, "claude");
+  assert.equal(trace.currentRoles.frontend.route.model, "claude-opus-5");
+  assert.equal(trace.currentRoles.frontend.route.reasoningEffort, undefined);
+});

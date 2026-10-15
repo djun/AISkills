@@ -1,12 +1,15 @@
 type ClientModule = Record<string | symbol, unknown>;
 type ClientRequire = (id: string) => any;
 type UnknownRecord = Record<string, any>;
-type Role = "controller" | "researcher" | "planner" | "reviewer" | "frontend";
+type Role = "controller" | "researcher" | "planner" | "reviewer" | "frontend" | "creative";
 type Responsibility = Exclude<Role, "controller">;
 type TraceState = "proposal" | "accepted" | "decision" | "direct" | "same-turn" | "child" | "handback" | "blocked" | "interrupted" | "configured" | "evidence";
 
 interface ModelRoute {
-  provider: string;
+  backend?: "local-cli";
+  cli?: "claude" | "codex" | "antigravity" | "grok";
+  timeoutSeconds?: number;
+  provider?: string;
   model: string;
   reasoningEffort?: string;
   maxTokens?: number;
@@ -79,13 +82,14 @@ window.__ModuleLoader__.load({
     const ReactDOM = require_("react-dom");
     const { createElement: h, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React;
     const PACKAGE_ID: string = "__ODAI_CLIENT_PACKAGE__";
-    const ROLES: readonly Responsibility[] = Object.freeze(["researcher", "planner", "reviewer", "frontend"]);
+    const ROLES: readonly Responsibility[] = Object.freeze(["researcher", "planner", "reviewer", "frontend", "creative"]);
     const ROLE_LABELS: Readonly<Record<Role, string>> = Object.freeze({
       controller: "总控",
       researcher: "调查",
       planner: "规划",
       reviewer: "审查",
       frontend: "设计",
+      creative: "创意",
     });
     const STATE_LABELS: Readonly<Record<TraceState, string>> = Object.freeze({
       proposal: "已提议",
@@ -178,7 +182,13 @@ window.__ModuleLoader__.load({
 
     function routeOf(data?: UnknownRecord): ModelRoute | undefined {
       const route = record(data?.actualRoute ?? data?.requestedRoute ?? data?.effectiveRoute ?? data?.route);
-      if (!route || !text(route.provider) || !text(route.model)) return undefined;
+      if (!route || !text(route.model)) return undefined;
+      if (route.backend === "local-cli" && (route.cli === "claude" || route.cli === "codex" || route.cli === "antigravity" || route.cli === "grok")) return Object.freeze({
+        backend: "local-cli", cli: route.cli, model: text(route.model),
+        reasoningEffort: text(route.reasoningEffort) || undefined,
+        timeoutSeconds: positiveInteger(route.timeoutSeconds),
+      });
+      if (!text(route.provider)) return undefined;
       return Object.freeze({
         provider: text(route.provider),
         model: text(route.model),
@@ -292,6 +302,7 @@ window.__ModuleLoader__.load({
 
     function formatRoute(route?: ModelRoute): string {
       if (!route) return "未配置";
+      if (route.backend === "local-cli") return `local-cli:${route.cli}/${route.model}${route.reasoningEffort ? ` (reasoning: ${route.reasoningEffort})` : ""}`;
       const extras = [route.reasoningEffort, route.maxTokens ? `${route.maxTokens} tokens` : ""].filter(Boolean);
       return `${route.provider}/${route.model}${extras.length ? ` · ${extras.join(" · ")}` : ""}`;
     }
@@ -517,6 +528,8 @@ window.__ModuleLoader__.load({
     function RouteEditor({ role, config, busy, onApply }: { role: Responsibility; config: RoutingConfig; busy: boolean; onApply(payload: RoutingAction): Promise<RoutingConfig> }) {
       const route = config?.roles?.[role];
       const source = config?.sources?.[role];
+      const localCli = route?.backend === "local-cli";
+      const childOnly = role === "creative" || localCli;
       const dispatch = config?.dispatch?.[role];
       const dispatchSource = config?.dispatchSources?.[role];
       const [editing, setEditing] = useState(false);
@@ -524,6 +537,7 @@ window.__ModuleLoader__.load({
       const [model, setModel] = useState(route?.model ?? "");
       const [effort, setEffort] = useState(route?.reasoningEffort ?? "");
       const [maxTokens, setMaxTokens] = useState(route?.maxTokens ? String(route.maxTokens) : "");
+      const [timeoutSeconds, setTimeoutSeconds] = useState(route?.timeoutSeconds ? String(route.timeoutSeconds) : "");
 
       useEffect(() => {
         if (editing) return;
@@ -531,15 +545,18 @@ window.__ModuleLoader__.load({
         setModel(route?.model ?? "");
         setEffort(route?.reasoningEffort ?? "");
         setMaxTokens(route?.maxTokens ? String(route.maxTokens) : "");
+        setTimeoutSeconds(route?.timeoutSeconds ? String(route.timeoutSeconds) : "");
       }, [route, editing]);
 
       const save = () => onApply({
         action: "set",
         responsibility: role,
-        provider,
+        ...(localCli ? { backend: "local-cli", cli: route?.cli } : { provider }),
         model,
         ...(effort.trim() ? { reasoningEffort: effort.trim() } : {}),
-        ...(maxTokens.trim() ? { maxTokens: Number(maxTokens) } : {}),
+        ...(localCli
+          ? timeoutSeconds.trim() ? { timeoutSeconds: Number(timeoutSeconds) } : {}
+          : maxTokens.trim() ? { maxTokens: Number(maxTokens) } : {}),
       }).then(() => setEditing(false));
       const remove = () => {
         if (!window.confirm(`确认移除“${ROLE_LABELS[role]}”的本地模型映射？`)) return;
@@ -566,18 +583,22 @@ window.__ModuleLoader__.load({
             type: "button",
             className: (dispatch ?? "default") === value ? "is-active" : "",
             onClick: () => setDispatch(value),
-            disabled: busy,
+            disabled: busy || (childOnly && value === "same-turn"),
           }, dispatchLabel(value)))),
-          h("small", null, sourceLabel(dispatchSource, "兼容默认")),
+          h("small", null, sourceLabel(dispatchSource, childOnly ? "默认子代理" : "兼容默认")),
         ),
         editing ? h("div", { className: "odaiCC__routeForm" },
-          h("label", null, h("span", null, "Provider"), h("input", { value: provider, onChange: (event: { target: { value: string } }) => setProvider(event.target.value), placeholder: "Provider ID", disabled: busy })),
+          localCli
+            ? h("label", null, h("span", null, "本机 CLI"), h("input", { value: route?.cli, disabled: true }))
+            : h("label", null, h("span", null, "Provider"), h("input", { value: provider, onChange: (event: { target: { value: string } }) => setProvider(event.target.value), placeholder: "Provider ID", disabled: busy })),
           h("label", null, h("span", null, "模型"), h("input", { value: model, onChange: (event: { target: { value: string } }) => setModel(event.target.value), placeholder: "模型 ID", disabled: busy })),
           h("label", null, h("span", null, "推理档位"), h("input", { value: effort, onChange: (event: { target: { value: string } }) => setEffort(event.target.value), placeholder: "可选", disabled: busy })),
-          h("label", null, h("span", null, "最大 tokens"), h("input", { value: maxTokens, onChange: (event: { target: { value: string } }) => setMaxTokens(event.target.value), inputMode: "numeric", placeholder: "可选", disabled: busy })),
+          localCli
+            ? h("label", null, h("span", null, "超时（秒）"), h("input", { value: timeoutSeconds, onChange: (event: { target: { value: string } }) => setTimeoutSeconds(event.target.value), inputMode: "numeric", placeholder: "1200", disabled: busy }))
+            : h("label", null, h("span", null, "最大 tokens"), h("input", { value: maxTokens, onChange: (event: { target: { value: string } }) => setMaxTokens(event.target.value), inputMode: "numeric", placeholder: "可选", disabled: busy })),
           h("div", { className: "odaiCC__formActions" },
             route ? h("button", { type: "button", className: "odaiCC__dangerButton", onClick: remove, disabled: busy }, "移除映射") : null,
-            h("button", { type: "button", className: "odaiCC__primaryButton", onClick: save, disabled: busy || !provider.trim() || !model.trim() || (maxTokens.trim() && !positiveInteger(maxTokens)) }, busy ? "正在验证…" : "验证并保存"),
+            h("button", { type: "button", className: "odaiCC__primaryButton", onClick: save, disabled: busy || (!localCli && !provider.trim()) || !model.trim() || (localCli ? timeoutSeconds.trim() && (!positiveInteger(timeoutSeconds) || Number(timeoutSeconds) > 7200) : maxTokens.trim() && !positiveInteger(maxTokens)) }, busy ? "正在验证…" : "验证并保存"),
           ),
         ) : null,
       );

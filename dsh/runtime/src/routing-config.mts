@@ -11,7 +11,9 @@ import {
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
-import { requireModelRoute, sameModelRoute, type ResolveCallConfig } from "./model-route.mjs";
+import { validateLocalCliRoute } from "#odai-local-cli";
+
+import { describeModelRoute, requireModelRoute, sameModelRoute, type ResolveCallConfig } from "./model-route.mjs";
 import {
   IN_PLACE_OUTPUT_RESPONSIBILITIES,
   resolveInPlaceResponsibilityOutputBudgets,
@@ -22,7 +24,7 @@ import type { DshAgent, ModelRoute, ResponsibilityDispatch, RuntimeTool, Unknown
 import { isUnknownRecord } from "./runtime-types.mjs";
 import { acquireOwnedStoreLock } from "./store-lock.mjs";
 
-export const CONFIGURABLE_ROLES = Object.freeze(["researcher", "planner", "reviewer", "frontend"] as const);
+export const CONFIGURABLE_ROLES = Object.freeze(["researcher", "planner", "reviewer", "frontend", "creative"] as const);
 export type ConfigurableRole = (typeof CONFIGURABLE_ROLES)[number];
 export type RoleRoutes = Partial<Record<ConfigurableRole, ModelRoute>>;
 export type RoleRouteSources = Partial<Record<ConfigurableRole, "persisted-mapping" | "deployment-config">>;
@@ -30,7 +32,7 @@ export type RoleDispatches = Partial<Record<ConfigurableRole, ResponsibilityDisp
 export type RoleDispatchSources = Partial<Record<ConfigurableRole, "persisted-config" | "deployment-config">>;
 
 export interface RoutingStore {
-  readonly schemaVersion: 1 | 2;
+  readonly schemaVersion: 1 | 2 | 3;
   readonly roles: Readonly<RoleRoutes>;
   readonly dispatch: Readonly<RoleDispatches>;
 }
@@ -54,6 +56,8 @@ export interface LatestRouteReceipt {
   fallbackUsed?: boolean;
   requestedRoute?: ModelRoute;
   actualRoute?: ModelRoute;
+  reasoningEffortVerification?: "verified" | "mismatch" | "requested-only";
+  deniedActionsCount?: number;
   stopReason?: string;
   error?: string;
   taskStopReason?: string;
@@ -62,13 +66,13 @@ export interface LatestRouteReceipt {
 
 export const ROUTING_CONFIG_PROMPT = [
   "## Odai responsibility model configuration",
-  "When the user naturally asks to inspect, set, change, or remove the research/investigation, planning/planner, review/acceptance/reviewer, or frontend design/implementation model, use odai_routing_config.",
+  "When the user naturally asks to inspect, set, change, or remove the research/investigation, planning/planner, review/acceptance/reviewer, frontend design/implementation, or creative writing/design/review model, use odai_routing_config.",
   "Translate the user's natural responsibility wording into the tool's responsibility field. Do not require internal routing terms or a special prompt form.",
-  "For a model set, call the tool only after the user explicitly supplies both provider and model. Pass reasoningEffort or maxTokens only when the user supplies them; otherwise omit them.",
-  "A user may independently set or reset one responsibility's dispatch. researcher, planner, reviewer, and frontend accept same-turn or child. Do not require provider/model again for a dispatch-only change.",
-  "Never infer, recommend as chosen, or silently select any provider, model, effort, token limit, dispatch, or price. Ask a concise clarification when a requested value is ambiguous.",
+  "For an API model set, require explicit provider and model from the user. For backend=local-cli, require explicit cli and model; this version supports cli=claude/codex/antigravity/grok for planner/frontend/creative as child. gemini is reserved and unsupported; Antigravity uses cli=antigravity. Pass reasoningEffort, maxTokens (API only), or timeoutSeconds (local-cli only) only when supplied by the user; otherwise omit them.",
+  "A user may independently set or reset one responsibility's dispatch. API routes for researcher, planner, reviewer, and frontend accept same-turn or child; creative on either backend and all local-cli routes reject same-turn and default to child. Do not require provider/model or cli/model again for a dispatch-only change.",
+  "Never infer, recommend as chosen, or silently select any provider, cli, model, effort, timeout, token limit, dispatch, or price. Ask a concise clarification when a requested value is ambiguous.",
   "Researcher routing is task-gated but not price-aware. A researcher mapping enables the narrow trigger but does not guarantee lower cost; compare actual provider prices and measured usage without inventing either.",
-  "A generic subagent is not proof that a configured responsibility ran. For a matching responsibility use odai_responsibility_gap so configured dispatch and evidence gates apply. For an explicitly authorized manual planner/frontend child, begin the native tool's description with `odai-planner:` or `odai-frontend:`: DSH uses description as its descriptor label and applies that role's configured model and contract. Researcher/reviewer require managed dispatch and evidence validation; hand-written labels cannot authorize them. For a user-authorized alternative model, do not use that prefix or claim the persisted mapping ran.",
+  "A generic subagent is not proof that a configured responsibility ran. For a matching responsibility use odai_responsibility_gap so configured dispatch and evidence gates apply. Local-cli routes must use odai_responsibility_gap; native child tools cannot run them. For an explicitly authorized manual API planner/frontend/creative child, begin the native tool's description with `odai-planner:`, `odai-frontend:`, or `odai-creative:`: DSH uses description as its descriptor label and applies that role's configured model and contract. Researcher/reviewer require managed dispatch and evidence validation; hand-written labels cannot authorize them. For a user-authorized alternative model, do not use that prefix or claim the persisted mapping ran.",
   "Do not ask the user to edit YAML, JSON, managed Agent files, or Plugin configuration. The tool owns persistence. A set/remove change applies from the next user turn.",
   "Base controller selection remains host-owned and is not changed by this tool.",
 ].join("\n");
@@ -76,7 +80,7 @@ export const ROUTING_CONFIG_PROMPT = [
 const ROLE_ROUTE_FIELDS = new Set<string>(["provider", "model", "reasoningEffort", "maxTokens"]);
 const RETIRED_STORE_ROLES = new Set(["executor"]);
 const STORE_SCHEMA_VERSION = 2;
-const SUPPORTED_STORE_SCHEMA_VERSIONS = new Set([1, STORE_SCHEMA_VERSION]);
+const SUPPORTED_STORE_SCHEMA_VERSIONS = new Set([1, STORE_SCHEMA_VERSION, 3]);
 const DISPATCH_VALUES = new Set<ResponsibilityDispatch>(["same-turn", "child"]);
 
 function isConfigurableRole(value: unknown): value is ConfigurableRole {
@@ -87,6 +91,15 @@ export function resolveRoleRoute(value: unknown, role: unknown): Readonly<ModelR
   if (value === undefined) return undefined;
   if (!isConfigurableRole(role)) throw new TypeError(`unknown odai routing responsibility: ${String(role)}`);
   if (!isUnknownRecord(value)) throw new TypeError(`routing role ${role} must be an object`);
+  if (value.backend === "local-cli") {
+    if (role === "researcher") {
+      throw new TypeError("local-cli researcher is unsupported: researcher requires a validated research package and the DSH read-tool evidence chain");
+    }
+    if (role === "reviewer") {
+      throw new TypeError("local-cli reviewer is unsupported: reviewer requires odai_review_evidence from DSH");
+    }
+    return Object.freeze({ ...validateLocalCliRoute(value) });
+  }
   const unknownFields = Object.keys(value).filter((field) => !ROLE_ROUTE_FIELDS.has(field));
   if (unknownFields.length > 0) {
     throw new TypeError(`routing role ${role} has unknown fields: ${unknownFields.join(", ")}`);
@@ -120,7 +133,21 @@ export function resolveRoleDispatch(value: unknown, role: unknown): Responsibili
   if (typeof value !== "string" || !DISPATCH_VALUES.has(value as ResponsibilityDispatch)) {
     throw new TypeError(`routing dispatch ${role} must be same-turn or child`);
   }
+  assertRoleRouteDispatch(undefined, value as ResponsibilityDispatch, role);
   return value as ResponsibilityDispatch;
+}
+
+export function assertRoleRouteDispatch(
+  route: ModelRoute | undefined,
+  dispatch: ResponsibilityDispatch | undefined,
+  role: ConfigurableRole,
+): void {
+  if (role === "creative" && dispatch === "same-turn") {
+    throw new TypeError("routing responsibility creative only supports child dispatch; same-turn is not supported for API or local-cli routes");
+  }
+  if (route?.backend === "local-cli" && dispatch === "same-turn") {
+    throw new TypeError(`routing responsibility ${role}: local-cli only supports child dispatch; same-turn is not supported`);
+  }
 }
 
 export function resolveRoutingConfigPath(
@@ -183,11 +210,12 @@ export function readRoutingStore(configPath: string): Readonly<RoutingStore> {
   for (const role of CONFIGURABLE_ROLES) {
     const route = resolveRoleRoute(rawRoles[role], role);
     const dispatch = resolveRoleDispatch(rawDispatch[role], role);
+    assertRoleRouteDispatch(route, dispatch, role);
     if (route) entries.push([role, route]);
     if (dispatch) dispatchEntries.push([role, dispatch]);
   }
   return Object.freeze({
-    schemaVersion: parsed.schemaVersion as 1 | 2,
+    schemaVersion: parsed.schemaVersion as 1 | 2 | 3,
     roles: Object.freeze(Object.fromEntries(entries)),
     dispatch: Object.freeze(Object.fromEntries(dispatchEntries)),
   });
@@ -214,6 +242,7 @@ export function effectiveRoutingSnapshot(
   for (const role of CONFIGURABLE_ROLES) {
     const route = persisted.roles[role] ?? configuredRoles[role];
     const roleDispatch = persisted.dispatch[role] ?? configuredDispatch[role];
+    assertRoleRouteDispatch(route, roleDispatch, role);
     if (route) {
       roles[role] = route;
       sources[role] = persisted.roles[role] ? "persisted-mapping" : "deployment-config";
@@ -234,7 +263,8 @@ export function effectiveRoutingSnapshot(
 function writeRoutingStore(configPath: string, roles: Readonly<RoleRoutes>, dispatch: Readonly<RoleDispatches>): void {
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   const temporary = `${configPath}.tmp-${process.pid}-${randomUUID()}`;
-  const value = `${JSON.stringify({ schemaVersion: STORE_SCHEMA_VERSION, roles, dispatch }, null, 2)}\n`;
+  const schemaVersion = Object.values(roles).some((route) => route?.backend === "local-cli") ? 3 : STORE_SCHEMA_VERSION;
+  const value = `${JSON.stringify({ schemaVersion, roles, dispatch }, null, 2)}\n`;
   try {
     writeFileSync(temporary, value, { encoding: "utf8", mode: 0o600, flag: "wx" });
     renameSync(temporary, configPath);
@@ -278,15 +308,28 @@ export function invalidatePersistedRoleRoute(
 
 function routeSchema(required: boolean): UnknownRecord {
   return {
-    type: "object",
-    additionalProperties: false,
-    ...(required ? { required: ["provider", "model"] } : {}),
-    properties: {
-      provider: { type: "string" },
-      model: { type: "string" },
-      reasoningEffort: { type: "string" },
-      maxTokens: { type: "integer" },
-    },
+    oneOf: [{
+      type: "object",
+      additionalProperties: false,
+      ...(required ? { required: ["provider", "model"] } : {}),
+      properties: {
+        provider: { type: "string" },
+        model: { type: "string" },
+        reasoningEffort: { type: "string" },
+        maxTokens: { type: "integer" },
+      },
+    }, {
+      type: "object",
+      additionalProperties: false,
+      required: ["backend", "cli", "model"],
+      properties: {
+        backend: { type: "string", const: "local-cli" },
+        cli: { type: "string", enum: ["claude", "codex", "antigravity", "grok"] },
+        model: { type: "string" },
+        reasoningEffort: { type: "string" },
+        timeoutSeconds: { type: "integer", minimum: 1, maximum: 7200 },
+      },
+    }],
   };
 }
 
@@ -385,20 +428,24 @@ export async function applyRoutingConfigAction(
     );
   }
   if (!isConfigurableRole(arguments_.responsibility)) {
-    throw new TypeError("responsibility must be researcher, planner, reviewer, or frontend for configuration changes");
+    throw new TypeError("responsibility must be researcher, planner, reviewer, frontend, or creative for configuration changes");
   }
   const responsibility = arguments_.responsibility;
   const proposedRoute = routingAction === "set" ? resolveRoleRoute({
-    provider: arguments_.provider,
+    ...(arguments_.backend === undefined ? {} : { backend: arguments_.backend }),
+    ...(arguments_.cli === undefined ? {} : { cli: arguments_.cli }),
+    ...(Object.hasOwn(arguments_, "provider") ? { provider: arguments_.provider } : {}),
+    ...(arguments_.timeoutSeconds === undefined ? {} : { timeoutSeconds: arguments_.timeoutSeconds }),
     model: arguments_.model,
     ...(arguments_.reasoningEffort === undefined ? {} : { reasoningEffort: arguments_.reasoningEffort }),
-    ...(arguments_.maxTokens === undefined ? {} : { maxTokens: arguments_.maxTokens }),
+    ...(arguments_.maxTokens !== undefined || (arguments_.backend === "local-cli" && Object.hasOwn(arguments_, "maxTokens"))
+      ? { maxTokens: arguments_.maxTokens } : {}),
   }, responsibility) : undefined;
   const proposedDispatch = routingAction === "set-dispatch"
     ? resolveRoleDispatch(arguments_.dispatch, responsibility)
     : undefined;
 
-  if (routingAction === "set" && proposedRoute) {
+  if (routingAction === "set" && proposedRoute && proposedRoute.backend !== "local-cli") {
     await requireModelRoute(
       options.resolveCallConfig,
       proposedRoute,
@@ -433,13 +480,16 @@ export async function applyRoutingConfigAction(
     } else if (routingAction === "reset-dispatch") {
       delete dispatch[responsibility];
     }
+    for (const role of CONFIGURABLE_ROLES) {
+      assertRoleRouteDispatch(roles[role] ?? configuredRoles[role], dispatch[role] ?? configuredDispatch[role], role);
+    }
     writeRoutingStore(configPath, roles, dispatch);
     const event: RoutingConfiguredEvent = {
       action: routingAction,
       responsibility,
       ...(roles[responsibility] ? { route: roles[responsibility] } : {}),
       ...(dispatch[responsibility] ? { dispatch: dispatch[responsibility] } : {}),
-      validationStatus: routingAction === "set" && proposedRoute ? "verified" : undefined,
+      validationStatus: routingAction === "set" && proposedRoute && proposedRoute.backend !== "local-cli" ? "verified" : undefined,
       ...(recoveredInvalidStore ? { recoveredInvalidStore: true } : {}),
     };
     options.onConfigured?.(event);
@@ -470,12 +520,12 @@ export function createRoutingConfigTool(
   return {
     name: "odai_routing_config",
     description: [
-      "Inspect effective Odai model mappings, per-responsibility dispatch overrides, and the latest current-session route receipt; set/remove mappings or set/reset dispatch for researcher, planner, reviewer, and frontend responsibilities.",
-      "Use this only when the user naturally and explicitly asks to inspect/remove a mapping, names the provider/model to set, or explicitly chooses same-turn/child dispatch.",
-      "Never choose a provider, model, reasoning effort, token limit, or price on the user's behalf. Never choose a dispatch mode on the user's behalf.",
+      "Inspect effective Odai model mappings, per-responsibility dispatch overrides, and the latest current-session route receipt; set/remove mappings or set/reset dispatch for researcher, planner, reviewer, frontend, and creative responsibilities.",
+      "Use this only when the user naturally and explicitly asks to inspect/remove a mapping, names the provider/model or local-cli cli/model to set, or explicitly chooses same-turn/child dispatch.",
+      "Never choose a provider, cli, model, reasoning effort, timeout, token limit, or price on the user's behalf. Never choose a dispatch mode on the user's behalf.",
       "Researcher routing is task-gated but not price-aware; its mapping does not guarantee lower cost.",
       "For every configuration change, handle one responsibility per call. Persisted model mappings and dispatch overrides are shared by the Odai DSH Plugin and Agent and apply from the next user turn.",
-      "Results expose configured in-place responsibility ceilings and warn when planner or frontend mappings without maxTokens inherit the controller ceiling; never invent an override.",
+      "Local-cli supports claude, codex, antigravity, and grok for planner/frontend/creative as child, defaulting to child when dispatch is omitted. researcher/reviewer require DSH evidence tools and cannot use local-cli. Creative also defaults to child on API routes and rejects same-turn. Results expose API in-place responsibility ceilings; never invent an override.",
     ].join(" "),
     parameters: {
       type: "object",
@@ -484,11 +534,14 @@ export function createRoutingConfigTool(
       properties: {
         action: { type: "string", enum: ["show", "set", "remove", "set-dispatch", "reset-dispatch"], description: "Show configuration, set/remove one model mapping, or set/reset one dispatch override." },
         responsibility: { type: "string", enum: [...CONFIGURABLE_ROLES], description: "Required for every action except show." },
-        provider: { type: "string", description: "Provider id explicitly supplied by the user; required for set." },
+        backend: { type: "string", enum: ["local-cli"], description: "Set local-cli when the user explicitly requests a local CLI route; omit for API routes." },
+        cli: { type: "string", enum: ["claude", "codex", "antigravity", "grok", "gemini"], description: "CLI explicitly supplied by the user; required with local-cli. claude, codex, antigravity, and grok are supported. gemini is reserved and rejected; use antigravity for Antigravity's agy CLI." },
+        timeoutSeconds: { type: "integer", minimum: 1, maximum: 7200, description: "Optional local-cli timeout explicitly supplied by the user; defaults to 1200 seconds." },
+        provider: { type: "string", description: "Provider id explicitly supplied by the user; required for API set and forbidden with local-cli." },
         model: { type: "string", description: "Model id explicitly supplied by the user; required for set." },
         reasoningEffort: { type: "string", description: "Optional reasoning effort explicitly supplied by the user." },
         maxTokens: { type: "integer", description: "Optional positive output limit explicitly supplied by the user. It limits routed child requests and explicitly overrides the global controller ceiling only inside the same planner or frontend responsibility scope when that responsibility runs in-place." },
-        dispatch: { type: "string", enum: ["same-turn", "child"], description: "Required for set-dispatch. Every responsibility accepts same-turn or child." },
+        dispatch: { type: "string", enum: ["same-turn", "child"], description: "Required for set-dispatch. Creative and local-cli routes only accept child; other API responsibilities accept same-turn or child." },
       },
     },
     output: {
@@ -530,7 +583,8 @@ export function createRoutingConfigTool(
               status: { type: "string", enum: ["applied", "mismatch", "unverified", "fallback"] },
               taskStatus: { type: "string", enum: ["completed", "fallback"] }, routeMode: { type: "string", enum: ["inline", "same-turn", "child"] },
               routeSource: { type: "string", enum: ["persisted-mapping", "deployment-config"] }, fallbackUsed: { type: "boolean" },
-              requestedRoute: routeSchema(true), actualRoute: routeSchema(true), stopReason: { type: "string" }, error: { type: "string" },
+              requestedRoute: routeSchema(true), actualRoute: routeSchema(true), reasoningEffortVerification: { type: "string", enum: ["verified", "mismatch", "requested-only"] },
+              deniedActionsCount: { type: "integer", minimum: 0 }, stopReason: { type: "string" }, error: { type: "string" },
               taskStopReason: { type: "string" }, taskError: { type: "string" },
             },
           },
@@ -538,17 +592,13 @@ export function createRoutingConfigTool(
       },
       render(_arguments, value) {
         const mapping = Object.entries(value.roles)
-          .map(([role, route]) => {
-            const options = [
-              ...(route.reasoningEffort ? [`reasoningEffort=${route.reasoningEffort}`] : []),
-              ...(route.maxTokens ? [`maxTokens=${route.maxTokens}`] : []),
-            ];
-            return `${role}: ${route.provider}/${route.model}${options.length > 0 ? ` (${options.join(", ")})` : ""} [${value.sources[role as ConfigurableRole]}]`;
-          })
+          .map(([role, route]) => `${role}: ${describeModelRoute(route)} [${value.sources[role as ConfigurableRole]}]`)
           .join("\n") || "No Odai responsibility models are configured.";
         const dispatch = Object.entries(value.dispatch)
           .map(([role, mode]) => `${role}: ${mode} [${value.dispatchSources[role as ConfigurableRole]}]`)
-          .join("\n") || "No per-responsibility dispatch overrides are configured; legacy defaults apply.";
+          .join("\n") || (value.roles.creative || Object.values(value.roles).some(route => route.backend === "local-cli")
+            ? "No per-responsibility dispatch overrides are configured; creative and local-cli routes use child and other API routes use legacy defaults."
+            : "No per-responsibility dispatch overrides are configured; legacy defaults apply.");
         const responsibilityBudgets = Object.entries(value.responsibilityBudgets ?? {});
         const configuredResponsibilities = responsibilityBudgets.length > 0
           ? `\nIn-place responsibility ceilings: ${responsibilityBudgets.map(([responsibility, budget]) => (
@@ -570,11 +620,14 @@ export function createRoutingConfigTool(
               ...(value.latestRoute.error ? [`routeError=${value.latestRoute.error}`] : []),
               ...(value.latestRoute.taskError ? [`taskError=${value.latestRoute.taskError}`] : []),
               ...(value.latestRoute.actualRoute
-                ? [`actual=${value.latestRoute.actualRoute.provider}/${value.latestRoute.actualRoute.model} (${[
-                    `reasoningEffort=${value.latestRoute.actualRoute.reasoningEffort ?? "unspecified"}`,
-                    ...(value.latestRoute.actualRoute.maxTokens === undefined ? [] : [`maxTokens=${value.latestRoute.actualRoute.maxTokens}`]),
-                  ].join(", ")})`]
+                ? [`actual=${describeModelRoute(value.latestRoute.actualRoute, { showUnspecifiedReasoning: true })}`]
                 : ["actual=<unverified>"]),
+              ...(value.latestRoute.reasoningEffortVerification === "requested-only"
+                ? [`reasoningEffort=${value.latestRoute.requestedRoute?.reasoningEffort ?? "unspecified"} (requested only; not verified by the local CLI)`]
+                : value.latestRoute.reasoningEffortVerification
+                  ? [`reasoningEffortVerification=${value.latestRoute.reasoningEffortVerification}`]
+                  : []),
+              ...(value.latestRoute.deniedActionsCount === undefined ? [] : [`deniedActionsCount=${value.latestRoute.deniedActionsCount}`]),
             ].join("\n")
           : value.action === "show"
             ? "\nNo mapped responsibility route receipt is recorded in this session."

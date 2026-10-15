@@ -55,7 +55,7 @@ interface RouteFailure {
 
 function isResponsibilityGapProposal(data: RuntimeEventData): data is RuntimeEventData & ResponsibilityGapProposal {
   return typeof data.responsibility === "string"
-    && ["researcher", "planner", "reviewer", "frontend", "user"].includes(data.responsibility)
+    && ["researcher", "planner", "reviewer", "frontend", "creative", "user"].includes(data.responsibility)
     && typeof data.gap === "string"
     && Array.isArray(data.evidenceRefs)
     && data.evidenceRefs.every((value) => typeof value === "string")

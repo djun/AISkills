@@ -5,7 +5,8 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
 
 process.on("uncaughtException", (error) => {
   console.error(error?.message || String(error));
@@ -14,121 +15,217 @@ process.on("uncaughtException", (error) => {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv.slice(2));
-const supportedRoles = new Set(["controller", "researcher", "planner", "reviewer", "frontend"]);
+const supportedRoles = new Set(["controller", "researcher", "planner", "reviewer", "frontend", "creative"]);
 
 if (args.help) {
   console.log(`Usage:
-  node .codex/odai-run-role.mjs --role <controller|researcher|planner|reviewer|frontend> \\
+  node .codex/odai-run-role.mjs --role <controller|researcher|planner|reviewer|frontend|creative> \\
     [--input FILE] [--output FILE] [--evidence FILE] [--cwd PATH] [--manifest FILE] \\
     [--codex-bin FILE] [--sandbox MODE] [--session-id ID] [--closeout-ids A1,A2]
 
-从 odai 托管清单取得当前 Codex 宿主的角色、模型与推理档，运行一次实际责任并记录可核对证据。`);
+从 odai 托管清单取得角色、模型与推理档，运行一次实际责任并记录可核对证据。
+Claude 宿主使用 .claude/odai-run-role.mjs，仅支持非 controller 的 codex/antigravity/grok 本机 CLI 映射；
+未传 --evidence 时保存到执行器同目录 role-evidence/。--timeout 可覆盖本机 CLI 超时（1–7200 整数秒）。
+--codex-bin、--sandbox、--session-id、--closeout-ids 仅用于 Codex 宿主。`);
   process.exit(0);
 }
 
 if (!supportedRoles.has(args.role)) fail(`不支持的角色：${args.role || "(missing)"}`);
 const manifestFile = path.resolve(args.manifest || path.join(scriptDir, "odai-routing.json"));
 const manifest = readJson(manifestFile, "路由清单");
-if (manifest.id !== "odai-routing-installation" || manifest.host !== "codex") fail("路由清单不是 Codex odai 托管安装");
+if (manifest.id !== "odai-routing-installation" || !["codex", "claude"].includes(manifest.host)) fail("路由清单不是 Codex 或 Claude odai 托管安装");
 const mapping = manifest.mapping?.[args.role];
-if (!mapping?.model) fail(`路由清单缺少 ${args.role} 映射`);
+if (manifest.host === "codex" && !mapping?.model) fail(`路由清单缺少 ${args.role} 映射`);
+if (manifest.host === "codex" && mapping.backend === "local-cli") fail("Codex 宿主尚不支持 local-cli 映射");
 
 const workdir = path.resolve(args.cwd || process.cwd());
-const input = args.input ? readFileSync(path.resolve(args.input), "utf8").trim() : readFileSync(0, "utf8").trim();
-if (!input) fail("角色输入为空");
-const contractFile = path.join(scriptDir, "role-contracts", `odai-${args.role}.md`);
-if (!existsSync(contractFile)) fail(`缺少角色契约：${contractFile}`);
-const contract = readFileSync(contractFile, "utf8");
-const temporary = mkdtempSync(path.join(tmpdir(), "odai-role-"));
-const outputFile = path.resolve(args.output || path.join(temporary, "result.txt"));
-const evidenceFile = args.evidence ? path.resolve(args.evidence) : "";
-const startedAt = new Date().toISOString();
-const started = Date.now();
-mkdirSync(path.dirname(outputFile), { recursive: true });
+if (manifest.host === "claude") await runLocalRole();
+else runCodexRole();
 
-try {
-  const readOnly = args.role === "researcher" || args.role === "planner" || args.role === "reviewer";
-  const closeoutIds = parseCloseoutIds(args.closeoutIds);
-  const schemaFile = closeoutIds.length > 0 ? writeCloseoutSchema(temporary, closeoutIds) : "";
-  const hostOwnsRouting = process.env.ODAI_ROUTING_ACTIVE === "1";
-  const shared = [
-    "--json", "--model", mapping.model,
-    ...effortArgs(mapping.reasoning_effort),
-    ...(hostOwnsRouting ? ["-c", "features.multi_agent=false"] : []),
-    ...(args.sessionId ? ["-c", `sandbox_mode=${JSON.stringify(readOnly ? "read-only" : args.sandbox)}`] : []),
-    "-c", `developer_instructions=${JSON.stringify(contract)}`,
-    ...(schemaFile ? ["--output-schema", schemaFile] : []),
-    "-o", outputFile,
-  ];
-  const command = args.sessionId
-    ? ["exec", "resume", ...shared, args.sessionId, "-"]
-    : ["exec", ...shared, "--sandbox", readOnly ? "read-only" : args.sandbox, "-C", workdir, "-"];
-  const child = spawnSync(args.codexBin || process.env.ODAI_CODEX_COMMAND || "codex", command, {
-    cwd: workdir,
-    input,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: args.timeout * 1000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (child.error) fail(child.error.message);
-  const raw = `${child.stdout || ""}${child.stderr || ""}`;
-  if (child.status !== 0) fail(`Codex ${args.role} 调用失败：${tail(raw)}`);
-  if (!existsSync(outputFile) || !readFileSync(outputFile, "utf8").trim()) fail("角色没有形成输出");
-  if (closeoutIds.length > 0) writeFileSync(outputFile, renderCloseout(readFileSync(outputFile, "utf8"), closeoutIds), "utf8");
-  const events = parseJsonLines(raw);
-  const threadId = String(events.find((event) => event.type === "thread.started")?.thread_id || args.sessionId || "");
-  if (args.sessionId && threadId !== args.sessionId) fail(`Codex 恢复了错误线程：期望 ${args.sessionId}，实际 ${threadId || "unknown"}`);
-  const eventModels = collectStrings(events, "model");
-  const runtime = eventModels.length > 0 ? null : queryRuntime(threadId, Date.parse(startedAt));
-  const models = runtime?.model ? [runtime.model] : eventModels;
+function runCodexRole() {
+  const input = args.input ? readFileSync(path.resolve(args.input), "utf8").trim() : readFileSync(0, "utf8").trim();
+  if (!input) fail("角色输入为空");
+  const contractFile = path.join(scriptDir, "role-contracts", `odai-${args.role}.md`);
+  if (!existsSync(contractFile)) fail(`缺少角色契约：${contractFile}`);
+  const contract = readFileSync(contractFile, "utf8");
+  const temporary = mkdtempSync(path.join(tmpdir(), "odai-role-"));
+  const outputFile = path.resolve(args.output || path.join(temporary, "result.txt"));
+  const evidenceFile = args.evidence ? path.resolve(args.evidence) : "";
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+  mkdirSync(path.dirname(outputFile), { recursive: true });
+
+  try {
+    const readOnly = ["researcher", "planner", "reviewer", "creative"].includes(args.role);
+    const closeoutIds = parseCloseoutIds(args.closeoutIds);
+    const schemaFile = closeoutIds.length > 0 ? writeCloseoutSchema(temporary, closeoutIds) : "";
+    const hostOwnsRouting = process.env.ODAI_ROUTING_ACTIVE === "1";
+    const shared = [
+      "--json", "--model", mapping.model,
+      ...effortArgs(mapping.reasoning_effort),
+      ...(hostOwnsRouting ? ["-c", "features.multi_agent=false"] : []),
+      ...(args.sessionId ? ["-c", `sandbox_mode=${JSON.stringify(readOnly ? "read-only" : args.sandbox)}`] : []),
+      "-c", `developer_instructions=${JSON.stringify(contract)}`,
+      ...(schemaFile ? ["--output-schema", schemaFile] : []),
+      "-o", outputFile,
+    ];
+    const command = args.sessionId
+      ? ["exec", "resume", ...shared, args.sessionId, "-"]
+      : ["exec", ...shared, "--sandbox", readOnly ? "read-only" : args.sandbox, "-C", workdir, "-"];
+    const child = spawnSync(args.codexBin || process.env.ODAI_CODEX_COMMAND || "codex", command, {
+      cwd: workdir,
+      input,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: args.timeout * 1000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (child.error) fail(child.error.message);
+    const raw = `${child.stdout || ""}${child.stderr || ""}`;
+    if (child.status !== 0) fail(`Codex ${args.role} 调用失败：${tail(raw)}`);
+    if (!existsSync(outputFile) || !readFileSync(outputFile, "utf8").trim()) fail("角色没有形成输出");
+    if (closeoutIds.length > 0) writeFileSync(outputFile, renderCloseout(readFileSync(outputFile, "utf8"), closeoutIds), "utf8");
+    const events = parseJsonLines(raw);
+    const threadId = String(events.find((event) => event.type === "thread.started")?.thread_id || args.sessionId || "");
+    if (args.sessionId && threadId !== args.sessionId) fail(`Codex 恢复了错误线程：期望 ${args.sessionId}，实际 ${threadId || "unknown"}`);
+    const eventModels = collectStrings(events, "model");
+    const runtime = eventModels.length > 0 ? null : queryRuntime(threadId, Date.parse(startedAt));
+    const models = runtime?.model ? [runtime.model] : eventModels;
+    const evidence = {
+      version: 1,
+      role: args.role,
+      requested: { provider: "codex", model: mapping.model, reasoning_effort: mapping.reasoning_effort || null },
+      observed: {
+        provider: "codex",
+        thread_id: threadId || null,
+        models,
+        model_verified: models.length > 0,
+        reasoning_efforts: runtime?.reasoning_effort ? [runtime.reasoning_effort] : [],
+        tool_use_detected: containsToolUse(events),
+        tool_evidence: collectToolEvidence(events),
+        usage: lastDefined(events.map((event) => event.usage || event.payload?.usage)) || null,
+        cost_usd: null,
+        duration_ms: Date.now() - started,
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        exit_code: child.status,
+      },
+      output: outputFile,
+    };
+    writeEvidence(evidence);
+    const response = readFileSync(outputFile, "utf8");
+    process.stdout.write(response);
+    if (!response.endsWith("\n")) process.stdout.write("\n");
+  } catch (error) {
+    writeEvidence({
+      version: 1,
+      role: args.role,
+      requested: { provider: "codex", model: mapping.model, reasoning_effort: mapping.reasoning_effort || null },
+      observed: {
+        provider: "codex", thread_id: null, models: [], model_verified: false,
+        usage: null, cost_usd: null, duration_ms: Date.now() - started,
+        started_at: startedAt, completed_at: new Date().toISOString(), exit_code: null,
+        error: error?.message || String(error),
+      },
+      output: null,
+    });
+    throw error;
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+
+  function writeEvidence(value) {
+    if (!evidenceFile) return;
+    mkdirSync(path.dirname(evidenceFile), { recursive: true });
+    writeFileSync(evidenceFile, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  }
+
+}
+
+async function runLocalRole() {
+  const evidenceFile = path.resolve(args.evidence || path.join(scriptDir, "role-evidence", `${args.role}-${Date.now()}-${randomUUID()}.json`));
+  const outputFile = args.output ? path.resolve(args.output) : null;
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+  let result;
+  let error;
+  try {
+    if (args.role === "controller") fail("Claude 宿主的 controller 不支持 local-cli 映射");
+    if (mapping?.backend !== "local-cli" || !["codex", "antigravity", "grok"].includes(mapping.cli)) {
+      fail("Claude 宿主执行器仅接受 codex、antigravity 或 grok 的 local-cli 映射");
+    }
+    const unsupported = ["--codex-bin", "--sandbox", "--session-id", "--closeout-ids"].filter((option) => args.supplied.has(option));
+    if (unsupported.length) fail(`Claude 本机 CLI 分支不支持 Codex 专有选项：${unsupported.join("、")}`);
+    const allowedFields = new Set(["backend", "cli", "model", "reasoning_effort", "timeoutSeconds"]);
+    for (const key of Object.keys(mapping)) {
+      if (!allowedFields.has(key)) fail(`未知本机 CLI 映射字段：${key}`);
+    }
+    const installedModule = path.join(scriptDir, "odai-local-cli.mjs");
+    const moduleFile = existsSync(installedModule) ? installedModule : path.join(scriptDir, "local-cli.mjs");
+    const { executeLocalCli, validateLocalCliRoute } = await import(pathToFileURL(moduleFile).href);
+    const route = validateLocalCliRoute({
+      backend: mapping.backend, cli: mapping.cli, model: mapping.model,
+      ...(mapping.reasoning_effort != null ? { reasoningEffort: mapping.reasoning_effort } : {}),
+      ...(mapping.timeoutSeconds !== undefined ? { timeoutSeconds: mapping.timeoutSeconds } : {}),
+    });
+    // Only an explicit flag overrides the shared executor's 1200-second default.
+    if (args.supplied.has("--timeout")) route.timeoutSeconds = args.timeout;
+    validateLocalCliRoute(route);
+    const input = args.input ? readFileSync(path.resolve(args.input), "utf8").trim() : readFileSync(0, "utf8").trim();
+    if (!input) fail("角色输入为空");
+    const contractFile = path.join(scriptDir, "role-contracts", `odai-${args.role}.md`);
+    if (!existsSync(contractFile)) fail(`缺少角色契约：${contractFile}`);
+    const contract = readFileSync(contractFile, "utf8");
+    result = await executeLocalCli({ route, prompt: `${contract}\n\n${input}`, cwd: workdir });
+    if (result.status !== "completed") fail(result.error || `本机 CLI 未完成：${result.status}`);
+    if (result.exitCode !== 0) fail(`本机 CLI 退出状态异常：${result.exitCode ?? "unknown"}`);
+    if (typeof result.text !== "string" || !result.text.trim()) fail("角色没有形成输出");
+    if (!result.actualModel || !result.modelVerified || result.modelVerification !== "verified") {
+      fail(`本机 CLI 模型未核实：${result.modelVerification || "missing"}（请求 ${route.model}，实际 ${result.actualModel || "unknown"}）`);
+    }
+    // Same gate as DSH: only adapters that can observe effort may fail on it; requested-only is recorded, not blocking.
+    if (result.reasoningEffortVerification === "mismatch") {
+      fail(`本机 CLI 推理档不一致：请求 ${route.reasoningEffort || "none"}，实际 ${result.actualReasoningEffort || "unknown"}`);
+    }
+    if (outputFile) {
+      if (outputFile === evidenceFile) fail("--output 与 --evidence 不能使用同一路径");
+      mkdirSync(path.dirname(outputFile), { recursive: true });
+      writeFileSync(outputFile, result.text, "utf8");
+    }
+  } catch (failure) {
+    error = failure instanceof Error ? failure : new Error(String(failure));
+  }
+  const provider = `local-cli:${mapping?.cli || "unknown"}`;
   const evidence = {
     version: 1,
     role: args.role,
-    requested: { provider: "codex", model: mapping.model, reasoning_effort: mapping.reasoning_effort || null },
+    requested: { provider, model: mapping?.model || null, reasoning_effort: mapping?.reasoning_effort ?? null },
     observed: {
-      provider: "codex",
-      thread_id: threadId || null,
-      models,
-      model_verified: models.length > 0,
-      reasoning_efforts: runtime?.reasoning_effort ? [runtime.reasoning_effort] : [],
-      tool_use_detected: containsToolUse(events),
-      tool_evidence: collectToolEvidence(events),
-      usage: lastDefined(events.map((event) => event.usage || event.payload?.usage)) || null,
-      cost_usd: null,
-      duration_ms: Date.now() - started,
+      provider,
+      session_id: result?.sessionId || null,
+      models: result?.actualModel ? [result.actualModel] : [],
+      model_verified: result?.modelVerified === true,
+      model_verification: result?.modelVerification || "missing",
+      reasoning_efforts: result?.actualReasoningEffort ? [result.actualReasoningEffort] : [],
+      reasoning_effort_verification: result?.reasoningEffortVerification || "requested-only",
+      usage: result?.usage ?? null,
+      cli_reported_cost_usd: result?.cliReportedCostUsd ?? null,
+      denied_actions_count: result?.deniedActionsCount ?? null,
+      duration_ms: result?.durationMs ?? Date.now() - started,
       started_at: startedAt,
       completed_at: new Date().toISOString(),
-      exit_code: child.status,
+      exit_code: result?.exitCode ?? null,
+      status: result?.status || "error",
+      error: error?.message || result?.error || null,
     },
-    output: outputFile,
+    output: error ? null : outputFile,
   };
-  writeEvidence(evidence);
-  const response = readFileSync(outputFile, "utf8");
-  process.stdout.write(response);
-  if (!response.endsWith("\n")) process.stdout.write("\n");
-} catch (error) {
-  writeEvidence({
-    version: 1,
-    role: args.role,
-    requested: { provider: "codex", model: mapping.model, reasoning_effort: mapping.reasoning_effort || null },
-    observed: {
-      provider: "codex", thread_id: null, models: [], model_verified: false,
-      usage: null, cost_usd: null, duration_ms: Date.now() - started,
-      started_at: startedAt, completed_at: new Date().toISOString(), exit_code: null,
-      error: error?.message || String(error),
-    },
-    output: null,
-  });
-  throw error;
-} finally {
-  rmSync(temporary, { recursive: true, force: true });
-}
-
-function writeEvidence(value) {
-  if (!evidenceFile) return;
   mkdirSync(path.dirname(evidenceFile), { recursive: true });
-  writeFileSync(evidenceFile, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  writeFileSync(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  console.error(`odai evidence: ${evidenceFile}`);
+  if (error) throw error;
+  process.stdout.write(result.text);
+  if (!result.text.endsWith("\n")) process.stdout.write("\n");
 }
 
 function queryRuntime(threadId, startedAt) {
@@ -208,7 +305,7 @@ function lastDefined(values) { return [...values].reverse().find((value) => valu
 function readJson(file, label) { if (!existsSync(file)) fail(`缺少${label}：${file}`); return JSON.parse(readFileSync(file, "utf8")); }
 
 function parseArgs(values) {
-  const result = { role: "", input: "", output: "", evidence: "", cwd: "", manifest: "", codexBin: "", sandbox: "workspace-write", sessionId: "", closeoutIds: "", timeout: 900, help: false };
+  const result = { role: "", input: "", output: "", evidence: "", cwd: "", manifest: "", codexBin: "", sandbox: "workspace-write", sessionId: "", closeoutIds: "", timeout: 900, help: false, supplied: new Set() };
   const fields = new Map([
     ["--role", "role"], ["--input", "input"], ["--output", "output"], ["--evidence", "evidence"], ["--cwd", "cwd"],
     ["--manifest", "manifest"], ["--codex-bin", "codexBin"], ["--sandbox", "sandbox"], ["--session-id", "sessionId"], ["--closeout-ids", "closeoutIds"], ["--timeout", "timeout"],
@@ -217,6 +314,7 @@ function parseArgs(values) {
     const value = values[index];
     if (value === "--help" || value === "-h") result.help = true;
     else if (fields.has(value)) {
+      result.supplied.add(value);
       const next = values[++index] || "";
       if (!next || next.startsWith("--")) fail(`${value} 需要一个值`);
       result[fields.get(value)] = fields.get(value) === "timeout" ? Number(next) : next;

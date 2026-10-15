@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { executeLocalCli } from "#odai-local-cli";
+import type { LocalCliRoute } from "#odai-local-cli";
+import { describeModelRoute } from "./model-route.mjs";
 
 import { renderDelegationPrompt } from "./router.mjs";
 import type { RouteDecision } from "./router.mjs";
@@ -53,6 +56,11 @@ export interface RoutedRoleOutcome extends UnknownRecord {
   actualRoute?: ModelRoute;
   error?: string;
   taskError?: string;
+  durationMs?: number;
+  usage?: Readonly<Record<string, unknown>>;
+  cliReportedCostUsd?: number;
+  reasoningEffortVerification?: "verified" | "mismatch" | "requested-only";
+  deniedActionsCount?: number;
 }
 
 export interface SkillSelection {
@@ -119,7 +127,7 @@ export function renderOutputLimitInterruptionNotice(interruption: Responsibility
     `responsibility: ${interruption.responsibility}`,
     `interrupted scope: ${interruption.scopeId}`,
     `provider finish reason: ${interruption.reason}`,
-    ...(route ? [`effective route: ${route.provider}/${route.model}`] : []),
+    ...(route ? [`effective route: ${describeModelRoute(route, { style: "identity" })}`] : []),
     ...(interruption.effectiveMaxTokens === undefined ? [] : [`effective maxTokens: ${interruption.effectiveMaxTokens}`]),
     ...(interruption.outputTokens === undefined ? [] : [`observed outputTokens: ${interruption.outputTokens}`]),
     "This proves the responsibility output was interrupted, not that its task completed. Explain the verified cause without guessing. Resume only after an explicit user continuation.",
@@ -155,6 +163,7 @@ export function renderResearchTaskContract(taskText: string): string {
 
 export function roleAgentOptions(roleRoute?: ModelRoute): UnknownRecord | undefined {
   if (!roleRoute) return undefined;
+  if (roleRoute.backend === "local-cli") throw new Error("local-cli requires odai_responsibility_gap; native DSH children cannot execute this route");
   return {
     provider: roleRoute.provider,
     model: roleRoute.model,
@@ -164,6 +173,8 @@ export function roleAgentOptions(roleRoute?: ModelRoute): UnknownRecord | undefi
 
 export function sameRequestModelRoute(left?: Partial<ModelRoute>, right?: Partial<ModelRoute>): boolean {
   return Boolean(left && right
+    && left.backend === right.backend
+    && left.cli === right.cli
     && left.provider === right.provider
     && left.model === right.model
     && left.reasoningEffort === right.reasoningEffort);
@@ -250,7 +261,7 @@ export async function runRoutedRole({
   roleBundle,
   reviewEvidence,
 }: {
-  subagents: SubagentsService;
+  subagents?: SubagentsService;
   provider: string;
   decision: Pick<RouteDecision, "role">;
   taskText: string;
@@ -261,6 +272,9 @@ export async function runRoutedRole({
   roleBundle?: SkillBundle;
   reviewEvidence?: import("./review-evidence.mjs").ReviewEvidenceSnapshot;
 }): Promise<Readonly<RoutedRoleOutcome>> {
+  if (roleRoute?.backend === "local-cli") {
+    return runLocalCliRole({ decision, taskText, roleContract, roleBundle, agent, signal, roleRoute });
+  }
   let run: RoutedRun | undefined;
   let outcome: Readonly<RoutedRoleOutcome>;
   const label = `odai-${decision.role}: managed-${randomUUID()}`;
@@ -273,6 +287,7 @@ export async function runRoutedRole({
   try {
   try {
     signal.throwIfAborted();
+    if (!subagents) throw new Error("dsh subagents service unavailable");
     run = await subagents.start(provider, {
       label,
       prompt: [{ type: "text", text: renderDelegationPrompt(decision, taskText,
@@ -373,6 +388,79 @@ export async function runRoutedRole({
   }
 }
 
+async function runLocalCliRole({ decision, taskText, roleContract, roleBundle, agent, signal, roleRoute }: {
+  decision: Pick<RouteDecision, "role">;
+  taskText: string;
+  roleContract: string;
+  roleBundle?: SkillBundle;
+  agent: unknown;
+  signal: AbortSignal;
+  roleRoute: LocalCliRoute;
+}): Promise<Readonly<RoutedRoleOutcome>> {
+  try {
+    if (!["planner", "frontend", "creative"].includes(decision.role)) throw new Error("local-cli only supports planner, frontend, and creative responsibilities");
+    const cwd = isUnknownRecord(agent) && isUnknownRecord(agent.session) && isUnknownRecord(agent.session.header)
+      ? agent.session.header.cwd : undefined;
+    if (typeof cwd !== "string" || !cwd.trim()) throw new Error("local-cli requires the session working directory");
+    const readBoundary = {
+      claude: "Read files using Read, Glob, and Grep; shell commands are unavailable.",
+      codex: "Read files using read-only commands within the read-only sandbox. Child agents are disabled.",
+      antigravity: "Read files only with view_file, grep_search, list_dir, and find_by_name. Shell commands are unavailable and will be denied in plan mode.",
+      grok: "Read files using read_file, grep, and list_dir within the read-only sandbox. Shell commands and Agent delegation are unavailable.",
+    }[roleRoute.cli];
+    const prompt = [
+      renderDelegationPrompt(decision, taskText, roleBundle ? `${roleBundle.coreContract}\n\n${roleContract}` : roleContract),
+      `Local CLI execution boundary: read-only. ${readBoundary} There are no DSH tools. Return plain text to the controller. For production work, return an unapplied patch; do not modify files.`,
+    ].join("\n\n");
+    const result = await executeLocalCli({ route: roleRoute, prompt, cwd, signal });
+    const metadata = {
+      durationMs: result.durationMs,
+      ...(result.usage ? { usage: result.usage } : {}),
+      ...(result.cliReportedCostUsd === undefined ? {} : { cliReportedCostUsd: result.cliReportedCostUsd }),
+      reasoningEffortVerification: result.reasoningEffortVerification,
+      ...(result.deniedActionsCount === undefined ? {} : { deniedActionsCount: result.deniedActionsCount }),
+    };
+    if (signal.aborted || result.status === "cancelled") return Object.freeze({
+      ...metadata, status: "fallback", stopReason: "cancelled", output: [], routeReceiptStatus: "unverified",
+      error: "Responsibility cancelled; late output was not accepted.",
+    });
+    if (result.status !== "completed") return Object.freeze({
+      ...metadata, status: "fallback", stopReason: result.status === "timeout" ? "timeout" : "infrastructure-error",
+      output: [], routeReceiptStatus: "unverified", error: result.error, taskError: result.error,
+    });
+    const actualRoute: ModelRoute | undefined = result.actualModel
+      ? {
+          backend: "local-cli", cli: roleRoute.cli, model: result.actualModel,
+          ...(result.reasoningEffortVerification === "verified" && result.actualReasoningEffort !== undefined
+            ? { reasoningEffort: result.actualReasoningEffort } : {}),
+        } : undefined;
+    const effortMismatch = result.reasoningEffortVerification === "mismatch";
+    const routeEvidence = {
+      ...metadata, ...(actualRoute ? { actualRoute } : {}),
+      routeReceiptStatus: effortMismatch || result.modelVerification === "mismatch"
+        ? "mismatch" as const : result.modelVerified ? "applied" as const : "unverified" as const,
+    };
+    if (effortMismatch) {
+      const error = result.error ?? `local CLI reasoning effort mismatch: requested ${roleRoute.reasoningEffort}, got ${result.actualReasoningEffort ?? "unknown"}`;
+      return Object.freeze({ ...routeEvidence, status: "fallback", stopReason: "route-unverified", output: [], error, routeReceiptError: error });
+    }
+    if (!result.text.trim()) return Object.freeze({
+      ...routeEvidence, status: "fallback", stopReason: "route-empty-output", output: [],
+      error: "local CLI completed without textual evidence", taskError: "local CLI completed without textual evidence",
+    });
+    if (!result.modelVerified) {
+      const error = result.error ?? (result.modelVerification === "mismatch"
+        ? `local CLI model mismatch: requested ${roleRoute.model}, got ${result.actualModel}`
+        : "local CLI did not expose actual model evidence");
+      return Object.freeze({ ...routeEvidence, status: "fallback", stopReason: "route-unverified", output: [], error, routeReceiptError: error });
+    }
+    return Object.freeze({ ...routeEvidence, status: "completed", stopReason: "completed", output: [{ type: "text", text: result.text }] });
+  } catch (error) {
+    const taskError = error instanceof Error ? error.message : String(error);
+    return Object.freeze({ status: "fallback", stopReason: signal.aborted ? "cancelled" : "infrastructure-error", output: [], routeReceiptStatus: "unverified", error: taskError, taskError });
+  }
+}
+
 export function canonicalPrompt(selection: SkillSelection, child = false, coreInDelegation = false): string {
   const { bundle } = selection;
   const fallback = selection.status === "fallback"
@@ -404,11 +492,7 @@ export function renderEffectiveRoutingContext(snapshotState: RoutingSnapshotStat
   const mappings = CONFIGURABLE_ROLES.flatMap((role) => {
     const route = snapshot.roles[role];
     if (!route) return [];
-    const options = [
-      ...(route.reasoningEffort ? [`reasoningEffort=${route.reasoningEffort}`] : []),
-      ...(route.maxTokens ? [`maxTokens=${route.maxTokens}`] : []),
-    ];
-    return [`${role}=${route.provider}/${route.model}${options.length > 0 ? ` (${options.join(", ")})` : ""} [${snapshot.sources[role]}]`];
+    return [`${role}=${describeModelRoute(route)} [${snapshot.sources[role]}]`];
   });
   const dispatch = CONFIGURABLE_ROLES.flatMap((role) => (
     snapshot.dispatch[role]
@@ -418,6 +502,8 @@ export function renderEffectiveRoutingContext(snapshotState: RoutingSnapshotStat
   return [
     `Current effective responsibility mappings (runtime-owned; supersedes conversation summaries): ${mappings.join("; ") || "none"}.`,
     `Current explicit dispatch overrides: ${dispatch.join("; ") || "none; legacy defaults apply"}.`,
+    ...(Object.values(snapshot.roles).some(route => route?.backend === "local-cli")
+      ? ["Local-cli mappings always use child dispatch, including when no explicit override exists; native labels and same-turn upgrades cannot execute them."] : []),
     "These are route targets and dispatch preferences, not evidence that a responsibility ran. Only an actual route receipt proves use; a generic subagent does not.",
   ].join("\n");
 }
@@ -454,6 +540,8 @@ export function latestRouteReceipt(events: readonly DshEvent[]): Readonly<Unknow
         routeSource: data.routeSource,
         fallbackUsed: data.fallbackUsed,
         requestedRoute: data.requestedRoute,
+        ...(data.reasoningEffortVerification ? { reasoningEffortVerification: data.reasoningEffortVerification } : {}),
+        ...(typeof data.deniedActionsCount === "number" ? { deniedActionsCount: data.deniedActionsCount } : {}),
         ...(data.actualRoute ? { actualRoute: data.actualRoute } : {}),
         ...(data.stopReason ? { stopReason: data.stopReason } : {}),
         ...(data.error ? { error: data.error } : {}),
@@ -471,6 +559,8 @@ export function latestRouteReceipt(events: readonly DshEvent[]): Readonly<Unknow
         routeSource: data.routeSource,
         fallbackUsed: routeReceiptStatus !== "applied",
         requestedRoute: data.requestedRoute,
+        ...(data.reasoningEffortVerification ? { reasoningEffortVerification: data.reasoningEffortVerification } : {}),
+        ...(typeof data.deniedActionsCount === "number" ? { deniedActionsCount: data.deniedActionsCount } : {}),
         ...(data.actualRoute ? { actualRoute: data.actualRoute } : {}),
         ...(data.routeReceiptError ? { error: data.routeReceiptError } : {}),
         ...(data.stopReason ? { taskStopReason: data.stopReason } : {}),
@@ -495,7 +585,7 @@ export function routedRoleOf(agent: DshAgent): string | undefined {
     if (event?.type !== "subagent/descriptor") continue;
     const label = event.data?.label;
     if (typeof label !== "string") return undefined;
-    const match = /^odai-(researcher|planner|reviewer|frontend)(?:$|[\s:])/u.exec(label.trim());
+    const match = /^odai-(researcher|planner|reviewer|frontend|creative)(?:$|[\s:])/u.exec(label.trim());
     return match && (ROUTED_ROLES as readonly string[]).includes(match[1]) ? match[1] : undefined;
   }
   return undefined;

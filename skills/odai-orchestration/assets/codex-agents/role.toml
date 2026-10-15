@@ -1,5 +1,6 @@
 model = __ODAI_ROLE_MODEL__
 __ODAI_ROLE_EFFORT_LINE__
+__ODAI_ROLE_SANDBOX_LINE__
 developer_instructions = """
 __ODAI_ROLE_BODY__
 """

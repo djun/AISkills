@@ -411,6 +411,117 @@ test("frontend continuation inherits only the immediately referenced substantive
   assert.equal(unrelated, "你能做不？");
   assert.equal(decideRoute({ text: unrelated }).action, "direct");
 });
+test("creative routing requires a mapping and adjacent creative production or review", () => {
+  const positives = [
+    "帮我润色这段对白",
+    "给新地图写三版商店页宣传语",
+    "审一下第二章的台词有没有 AI 味",
+    "这个玩法的数值平衡你评估一下",
+    "rewrite the store page copy",
+    // Domain-neutral requests, not only games.
+    "帮我润色一下这段产品介绍",
+    "给新功能想几个名字",
+    "帮我脑暴一些创意",
+    "润色一下我的简历",
+    "给发布会写三版宣传语",
+    "审一下这段文字的语气",
+    "brainstorm taglines for the launch",
+    "polish the copy on the landing page",
+    "come up with names for the new app",
+  ];
+  for (const text of positives) {
+    assert.equal(decideRoute({ text }).action, "direct", `unmapped: ${text}`);
+    const decision = decideRoute({ text, creativeConfigured: true });
+    assert.equal(decision.role, "creative", text);
+    assert.equal(decision.action, "delegate", text);
+  }
+  const negatives = [
+    "把文案常量改成从配置读取",
+    "台词表加一列 speaker",
+    "修一下对白组件的渲染 bug",
+    "给这个函数起个名字",
+    "把剧情模块拆成两个文件",
+    "改一下 PR 描述",
+    "review this code",
+    "写一下玩法的单元测试",
+    "优化一下剧情的加载速度",
+    "审一下玩法代码",
+    "把剧情写进存档",
+    "文案写到配置里",
+    "write a copy of the config to /tmp",
+    "review the balance sheet export",
+    "优化剧情系统的性能",
+    "评估一下玩法逻辑的复杂度",
+    "写一个函数，旁白由配置读取",
+    "文案先保留。评估一下数据库迁移",
+    "请润色 README，它解释对白的存储机制",
+    "引用示例：‘帮我润色这段对白’",
+    "> rewrite the store page copy",
+    "`rewrite the store page copy`",
+    "rewrite the store page copy field",
+    "写\n文案",
+    "write\nthe copy",
+    "给这个变量想个名字",
+    "写一下 API 接口的介绍文档",
+    "把简历导出成 PDF",
+    "brainstorm names for the database tables",
+    "润色一下 commit message",
+    "改一下按钮名称",
+    "review the API naming",
+  ];
+  for (const text of negatives) {
+    assert.equal(decideRoute({ text, creativeConfigured: true }).action, "direct", text);
+  }
+  for (const suffix of ["常量", "变量", "字段", "文件", "配置", "键", "key", "表", "列", "模块", "组件", "接口", "函数", "id"]) {
+    for (const text of [`优化文案${suffix}`, `文案${suffix}你评估一下`, `重写商店页宣传语${suffix}`]) {
+      assert.equal(decideRoute({ text, creativeConfigured: true }).action, "direct", text);
+    }
+  }
+});
+test("creative lexical veto stays within the clause and excludes storage actions and copy-of", () => {
+  for (const text of [
+    "测试完成后润色这段对白",
+    "please review the copy for the export",
+    "review a copy of the story",
+    ...["进", "到", "入", "在"].map((suffix) => `把文案写${suffix}这里`),
+  ]) {
+    assert.equal(decideRoute({ text, creativeConfigured: true }).action, "direct", text);
+  }
+  for (const separator of ["，", ",", "。", ".", "；", ";", "：", ":", "\n"]) {
+    const text = `测试加载性能${separator}帮我润色这段对白`;
+    assert.equal(decideRoute({ text, creativeConfigured: true }).role, "creative", text);
+  }
+});
+test("creative complaint followed by a bare fix request routes; engineering complaints do not", () => {
+  for (const text of [
+    "这段话 AI 味太重，帮我改改",
+    "第三章旁白太啰嗦了，帮我改写一下",
+    "首页文案有点生硬。润色一下",
+  ]) {
+    assert.equal(decideRoute({ text, creativeConfigured: true }).role, "creative", text);
+    assert.equal(decideRoute({ text }).action, "direct", `unmapped: ${text}`);
+  }
+  for (const text of [
+    "这个函数有 bug，帮我改改",
+    "剧情加载太慢，帮我优化一下",
+    "文案先保留，帮我优化一下",
+    "文案太长，帮我优化一下数据库查询",
+    "这段文案太长，帮我改改配置",
+    "文案太长，测试一下，帮我改改",
+  ]) {
+    assert.equal(decideRoute({ text, creativeConfigured: true }).action, "direct", text);
+  }
+});
+test("creative proposals use child routing and lexical routing excludes appended context", () => {
+  const proposal = gap("creative");
+  assert.equal(decideRoute({ text: "继续", proposal }).action, "direct");
+  const decision = decideRoute({ text: "继续", proposal, creativeConfigured: true });
+  assert.equal(decision.role, "creative");
+  assert.equal(decision.action, "delegate");
+  assert.equal(decision.reasonCode, "CREATIVE_EVIDENCE_STATE_GAP");
+  assert.equal(decideRoute({ text: "继续\n\nReferenced earlier context:\n帮我润色这段对白", creativeText: "继续", creativeConfigured: true }).action, "direct");
+  assert.equal(decideRoute({ text: "帮我润色这段对白", proposal: gap("user"), creativeConfigured: true }).reasonCode, "USER_DECISION_REQUIRED");
+});
 test("delegation prompt requires a canonical role contract and bounded context", () => {
   const decision = { role: "planner" };
   assert.throws(() => renderDelegationPrompt(decision, "task", undefined), /canonical planner role contract/u);

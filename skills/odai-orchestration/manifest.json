@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "odai-orchestration",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "governanceContract": 9,
   "delegationFile": "contracts/delegation.md",
   "roleFiles": {
@@ -9,14 +9,16 @@
     "researcher": "assets/routing-roles/researcher.md",
     "planner": "assets/routing-roles/planner.md",
     "reviewer": "assets/routing-roles/reviewer.md",
-    "frontend": "assets/routing-roles/frontend.md"
+    "frontend": "assets/routing-roles/frontend.md",
+    "creative": "assets/routing-roles/creative.md"
   },
   "rolePresets": {
     "controller": { "references": ["orchestration"] },
     "researcher": { "references": [] },
     "planner": { "references": ["planning"] },
     "reviewer": { "references": ["verification"] },
-    "frontend": { "references": ["craft"] }
+    "frontend": { "references": ["craft"] },
+    "creative": { "references": ["craft"] }
   },
   "referenceFiles": { "orchestration": "references/orchestration.md" },
   "requiredFiles": [
@@ -28,6 +30,7 @@
     "assets/routing-roles/planner.md",
     "assets/routing-roles/reviewer.md",
     "assets/routing-roles/frontend.md",
+    "assets/routing-roles/creative.md",
     "assets/codex-agents/config.toml",
     "assets/codex-agents/role.toml",
     "assets/claude-agents/agent.md",
@@ -39,6 +42,8 @@
     "scripts/run-role.mjs",
     "scripts/verify-routing.mjs",
     "scripts/compose-contracts.mjs",
-    "scripts/compose-contracts.d.mts"
+    "scripts/compose-contracts.d.mts",
+    "scripts/local-cli.mjs",
+    "scripts/local-cli.d.mts"
   ]
 }

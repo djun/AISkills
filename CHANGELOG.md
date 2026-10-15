@@ -2,7 +2,17 @@
 
 本文只记当前发布线与历史已发布版本的对外能力、架构、迁移和评测口径；registry 时间戳与 `gitHead` 只在事实产生后记录。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
-## Unreleased — DSH 0.2.50 / canonical 0.7.1
+## Unreleased — DSH 0.2.51 / canonical 0.7.1
+
+- planner/frontend/creative 可按用户明确指定的 cli/model 路由到本机已认证的 Claude Code、Codex、Antigravity（`agy`）与 Grok CLI，只读 child 执行；Grok **按官方文档实现，未实测**。既有 API 路由字段与行为保持，local-cli 存储使用 schema 3，移除最后一个 local-cli 后写回 schema 2。拒绝 researcher/reviewer 与 same-turn；`gemini` 仍为预留值，拒绝时提示使用 `antigravity`。
+- 新增可选 creative 职责，不限领域，承接发散构思、面向用户或读者的写作与表达、视觉与表现方向及品味把关，只读回交构思、候选、依据或带替换文本的审查意见，由总控核对落盘。API 与 local-cli 都仅支持 child，显式 same-turn 配置报错，缺省按 child，不进入同轮预算；只有既有映射与相邻创意动作/对象成立（或上一短句抱怨创意内容、下一短句只提修改）时才自动触发，短句内出现工程或数据词即不触发。工具枚举与配置提示同步，Control Center 显示“创意”；手工 `odai-creative:` API 子代理遵守配置与合同，local-cli 必须走托管缺口入口。编排合同及宿主适配继续归入未发布 `0.2.1`，双包保持 `0.2.51`。
+- 编排升至 `0.2.1`，新增宿主无关 CLI 适配器模块与类型声明；DSH 双包通过各自随包 imports 引用。各家分别构造只读调用、读取模型证据并在失败时回退；共用超时与取消清理、输出上限。回执记录请求的 CLI，推理档区分 `verified`、`mismatch`、`requested-only`，不一致时按 `route-unverified` 回退，只有 verified 证据写入实际推理档；记录耗时、用量、被拒动作数与 CLI 自报费用。原生职责标签不能绕过 local-cli 后端。
+- Claude Code 宿主支持通过 `--<role>-cli codex|antigravity|grok` 把非 controller 职责交给本机 CLI；该职责生成只读执行器、共用模块副本、角色合同和清单，替代原生代理。总控获得调用说明，安装器合并 Bash 权限并管理漂移检查、更新、卸载与恢复，保留用户既有设置。执行器以 version 1 证据记录实际模型、推理档核实状态、用量、耗时与退出状态；未完成、模型未核实或可核实的推理档不一致时非 0 退出且不输出正文；Antigravity/Grok 的 effort 目前只能记为 `requested-only`，如实记录、不阻断，与 DSH 一致。Codex 宿主原分支与证据格式保持。
+- 修复 creative 自动触发把工程任务误判为创意缺口：同一短句出现工程或数据词即否决，排除“写进／写到／写入／写在”与 `copy of`，覆盖阶段 2 发现的九条误判。Grok 模型证据优先使用既有真实评测确认过的 `modelUsage`，缺失时回退 summary；当前适配仍未实测。Antigravity 增加 `--disable-slash-commands`，阻止提示词中的斜杠命令或技能展开。
+- 未指定的默认超时仅在执行时采用，不写入用户配置；模型名拒绝以 `-` 开头或含空白、控制字符。文档补充逐家认证前提、只读与会话证据限制，以及子进程继承宿主环境和代理配置的行为。
+- 治理 `0.7.1` 与 runtime contract `9` 保持；registry 已消耗双包 `0.2.50`，本次继续使用未发布候选 `0.2.51`，不复用旧版本。真实 DSH profile 安装与端到端验证尚未执行。
+
+## DSH 0.2.50 / canonical 0.7.1
 
 - 支持 DSH `0.2.0-rc.1`：适配上游缩短后的 goal 与 todo 提示，恢复明确授权才开启自动续作、按需要维护任务列表及允许合并完成状态更新的既有规则；保留宿主的目标生命周期、工具参数和 todo 并发限制。旧 `0.1.7-rc.1` 提示适配继续保留。
 - 兼容矩阵增加 `0.2.0-rc.1`，npm peer 仍为 `*`，Agent 最低版本仍为 `0.1.7-rc.1`，不恢复逐版本白名单。

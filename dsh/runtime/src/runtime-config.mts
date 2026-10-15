@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONFIGURABLE_ROLES, resolveRoleDispatch, resolveRoleRoute, resolveRoutingConfigPath } from "./routing-config.mjs";
+import { assertRoleRouteDispatch, CONFIGURABLE_ROLES, resolveRoleDispatch, resolveRoleRoute, resolveRoutingConfigPath } from "./routing-config.mjs";
 import { resolveOutputConfigPath } from "./output-config.mjs";
 import { resolveCompactionConfigPath } from "./compaction-config.mjs";
 import { resolveSkillSourceConfigPath } from "./skill-source-config.mjs";
@@ -128,6 +128,17 @@ export function resolveConfig(rawConfig: unknown = {}): RuntimeConfig {
     throw new TypeError("config.skillPath must be a non-empty string");
   }
 
+  const resolvedRoles = Object.freeze(Object.fromEntries(ROUTED_ROLES.map((role) => [
+    role,
+    resolveRoleRoute(roles[role], role),
+  ])));
+  const resolvedDispatch = Object.freeze(Object.fromEntries(ROUTED_ROLES.map((role) => [
+    role,
+    resolveRoleDispatch(dispatch[role], role),
+  ])));
+  for (const role of ROUTED_ROLES) {
+    assertRoleRouteDispatch(resolvedRoles[role], resolvedDispatch[role], role);
+  }
   const deniedTools = additionalDeniedTools as string[];
   return Object.freeze({
     skillPath: raw.skillPath,
@@ -136,14 +147,8 @@ export function resolveConfig(rawConfig: unknown = {}): RuntimeConfig {
       provider: provider.trim(),
       maxInputChars,
       configPath,
-      roles: Object.freeze(Object.fromEntries(ROUTED_ROLES.map((role) => [
-        role,
-        resolveRoleRoute(roles[role], role),
-      ]))),
-      dispatch: Object.freeze(Object.fromEntries(ROUTED_ROLES.map((role) => [
-        role,
-        resolveRoleDispatch(dispatch[role], role),
-      ]))),
+      roles: resolvedRoles,
+      dispatch: resolvedDispatch,
     }),
     governance: Object.freeze({
       additionalDeniedTools: Object.freeze(deniedTools.map((tool) => tool.trim())),
@@ -177,6 +182,7 @@ export function inheritCompactionReasoning(
 
   const route = sessions?.get?.(options.sessionId)?.requestHeader?.()?.config;
   if (!route
+    || route.backend === "local-cli"
     || route.provider !== options.provider
     || route.model !== options.model
     || typeof route.reasoningEffort !== "string"

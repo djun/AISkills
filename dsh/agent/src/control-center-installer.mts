@@ -201,6 +201,7 @@ async function resolvedPackage(target: string): Promise<ResolvedPackage | undefi
     "preset/odai/skills/odai/manifest.json",
     "preset/odai/skills/odai-orchestration/manifest.json",
     "preset/odai/skills/odai-orchestration/scripts/compose-contracts.mjs",
+    "preset/odai/skills/odai-orchestration/scripts/local-cli.mjs",
     "preset/odai/runtime/index.mjs",
     "preset/odai/skills/odai/SKILL.md",
     "control-center.cordis.patch.yml",
@@ -222,6 +223,10 @@ async function resolvedPackage(target: string): Promise<ResolvedPackage | undefi
     if (!isRecord(presetMetadata) || presetMetadata.type !== "module" || !isRecord(presetMetadata.imports)
       || presetMetadata.imports["#odai-contracts"] !== "./skills/odai-orchestration/scripts/compose-contracts.mjs") {
       issues.push("resolved preset package has an invalid #odai-contracts import map");
+    }
+    if (!isRecord(presetMetadata) || !isRecord(presetMetadata.imports)
+      || presetMetadata.imports["#odai-local-cli"] !== "./skills/odai-orchestration/scripts/local-cli.mjs") {
+      issues.push("resolved preset package has an invalid #odai-local-cli import map");
     }
   } catch (error) {
     issues.push(`resolved preset package metadata is unavailable: ${errorMessage(error)}`);

@@ -19,7 +19,7 @@ test("canonical rendering omits metadata while retaining body, source identity, 
   assert.ok(bundle.skillText.startsWith("---\nname: odai\n"));
   assert.doesNotMatch(prompt, /^name: odai$|^description:/mu);
   assert.equal(prompt.includes(bundle.orchestration.skillBody), false);
-  assert.deepEqual(Object.keys(bundle.roleContracts), ["researcher", "planner", "reviewer", "frontend"]);
+  assert.deepEqual(new Set(Object.keys(bundle.roleContracts)), new Set(["researcher", "planner", "reviewer", "frontend", "creative"]));
   assert.ok(prompt.includes(`Canonical source: ${bundle.source} (${bundle.provider})`));
   assert.ok(prompt.includes(`runtime contract: ${bundle.manifest.runtimeContract}`));
   assert.ok(prompt.includes(`governance digest: ${bundle.governance.digest}`));

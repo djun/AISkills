@@ -20,12 +20,13 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const builder = path.join(scriptDir, "build-routing.mjs");
 const manifestName = "odai-routing.json";
 const requiredRoles = ["controller", "planner", "reviewer"];
-const configurableRoles = [...requiredRoles, "researcher", "frontend"];
+const configurableRoles = [...requiredRoles, "researcher", "frontend", "creative"];
 const args = parseArgs(process.argv.slice(2));
 const roles = Object.freeze([
   ...requiredRoles,
   ...(args.researcherModel ? ["researcher"] : []),
   ...(args.frontendModel ? ["frontend"] : []),
+  ...(args.creativeModel ? ["creative"] : []),
 ]);
 const retiredByHost = {
   codex: [
@@ -41,6 +42,12 @@ const retiredByHost = {
 if (args.help) { printHelp(); process.exit(0); }
 if (!new Set(["codex", "claude", "copilot"]).has(args.host)) fail(`不支持的 host：${args.host || "(missing)"}`);
 if (!new Set(["project", "user"]).has(args.scope)) fail(`不支持的 scope：${args.scope}`);
+for (const role of configurableRoles) {
+  if (!args[`${role}Cli`]) continue;
+  if (args.host !== "claude") fail(`--${role}-cli is only supported with --host claude`);
+  if (!["codex", "antigravity", "grok"].includes(args[`${role}Cli`])) fail(`--${role}-cli must be codex, antigravity, or grok`);
+  if (!args[`${role}Model`]) fail(`--${role}-cli 需要同时提供 --${role}-model`);
+}
 if (!args.yes) fail("安装、更新或卸载会持久化宿主配置；取得用户授权后传入 --yes");
 
 const targetRoot = resolveTarget(args.host, args.scope, args.target);
@@ -65,6 +72,7 @@ function main() {
   for (const role of requiredRoles) if (!args[`${role}Model`]) fail(`缺少 --${role}-model`);
   if (args.researcherEffort && !args.researcherModel) fail("--researcher-effort 需要同时提供 --researcher-model");
   if (args.frontendEffort && !args.frontendModel) fail("--frontend-effort 需要同时提供 --frontend-model");
+  if (args.creativeEffort && !args.creativeModel) fail("--creative-effort 需要同时提供 --creative-model");
   if (!existsSync(builder)) fail(`缺少路由生成器：${builder}`);
 
   const generatedRoot = mkdtempSync(path.join(tmpdir(), `odai-${args.host}-routing-install-`));
@@ -124,6 +132,7 @@ function buildAdapter(outputRoot, root) {
   for (const role of roles) {
     command.push(`--${role}-model`, args[`${role}Model`]);
     if (args[`${role}Effort`]) command.push(`--${role}-effort`, args[`${role}Effort`]);
+    if (args[`${role}Cli`]) command.push(`--${role}-cli`, args[`${role}Cli`]);
   }
   if (args.host === "codex") command.push("--verifier-command", `node ${JSON.stringify(path.join(root, "odai-verify-routing.mjs"))}`);
   const result = spawnSync(process.execPath, command, { encoding: "utf8", windowsHide: true });
@@ -138,7 +147,11 @@ function collectGeneratedFiles(root, layoutValue) {
   for (const [sourceRelative, targetRelative] of layoutValue.generatedFiles) {
     const source = path.join(root, args.host, sourceRelative);
     if (!existsSync(source)) fail(`生成结果缺少文件：${sourceRelative}`);
-    result.set(targetRelative, readFileSync(source));
+    let content = readFileSync(source);
+    if (args.host === "claude" && args.scope === "user" && targetRelative === "agents/odai-controller.md") {
+      content = Buffer.from(content.toString("utf8").replaceAll("node .claude/odai-run-role.mjs", claudeRunnerCommand()));
+    }
+    result.set(targetRelative, content);
   }
   return result;
 }
@@ -163,7 +176,7 @@ function originalFileRecord(file) {
 }
 
 function mergeCodexConfig(original, generated) {
-  if (/^\s*\[agents\.odai_(?:researcher|planner|executor|reviewer|frontend)\]\s*$/m.test(original)) {
+  if (/^\s*\[agents\.odai_(?:researcher|planner|executor|reviewer|frontend|creative)\]\s*$/m.test(original)) {
     fail("既有 Codex 配置已声明 odai 角色但不受当前安装清单管理");
   }
   const generatedFeatures = generated.search(/^\s*\[features\]\s*$/m);
@@ -245,6 +258,11 @@ function hostLayout(host, scope) {
       [".codex/role-contracts/odai-frontend.md", "role-contracts/odai-frontend.md"],
     ];
     const frontend = roles.includes("frontend") ? frontendFiles : [];
+    const creativeFiles = [
+      [".codex/agents/odai-creative.toml", "agents/odai-creative.toml"],
+      [".codex/role-contracts/odai-creative.md", "role-contracts/odai-creative.md"],
+    ];
+    const creative = roles.includes("creative") ? creativeFiles : [];
     const common = [
       [".codex/config.toml", "config.toml"],
       [".codex/odai-run-role.mjs", "odai-run-role.mjs"], [".codex/odai-verify-routing.mjs", "odai-verify-routing.mjs"],
@@ -255,21 +273,30 @@ function hostLayout(host, scope) {
       [".codex/role-contracts/odai-reviewer.md", "role-contracts/odai-reviewer.md"],
       ...researcher,
       ...frontend,
+      ...creative,
     ];
     const generatedFiles = common;
     return {
-      knownFiles: [...new Set([...common, ...researcherFiles, ...frontendFiles].map(([, target]) => target)), "hooks.json", "odai-route-hook.mjs", "odai-run-routing.mjs", "agents/odai-executor.toml", "role-contracts/odai-executor.md"],
+      knownFiles: [...new Set([...common, ...researcherFiles, ...frontendFiles, ...creativeFiles].map(([, target]) => target)), "hooks.json", "odai-route-hook.mjs", "odai-run-routing.mjs", "agents/odai-executor.toml", "role-contracts/odai-executor.md"],
       managedFiles: generatedFiles.map(([, target]) => target),
       generatedFiles,
       settings: null,
     };
   }
-  if (host === "claude") return {
-    knownFiles: configurableRoles.map((role) => `agents/odai-${role}.md`),
-    managedFiles: roles.map((role) => `agents/odai-${role}.md`),
-    generatedFiles: roles.map((role) => [`.claude/agents/odai-${role}.md`, `agents/odai-${role}.md`]),
-    settings: { file: scope === "project" ? "settings.local.json" : "settings.json", key: "agent", value: "odai-controller" },
-  };
+  if (host === "claude") {
+    const executors = ["odai-run-role.mjs", "odai-local-cli.mjs"];
+    const local = roles.filter(role => args[`${role}Cli`]);
+    const managedFiles = roles.map(role => `${args[`${role}Cli`] ? "role-contracts" : "agents"}/odai-${role}.md`);
+    if (local.length) managedFiles.push(...executors);
+    return {
+      knownFiles: [...configurableRoles.map(role => `agents/odai-${role}.md`),
+        ...configurableRoles.filter(role => role !== "controller").map(role => `role-contracts/odai-${role}.md`), ...executors],
+      managedFiles,
+      generatedFiles: managedFiles.map(file => [`.claude/${file}`, file]),
+      settings: { file: scope === "project" ? "settings.local.json" : "settings.json", key: "agent", value: "odai-controller",
+        permission: local.length ? `Bash(${claudeRunnerCommand()}:*)` : null },
+    };
+  }
   return {
     knownFiles: configurableRoles.map((role) => `agents/odai-${role}.agent.md`),
     managedFiles: roles.map((role) => `agents/odai-${role}.agent.md`),
@@ -283,22 +310,67 @@ function planSettings(root, layoutValue, manifest) {
   const spec = layoutValue.settings;
   const file = path.join(root, spec.file);
   const current = readJsonObject(file);
+  let installed = manifest?.settings;
   if (manifest) {
-    const installed = manifest.settings;
     if (!installed || installed.file !== spec.file || installed.key !== spec.key || installed.installed !== spec.value) fail("旧路由缺少可恢复的宿主设置记录");
     if (current[spec.key] !== spec.value) fail(`宿主设置 ${spec.key} 已被外部修改`);
-    return { file: spec.file, value: current, manifest: installed };
+    restorePermission(current, installed.permission);
+  } else {
+    const present = Object.hasOwn(current, spec.key);
+    if (present && current[spec.key] !== spec.value) fail(`目标已有非 odai 管理的宿主设置 ${spec.key}`);
+    installed = { file: spec.file, key: spec.key, installed: spec.value, fileExistedBefore: existsSync(file), previous: { present, value: present ? current[spec.key] : null } };
   }
-  const present = Object.hasOwn(current, spec.key);
-  if (present && current[spec.key] !== spec.value) fail(`目标已有非 odai 管理的宿主设置 ${spec.key}`);
-  return {
-    file: spec.file,
-    value: { ...current, [spec.key]: spec.value },
-    manifest: { file: spec.file, key: spec.key, installed: spec.value, fileExistedBefore: existsSync(file), previous: { present, value: present ? current[spec.key] : null } },
-  };
+  const record = { ...installed };
+  delete record.permission;
+  if (spec.permission) {
+    const permissionsPresent = Object.hasOwn(current, "permissions");
+    if (permissionsPresent && !isObject(current.permissions)) fail("宿主 permissions 必须是对象");
+    const permissions = current.permissions || {};
+    const allowPresent = Object.hasOwn(permissions, "allow");
+    if (allowPresent && (!Array.isArray(permissions.allow) || permissions.allow.some(rule => typeof rule !== "string"))) fail("宿主 permissions.allow 必须是字符串数组");
+    const allow = permissions.allow || [];
+    record.permission = { rule: spec.permission, added: !allow.includes(spec.permission), permissionsPresent, allowPresent };
+    current.permissions = { ...permissions, allow: record.permission.added ? [...allow, spec.permission] : [...allow] };
+  }
+  current[spec.key] = spec.value;
+  return { file: spec.file, value: current, manifest: record };
+}
+
+function isObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
+
+function claudeRunnerCommand() {
+  return args.scope === "project" ? "node .claude/odai-run-role.mjs"
+    : `node '${path.join(configRoot, "odai-run-role.mjs").replaceAll("'", "'\\''")}'`;
+}
+
+function assertPermission(current, record) {
+  if (!record) return;
+  if (record.rule !== `Bash(${claudeRunnerCommand()}:*)` || typeof record.added !== "boolean"
+    || typeof record.permissionsPresent !== "boolean" || typeof record.allowPresent !== "boolean") fail("旧路由的权限恢复记录无效");
+  if (!isObject(current.permissions) || !Array.isArray(current.permissions.allow)
+    || !current.permissions.allow.includes(record.rule)) fail("宿主设置 permissions.allow 已被外部修改");
+}
+
+function restorePermission(current, record) {
+  if (!record) return;
+  assertPermission(current, record);
+  if (!record.added) return;
+  current.permissions.allow = current.permissions.allow.filter(rule => rule !== record.rule);
+  if (!record.allowPresent && current.permissions.allow.length === 0) delete current.permissions.allow;
+  if (!record.permissionsPresent && Object.keys(current.permissions).length === 0) delete current.permissions;
 }
 
 function assertManagedState(root, layoutValue, manifest) {
+  if (args.host === "claude") {
+    const localRoles = new Set([
+      ...roles.filter(role => args[`${role}Cli`]),
+      ...Object.entries(manifest?.mapping || {}).filter(([, route]) => route.backend === "local-cli").map(([role]) => role),
+    ]);
+    for (const role of configurableRoles.filter(role => localRoles.has(role))) {
+      const nativeFile = `agents/odai-${role}.md`;
+      if (existsSync(path.join(root, nativeFile)) && !manifest?.files?.[nativeFile]) fail(`本机 CLI 职责存在非 odai 托管的原生代理：${nativeFile}`);
+    }
+  }
   if (!manifest) {
     const mergeable = args.host === "codex" ? new Set(["config.toml"]) : new Set();
     const conflicts = layoutValue.managedFiles.filter((relative) => !mergeable.has(relative) && existsSync(path.join(root, relative)));
@@ -316,6 +388,7 @@ function assertManagedState(root, layoutValue, manifest) {
       || installedSetting.installed !== expectedSetting.value) {
       fail("旧路由缺少可恢复的宿主设置记录");
     }
+    assertPermission(readJsonObject(path.join(root, installedSetting.file)), installedSetting.permission);
   } else if (installedSetting) {
     fail("旧路由包含当前宿主不支持的设置记录");
   }
@@ -388,6 +461,7 @@ function uninstall(root, manifestPathValue, manifest) {
 function planSettingRestore(root, spec) {
   const current = readJsonObject(path.join(root, spec.file));
   if (current[spec.key] !== spec.installed) fail(`宿主设置 ${spec.key} 已被外部修改，拒绝删除`);
+  restorePermission(current, spec.permission);
   if (spec.previous?.present) current[spec.key] = spec.previous.value; else delete current[spec.key];
   return {
     relative: spec.file,
@@ -466,7 +540,10 @@ function parseArgs(values) {
   const result = { host: "", scope: "project", target: "", uninstall: false, yes: false, help: false };
   for (const role of configurableRoles) { result[`${role}Model`] = ""; result[`${role}Effort`] = ""; }
   const fields = new Map([["--host", "host"], ["--scope", "scope"], ["--target", "target"], ["--governance-root", "governanceRoot"]]);
-  for (const role of configurableRoles) { fields.set(`--${role}-model`, `${role}Model`); fields.set(`--${role}-effort`, `${role}Effort`); }
+  for (const role of configurableRoles) {
+    fields.set(`--${role}-model`, `${role}Model`); fields.set(`--${role}-effort`, `${role}Effort`);
+    if (role !== "controller") fields.set(`--${role}-cli`, `${role}Cli`);
+  }
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
     if (value === "--help" || value === "-h") result.help = true;
@@ -478,18 +555,19 @@ function parseArgs(values) {
   return result;
 }
 
-function hasMappingArgs(value) { return configurableRoles.some((role) => value[`${role}Model`] || value[`${role}Effort`]); }
+function hasMappingArgs(value) { return configurableRoles.some((role) => value[`${role}Model`] || value[`${role}Effort`] || value[`${role}Cli`]); }
 function printHelp() {
   console.log(`由 odai 在取得用户授权后安装、更新或卸载宿主路由。
 
 Usage:
   node skills/odai-orchestration/scripts/install-routing.mjs --host <codex|claude|copilot> --scope <project|user> [--target <path>] \\
     --controller-model <model> --planner-model <model> --reviewer-model <model> \\
-    [--researcher-model <model>] [--frontend-model <model>] [--<role>-effort <effort>] [--governance-root <path>] --yes
+    [--researcher-model <model>] [--frontend-model <model>] [--creative-model <model>] [--<role>-effort <effort>] [--governance-root <path>] --yes
+  Claude Code only: [--<role>-cli <codex|antigravity|grok>] (non-controller roles)
 
   node skills/odai-orchestration/scripts/install-routing.mjs --host <codex|claude|copilot> --scope <project|user> [--target <path>] --uninstall --yes
 
-安装后用户只需正常使用 odai。总控是唯一持续任务线程并负责实施整合；planner、reviewer 以及可选 researcher、frontend 只在能改变结果时启动。researcher 与 frontend 映射默认不配置。更新会安全移除旧版 advisor、implementer、worker、executor 和 stage runner 托管文件。`);
+安装后用户只需正常使用 odai。总控是唯一持续任务线程并负责实施整合；planner、reviewer 以及可选 researcher、frontend、creative 只在能改变结果时启动。researcher、frontend 与 creative 映射默认不配置。更新会安全移除旧版 advisor、implementer、worker、executor 和 stage runner 托管文件。`);
 }
 
 function returnResult(value) { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }

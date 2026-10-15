@@ -87,7 +87,7 @@ export async function probeModelRoute(
   route: ModelRoute,
   signal?: AbortSignal,
 ): Promise<ModelRouteProbe> {
-  if (typeof resolveCallConfig !== "function") {
+  if (route.backend === "local-cli" || typeof resolveCallConfig !== "function") {
     return Object.freeze({ status: "unavailable" });
   }
   try {
@@ -127,6 +127,32 @@ export function sameModelRoute(
   right: Partial<ModelRoute> | null | undefined,
 ): boolean {
   if (!left || !right) return false;
-  const fields: readonly (keyof ModelRoute)[] = ["provider", "model", "reasoningEffort", "maxTokens"];
+  const fields: readonly (keyof ModelRoute)[] = left.backend === "local-cli" || right.backend === "local-cli"
+    ? ["backend", "cli", "model", "reasoningEffort", "timeoutSeconds"]
+    : ["provider", "model", "reasoningEffort", "maxTokens"];
   return fields.every((field) => left[field] === right[field]);
+}
+
+export function describeModelRoute(
+  route: ModelRoute,
+  options: {
+    showUnspecifiedReasoning?: boolean;
+    style?: "notice" | "identity";
+    defaultMaxTokens?: string;
+  } = {},
+): string {
+  if (route.backend === "local-cli") {
+    return `local-cli:${route.cli}/${route.model}${route.reasoningEffort ? ` (reasoning: ${route.reasoningEffort})` : ""}`;
+  }
+  if (options.style === "identity") return `${route.provider}/${route.model}`;
+  if (options.style === "notice") {
+    return `${route.provider}/${route.model} (reasoning: ${route.reasoningEffort ?? "unspecified"}, maxTokens: ${route.maxTokens ?? options.defaultMaxTokens ?? "provider default"})`;
+  }
+  const settings = [
+    ...(route.reasoningEffort || options.showUnspecifiedReasoning
+      ? [`reasoningEffort=${route.reasoningEffort ?? "unspecified"}`]
+      : []),
+    ...(route.maxTokens === undefined ? [] : [`maxTokens=${route.maxTokens}`]),
+  ];
+  return `${route.provider}/${route.model}${settings.length > 0 ? ` (${settings.join(", ")})` : ""}`;
 }

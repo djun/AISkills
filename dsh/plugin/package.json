@@ -1,6 +1,6 @@
 {
   "name": "odai-dsh-plugin",
-  "version": "0.2.50",
+  "version": "0.2.51",
   "description": "Profile-wide odai governance and routing bundle for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
@@ -14,7 +14,8 @@
   },
   "type": "module",
   "imports": {
-    "#odai-contracts": "./skills/odai-orchestration/scripts/compose-contracts.mjs"
+    "#odai-contracts": "./skills/odai-orchestration/scripts/compose-contracts.mjs",
+    "#odai-local-cli": "./skills/odai-orchestration/scripts/local-cli.mjs"
   },
   "main": "./runtime/index.mjs",
   "bin": {

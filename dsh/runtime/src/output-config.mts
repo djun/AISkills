@@ -174,7 +174,9 @@ export function resolveInPlaceResponsibilityOutputBudgets(
   const entries: [InPlaceOutputResponsibility, ResponsibilityOutputBudget][] = [];
   for (const responsibility of IN_PLACE_OUTPUT_RESPONSIBILITIES) {
     const route = routes[responsibility];
-    if (isUnknownRecord(route)) entries.push([responsibility, resolveResponsibilityOutputBudget(policy, route)]);
+    if (isUnknownRecord(route) && route.backend !== "local-cli") {
+      entries.push([responsibility, resolveResponsibilityOutputBudget(policy, route)]);
+    }
   }
   const budgets: ResponsibilityOutputBudgets = Object.fromEntries(entries);
   return Object.keys(budgets).length > 0 ? Object.freeze(budgets) : undefined;

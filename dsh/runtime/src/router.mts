@@ -1,7 +1,8 @@
+import { describeModelRoute } from "./model-route.mjs";
 import type { DshEvent, DshMessage, ModelRoute, RuntimeEventData } from "./runtime-types.mjs";
 import { isUnknownRecord } from "./runtime-types.mjs";
 
-export type OdaiRouteRole = "controller" | "researcher" | "planner" | "reviewer" | "frontend";
+export type OdaiRouteRole = "controller" | "researcher" | "planner" | "reviewer" | "frontend" | "creative";
 export type OdaiRouteAction = "direct" | "delegate" | "upgrade";
 
 export interface RouteConsideration {
@@ -37,6 +38,10 @@ export interface ResponsibilityInterruptionState {
 
 export interface RouteDecisionInput {
   readonly text?: string;
+  /** Creative lexical routing is opt-in through an effective mapping. */
+  readonly creativeConfigured?: boolean;
+  /** Authenticated current user text, excluding appended earlier task context. */
+  readonly creativeText?: string;
   readonly proposal?: ResponsibilityGapState;
   readonly interruption?: ResponsibilityInterruptionState;
 }
@@ -250,6 +255,38 @@ function isLowRiskTransform(text: string): boolean {
   return matchesAny(stripQuotedMaterial(text), LOW_RISK_TRANSFORM_PATTERNS);
 }
 
+function hasCreativeRequest(text: string): boolean {
+  // Match adjacent noun phrases, not arbitrary text between a verb and a topic.
+  // Engineering/data work vetoes lexical routing for its entire short clause.
+  // Domain-neutral: ideation, reader-facing writing and voice, visual direction, and taste review.
+  // Game terms are one domain among others, not the scope.
+  const englishObjects = "copywriting|copy|taglines?|slogans?|headlines?|dialogues?|narratives?|stor(?:y|ies)|lore|tone of voice|brand voice|naming|names|name ideas|art direction|visual direction|level design|game design|store page|balance|cover letter|resume|bio";
+  const objects = new RegExp(`(?:(?:产品|项目|公司|品牌|个人|自我)?(?:介绍|简介)|文案|文字|措辞|文风|语气|调性|标语|口号|宣传语|广告语|简历|求职信|演讲稿|发言稿|故事|剧情|对白|台词|旁白|创意|点子|脑洞|品牌名|产品名|名字|名称|视觉方向|美术方向|画风|世界观|人设|角色设定|玩法|关卡设计|数值平衡|商店页|套话|翻译腔|机器味|AI\\s*[味腔])+|\\b(?:${englishObjects})(?:\\s+(?:${englishObjects}))*\\b`, "giu");
+  const engineering = /代码|逻辑|系统|测试|脚本|实现|报错|加载|性能|存档|数据|数据库|配置|模块|组件|接口|函数|变量|常量|字段|文件|表|列|键|类|方法|结构|渲染|解析|导入|导出|格式|编码|缓存|复杂度|提交|日志|部署|构建|编译|依赖|迁移|\b(?:code|tests?|logic|systems?|scripts?|bugs?|load|loading|performance|data|database|config|modules?|components?|interfaces?|functions?|variables?|constants?|fields?|files?|tables?|columns?|keys?|classes|class|methods?|parsers?|renderers?|import|export|cache|sheets?|pr|commits?|id|api|sql|logs?|deploy|build|compile|dependenc(?:y|ies)|migrations?)\b/iu;
+  const verbs = "改写|重写|润色|改改|改一改|起名|取名|起|取|想想|想|构思|发散|脑暴|头脑风暴|拟|审查|审|把关|评估|优化|写";
+  const fillers = "一下|下|一遍|这段|那段|这个|那个|这份|那份|这些|那些|这篇|那篇|一篇|一段|一份|一些|一句|一条|几个|个|我的|[一二三四五六七八九十\\d]+[版个条]|第[一二三四五六七八九十\\d]+章的|的|\\s";
+  const actionBefore = new RegExp(`(?:${verbs})(?:${fillers}){0,5}$|\\b(?:write|rewrite|polish|draft|review|name|brainstorm|come up with|suggest|improve)\\s+(?:(?:the|this|that|these|a|an|some|our|my)\\s+){0,2}$`, "iu");
+  const actionAfter = /^(?:的|你|请|帮我|给我|再|\s){0,4}(?:改写|重写|润色|改改|改一改|起名|取名|想想|构思|发散|脑暴|头脑风暴|拟|审查|审|把关|评估|优化|写(?!进|到|入|在))/u;
+  // "这段话 AI 味太重，帮我改改": a complaint about creative content followed by a bare fix request.
+  const complaint = /太|不够|有点|过于|生硬|啰嗦|别扭|尴尬|平淡|空洞|干巴|不像|不自然|AI\s*[味腔]|套话|翻译腔|机器味/u;
+  const bareAction = /^(?:\s|请|帮我|给我|麻烦|再|你)*(?:改写|重写|润色|改改|改一改|优化|把关|审查|审)(?:一下|一遍|下)?(?:吧|呗)?\s*$/u;
+  let complainedObject = false;
+  for (const clause of text.split(/[，,。.!！?？;；:：\n\r]/u)) {
+    const vetoed = engineering.test(clause);
+    if (!vetoed && complainedObject && bareAction.test(clause)) return true;
+    complainedObject = false;
+    if (vetoed) continue;
+    for (const match of clause.matchAll(objects)) {
+      const before = clause.slice(0, match.index);
+      const after = clause.slice(match.index + match[0].length);
+      if (/\bcopy$/iu.test(match[0]) && /^\s+of\b/iu.test(after)) continue;
+      if (actionBefore.test(before) || actionAfter.test(after)) return true;
+      if (complaint.test(clause)) complainedObject = true;
+    }
+  }
+  return false;
+}
+
 function frontendSpecializationSignals(text: string): Readonly<FrontendSpecializationSignals> {
   const explicit = matchesAny(text, FRONTEND_EXPLICIT_SPECIALIST_PATTERNS);
   const surfaceCount = FRONTEND_SURFACE_PATTERNS.filter((pattern) => pattern.test(text)).length;
@@ -416,6 +453,10 @@ export function decideRoute(input: RouteDecisionInput = {}): Readonly<RouteDecis
     signals.push("evidence-grounded-responsibility-gap", `state:${proposal.stateDigest}`);
     return route("controller", "FRONTEND_EVIDENCE_STATE_GAP", proposal.gap, signals, "upgrade", "frontend");
   }
+  if (input.creativeConfigured && proposal?.responsibility === "creative") {
+    signals.push("evidence-grounded-responsibility-gap", `state:${proposal.stateDigest}`);
+    return route("creative", "CREATIVE_EVIDENCE_STATE_GAP", proposal.gap, signals);
+  }
 
   if (matchesAny(explicitIntentText, REVIEWER_PATTERNS)) {
     signals.push("review-language-present");
@@ -463,6 +504,13 @@ export function decideRoute(input: RouteDecisionInput = {}): Readonly<RouteDecis
       "The requested high-impact change relies on an unverified causal claim. Verify the evidence and authorization; risk alone does not establish an independent capability gap.",
       signals,
     );
+  }
+
+  if (input.creativeConfigured && !proposal
+    && hasCreativeRequest(stripQuotedMaterial(input.creativeText ?? text))) {
+    return route("creative", "CREATIVE_CONTENT_REQUEST",
+      "The user requested creative production or review through an adjacent action and creative object.",
+      [...signals, "creative-content-request"]);
   }
 
   const frontendSignals = frontend.scope || frontend.explicit ? frontendRouteSignals(frontend) : [];
@@ -557,7 +605,7 @@ export function renderRouteNotice(
   dispatch?: "same-turn" | "child",
 ): string {
   const routeRole = decision.targetRole ?? decision.role;
-  const isUpgrade = dispatch
+  const isUpgrade = actualRoute?.backend === "local-cli" ? false : dispatch
     ? dispatch === "same-turn"
     : decision.action === "upgrade"
       && (runtimeMode === "auto" || ["frontend"].includes(routeRole));
@@ -567,7 +615,7 @@ export function renderRouteNotice(
       ? `The ${routeRole} gap was selected in observe mode; do not start a child automatically.`
       : `The ${routeRole} route was selected and executed as an independent child.`;
   const routeIdentity = actualRoute
-    ? [`${isUpgrade ? "requested controller route" : "verified child route"}: ${actualRoute.provider}/${actualRoute.model} (reasoning: ${actualRoute.reasoningEffort ?? "unspecified"}, maxTokens: ${actualRoute.maxTokens ?? (isUpgrade ? "inherited from Controller policy" : "provider default")})`]
+    ? [`${isUpgrade ? "requested controller route" : "verified child route"}: ${describeModelRoute(actualRoute, { style: "notice", defaultMaxTokens: isUpgrade ? "inherited from Controller policy" : "provider default" })}`]
     : [];
 
   return [

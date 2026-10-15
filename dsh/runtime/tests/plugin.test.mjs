@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -19,7 +21,7 @@ import {
   readStoredSessionEvidence,
   resolveSessionEvidenceRoot,
 } from "../build/session-evidence.mjs";
-import { isManagedRoleChild } from "../build/runtime-support.mjs";
+import { isManagedRoleChild, latestRouteReceipt } from "../build/runtime-support.mjs";
 import { loadSkillBundle } from "../build/skill-bundle.mjs";
 import { createReviewEvidenceSnapshot } from "../build/review-evidence.mjs";
 import { readMemoryStore } from "../build/semantic-memory-store.mjs";
@@ -221,7 +223,7 @@ function nativeToolEvents(callId, command, output, options = {}) {
   ];
 }
 function responsibilityGapEvent(responsibility, overrides = {}) {
-  const markers = { researcher: "a", planner: "b", reviewer: "c", frontend: "d", user: "e" };
+  const markers = { researcher: "a", planner: "b", reviewer: "c", frontend: "d", user: "e", creative: "f" };
   const marker = markers[responsibility];
   return {
     type: "odai/responsibility-gap",
@@ -6337,4 +6339,285 @@ test("the model can persist every user-specified responsibility mapping", async 
       ),
     /child agents may not change/u,
   );
+});
+
+
+test("creative API dispatch is a bounded child for lexical requests and responsibility gaps", async () => {
+  const route = { provider: "creative-provider", model: "creative-model", reasoningEffort: "high", maxTokens: 2300 };
+  for (const entry of ["lexical", "gap", "unmapped", "tool-text"]) {
+    const starts = [];
+    const ctx = fakeContext({ subagents: {
+      async start(provider, request) {
+        starts.push({ provider, request });
+        return {
+          localAgent: { session: childSession(route) },
+          result: Promise.resolve({ stopReason: "completed", output: [{ type: "text", text: "候选：原文与替换文本；取舍依据。" }] }),
+          async dispose() {},
+        };
+      },
+    } });
+    apply(ctx, { skillPath, routing: { configPath: resolve(testDshHome, `creative-api-${entry}/routing.json`),
+      roles: entry === "unmapped" ? {} : { creative: route } } });
+    const events = entry === "gap" ? [responsibilityGapEvent("creative")] : [];
+    const agent = { session: { header: { cwd: testDshHome }, events, snapshotEvents: () => events,
+      append(type, data) { events.push({ type, data }); } } };
+    seedCurrentEvidence(ctx, agent, events);
+    const message = userMessage(entry === "gap" ? "完成当前已确定的创意缺口" : "帮我润色这段对白");
+    if (entry === "tool-text") message.source = { kind: "tool" };
+    const result = await ctx.captured.handlers.get("agent/pre-step")(
+      { agent, turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ kind: "enter", messages: [message] }),
+    );
+    if (["unmapped", "tool-text"].includes(entry)) {
+      assert.equal(starts.length, 0, entry);
+      assert.equal(events.some(event => event.type === "odai/route-config-missing"), false, entry);
+      continue;
+    }
+    assert.equal(starts.length, 1, entry);
+    const { request } = starts[0];
+    assert.match(request.label, /^odai-creative:/);
+    assert.equal(request.maxDepth, 1);
+    assert.deepEqual(request.agentOptions, { provider: route.provider, model: route.model, maxTokens: route.maxTokens });
+    const prompt = blockText(request.prompt[0]);
+    const bundle = loadSkillBundle(skillPath);
+    assert.ok(prompt.includes(bundle.roleContracts.creative));
+    assert.match(prompt, /DSH creative execution boundary/);
+    assert.match(prompt, /bounded task and evidence packet/);
+    assert.match(messageText(result.messages.at(-1)), /候选：原文与替换文本/);
+    const receipt = findLastEvent(events, event => event.type === "odai/route-result").data;
+    assert.equal(receipt.role, "creative");
+    assert.equal(receipt.routeReceiptStatus, "applied");
+    assert.deepEqual(receipt.actualRoute, route);
+    assert.equal(events.some(event => ["odai/route-upgrade", "odai/responsibility-scope-started"].includes(event.type)), false);
+    const controllerRoute = { provider: "base", model: "controller", maxTokens: 8000 };
+    assert.deepEqual(await ctx.captured.handlers.get("agent/request")(
+      { agent, turn: 1, step: 1 }, async () => controllerRoute,
+    ), controllerRoute);
+  }
+});
+
+test("manual creative API labels apply the mapped contract and read-only child boundary", async () => {
+  const ctx = fakeContext();
+  const route = { provider: "creative-provider", model: "creative-model", reasoningEffort: "high" };
+  apply(ctx, { skillPath, routing: { configPath: resolve(testDshHome, "manual-creative/routing.json"), roles: { creative: route } } });
+  const inherited = { provider: "base", model: "controller" };
+  for (const label of ["odai-creative: bounded copy task", "creative copy task", "odai-creative-other: task"]) {
+    const events = [{ type: "subagent/descriptor", data: { label } }];
+    const child = { session: { header: { origin: "subagent" }, snapshotEvents: () => events,
+      append(type, data) { events.push({ type, data }); } } };
+    const mapped = label.startsWith("odai-creative:");
+    const request = await ctx.captured.handlers.get("agent/request")({ agent: child, turn: 1, step: 1 }, async () => inherited);
+    assert.deepEqual(request, mapped ? route : inherited);
+    if (!mapped) continue;
+    const assembly = { tools: [{ name: "read" }, { name: "bash" }, { name: "write" }, { name: "subagent" }], sections: [...ctx.captured.sections] };
+    const composed = await ctx.captured.handlers.get("system-prompt/assemble")(assembly, { agent: child }, async () => assembly);
+    const contract = composed.sections.find(section => section.name === "odai:child-responsibility-contract").text;
+    assert.ok(contract.includes(loadSkillBundle(skillPath).roleContracts.creative));
+    assert.match(contract, /DSH creative execution boundary/);
+    assert.deepEqual(composed.tools.map(tool => tool.name), ["read"]);
+  }
+});
+
+// A fake executable exercises the actual spawn/stdin boundary; never invoke installed Claude.
+test("local CLI planner/frontend/creative dispatch returns verified child evidence without native subagents", { skip: process.platform === "win32" }, async () => {
+  const command = resolve(testDshHome, "fake-claude.mjs");
+  writeFileSync(command, `#!${process.execPath}
+import process from "node:process";
+let prompt = "";
+for await (const chunk of process.stdin) prompt += chunk;
+const role = prompt.includes("You are the odai planner.") ? "planner" : prompt.includes("You are the odai creative.") ? "creative" : "frontend";
+if (!prompt.includes("Local CLI execution boundary") || !prompt.includes("Read, Glob, and Grep")
+  || !prompt.includes("unapplied patch") || process.cwd() !== ${JSON.stringify(realpathSync(testDshHome))}) process.exit(3);
+if (role === "creative" && (!prompt.includes("创意专业责任") || !prompt.includes("DSH creative execution boundary"))) process.exit(5);
+console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,result:role+" local CLI result",
+ modelUsage:{"claude-opus-5":{outputTokens:30,canonicalModel:"claude-opus-5"}},usage:{input_tokens:20,output_tokens:30},total_cost_usd:0.02}));
+`);
+  chmodSync(command, 0o700);
+  const previousCommand = process.env.ODAI_CLAUDE_COMMAND;
+  process.env.ODAI_CLAUDE_COMMAND = command;
+  try {
+    for (const role of ["planner", "frontend", "creative"]) {
+      // Exercise both absent and present native subagents services.
+      const ctx = fakeContext(role === "planner" ? {} : {
+        subagents: { async start() { throw new Error("native subagents must not execute local-cli"); } },
+        llm: { async resolveCallConfig() { throw new Error("local-cli must not enter API preflight"); } },
+      });
+      const route = { backend: "local-cli", cli: "claude", model: "opus", reasoningEffort: "high" };
+      apply(ctx, { skillPath, routing: { configPath: resolve(testDshHome, `local-${role}/routing.json`), roles: { [role]: route } } });
+      const events = [responsibilityGapEvent(role)];
+      const agent = { session: { header: { cwd: testDshHome }, events, snapshotEvents: () => events,
+        append(type, data) { events.push({ type, data }); } } };
+      seedCurrentEvidence(ctx, agent, events);
+      const result = await ctx.captured.handlers.get("agent/pre-step")(
+        { agent, turn: 1, step: 1, signal: new AbortController().signal },
+        async () => ({ kind: "enter", messages: [userMessage("实现当前已确定的改进，解决已记录职责缺口。")] }),
+      );
+      assert.match(messageText(result.messages.at(-1)), new RegExp(`${role} local CLI result`));
+      assert.match(messageText(result.messages.at(-1)), /requested only/);
+      assert.equal(events.some(event => event.type === "odai/responsibility-scope-started" || event.type === "odai/route-upgrade"), false);
+      const routed = findLastEvent(events, event => event.type === "odai/route-result").data;
+      assert.equal(routed.status, "completed");
+      assert.equal(routed.action, "delegate");
+      assert.equal(routed.routeReceiptStatus, "applied");
+      assert.deepEqual(routed.actualRoute, { backend: "local-cli", cli: "claude", model: "claude-opus-5" });
+      assert.equal(routed.reasoningEffortVerification, "requested-only");
+      assert.equal(routed.cliReportedCostUsd, 0.02);
+      assert.deepEqual(routed.usage, { input_tokens: 20, output_tokens: 30 });
+      assert.ok(routed.durationMs >= 0);
+      const tool = ctx.captured.tools.find(tool => tool.name === "odai_routing_config");
+      const shown = await tool.execute({ action: "show" }, { agent });
+      assert.equal(shown.latestRoute.routeMode, "child");
+      assert.equal(shown.latestRoute.reasoningEffortVerification, "requested-only");
+      assert.deepEqual(shown.latestRoute.actualRoute, routed.actualRoute);
+      const childEvents = [{ type: "subagent/descriptor", data: { label: `odai-${role}: manual` } }];
+      const child = { session: { header: { origin: "subagent", cwd: testDshHome }, snapshotEvents: () => childEvents } };
+      await assert.rejects(ctx.captured.handlers.get("agent/request")(
+        { agent: child, turn: 1, step: 1, signal: new AbortController().signal },
+        async () => ({ provider: "base", model: "controller" }),
+      ), /ODAI_LOCAL_CLI_MANAGED_DISPATCH_REQUIRED.*odai_responsibility_gap/);
+    }
+  } finally {
+    if (previousCommand === undefined) delete process.env.ODAI_CLAUDE_COMMAND;
+    else process.env.ODAI_CLAUDE_COMMAND = previousCommand;
+  }
+});
+
+test("local CLI failures map to fallback outcomes and never accept unverified text", { skip: process.platform === "win32" }, async () => {
+  const command = resolve(testDshHome, "fake-claude-results.mjs");
+  const previousCommand = process.env.ODAI_CLAUDE_COMMAND;
+  process.env.ODAI_CLAUDE_COMMAND = command;
+  try {
+    const cases = [
+      { body: "not JSON", stopReason: "infrastructure-error" },
+      { body: { subtype: "success", is_error: true, result: "failed" }, stopReason: "infrastructure-error" },
+      { body: { subtype: "error_max_turns", is_error: false, result: "failed" }, stopReason: "infrastructure-error" },
+      { body: { subtype: "success", is_error: false, result: "" }, stopReason: "route-empty-output" },
+      { body: { subtype: "success", is_error: false, result: "unverified" }, stopReason: "route-unverified" },
+      { body: { subtype: "success", is_error: false, result: "wrong model", modelUsage: { "claude-sonnet-5": { outputTokens: 10 } } }, stopReason: "route-unverified" },
+      { body: "process failed", exitCode: 7, stopReason: "infrastructure-error" },
+    ];
+    for (const fixture of cases) {
+      writeFileSync(command, `#!${process.execPath}
+process.stdin.resume(); process.stdin.on("end", () => { console.log(${JSON.stringify(typeof fixture.body === "string" ? fixture.body : JSON.stringify(fixture.body))}); process.exitCode = ${fixture.exitCode ?? 0}; });
+`);
+      chmodSync(command, 0o700);
+      const result = await runRoutedRole({ provider: "spawn", decision: { role: "planner" }, taskText: "bounded task", roleContract: "Read-only planner contract.",
+        roleRoute: { backend: "local-cli", cli: "claude", model: "opus" },
+        agent: { session: { header: { cwd: testDshHome } } }, signal: new AbortController().signal });
+      assert.equal(result.status, "fallback");
+      assert.equal(result.stopReason, fixture.stopReason);
+      assert.deepEqual(result.output, []);
+    }
+    const controller = new AbortController(); controller.abort();
+    const cancelled = await runRoutedRole({ provider: "spawn", decision: { role: "frontend" }, taskText: "bounded task", roleContract: "Read-only frontend contract.",
+      roleRoute: { backend: "local-cli", cli: "claude", model: "opus" }, agent: { session: { header: { cwd: testDshHome } } }, signal: controller.signal });
+    assert.equal(cancelled.stopReason, "cancelled");
+    assert.deepEqual(cancelled.output, []);
+  } finally {
+    if (previousCommand === undefined) delete process.env.ODAI_CLAUDE_COMMAND;
+    else process.env.ODAI_CLAUDE_COMMAND = previousCommand;
+  }
+});
+
+
+test("local CLI Codex verifies actual effort and rejects mismatches before accepting output", { skip: process.platform === "win32" }, async () => {
+  const command = resolve(testDshHome, "fake-codex-routing.mjs");
+  const codexHome = resolve(testDshHome, "codex-routing-home");
+  const previous = { command: process.env.ODAI_CODEX_COMMAND, home: process.env.CODEX_HOME };
+  process.env.ODAI_CODEX_COMMAND = command;
+  process.env.CODEX_HOME = codexHome;
+  try {
+    for (const fixture of [
+      { requested: "high", actual: "high", verification: "verified", status: "completed", text: "Codex result" },
+      { requested: undefined, actual: "low", verification: "verified", status: "completed", text: "Codex result" },
+      { requested: "high", actual: "low", verification: "mismatch", status: "fallback", text: "Discard this result" },
+      { requested: "high", actual: "low", verification: "mismatch", status: "fallback", text: "" },
+    ]) {
+      const threadId = `odai-${fixture.requested ?? "default"}-${fixture.actual}-${fixture.text.length}`;
+      writeFileSync(command, `#!${process.execPath}
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+let prompt = "";
+for await (const chunk of process.stdin) prompt += chunk;
+if (!prompt.includes("read-only commands") || prompt.includes("only Read, Glob, and Grep")) process.exit(3);
+const sessions = resolve(process.env.CODEX_HOME, "sessions", "2026", "10", "15");
+mkdirSync(sessions, { recursive: true });
+const rows = [
+ { type: "session_meta", payload: { id: ${JSON.stringify(threadId)}, cwd: process.cwd() } },
+ { type: "turn_context", payload: { cwd: process.cwd(), model: "gpt-6.1-sol", effort: ${JSON.stringify(fixture.actual)} } },
+];
+writeFileSync(resolve(sessions, ${JSON.stringify(`rollout-${threadId}.jsonl`)}), rows.map(row => JSON.stringify(row)).join("\\n") + "\\n");
+console.log(JSON.stringify({ type: "thread.started", thread_id: ${JSON.stringify(threadId)} }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: ${JSON.stringify(fixture.text)} } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 30, output_tokens: 10 } }));
+`);
+      chmodSync(command, 0o700);
+      const route = { backend: "local-cli", cli: "codex", model: "gpt-6.1-sol",
+        ...(fixture.requested ? { reasoningEffort: fixture.requested } : {}) };
+      const result = await runRoutedRole({ provider: "spawn", decision: { role: "planner" }, taskText: "bounded task",
+        roleContract: "Read-only planner contract.", roleRoute: route,
+        agent: { session: { header: { cwd: testDshHome } } }, signal: new AbortController().signal });
+      assert.equal(result.status, fixture.status);
+      assert.equal(result.reasoningEffortVerification, fixture.verification);
+      assert.deepEqual(result.actualRoute, { backend: "local-cli", cli: "codex", model: "gpt-6.1-sol",
+        ...(fixture.verification === "verified" ? { reasoningEffort: fixture.actual } : {}) });
+      if (fixture.status === "fallback") {
+        assert.equal(result.stopReason, "route-unverified");
+        assert.equal(result.routeReceiptStatus, "mismatch");
+        assert.deepEqual(result.output, []);
+      } else {
+        assert.equal(result.routeReceiptStatus, "applied");
+        assert.equal(result.output[0].text, fixture.text);
+      }
+      const receipt = latestRouteReceipt([{ type: "odai/route-result", data: {
+        ...result, turn: 1, step: 1, role: "planner", routeSource: "persisted-mapping", requestedRoute: route,
+      } }]);
+      assert.equal(receipt.reasoningEffortVerification, fixture.verification);
+      assert.deepEqual(receipt.actualRoute, result.actualRoute);
+    }
+  } finally {
+    if (previous.command === undefined) delete process.env.ODAI_CODEX_COMMAND;
+    else process.env.ODAI_CODEX_COMMAND = previous.command;
+    if (previous.home === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previous.home;
+  }
+});
+
+test("local CLI Antigravity preserves denied actions in managed dispatch and receipts", { skip: process.platform === "win32" }, async () => {
+  const command = resolve(testDshHome, "fake-agy-routing.mjs");
+  writeFileSync(command, `#!${process.execPath}
+const prompt = process.argv[process.argv.indexOf("-p") + 1];
+if (!prompt.includes("view_file") || !prompt.includes("find_by_name") || prompt.includes("only Read, Glob, and Grep")) process.exit(3);
+console.log(JSON.stringify({ event: "init", conversation_id: "fake-agy", init: { model: "gemini-3.8-flash-high", cwd: process.cwd() } }));
+console.log(JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "Antigravity result", denied_actions: 2, usage: { input_tokens: 30, output_tokens: 10 } } }));
+`);
+  chmodSync(command, 0o700);
+  const previousCommand = process.env.ODAI_AGY_COMMAND;
+  process.env.ODAI_AGY_COMMAND = command;
+  try {
+    const route = { backend: "local-cli", cli: "antigravity", model: "gemini-3.8-flash-high", reasoningEffort: "high" };
+    const ctx = fakeContext();
+    apply(ctx, { skillPath, routing: { configPath: resolve(testDshHome, "agy-routing.json"), roles: { frontend: route } } });
+    const events = [responsibilityGapEvent("frontend")];
+    const agent = { session: { header: { cwd: testDshHome }, events, snapshotEvents: () => events,
+      append(type, data) { events.push({ type, data }); } } };
+    seedCurrentEvidence(ctx, agent, events);
+    const result = await ctx.captured.handlers.get("agent/pre-step")(
+      { agent, turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ kind: "enter", messages: [userMessage("实现当前已确定的改进，解决已记录职责缺口。")] }),
+    );
+    assert.match(messageText(result.messages.at(-1)), /Antigravity result/);
+    const routed = findLastEvent(events, event => event.type === "odai/route-result").data;
+    assert.equal(routed.status, "completed");
+    assert.equal(routed.deniedActionsCount, 2);
+    assert.equal(routed.reasoningEffortVerification, "requested-only");
+    assert.deepEqual(routed.actualRoute, { backend: "local-cli", cli: "antigravity", model: route.model });
+    const tool = ctx.captured.tools.find(tool => tool.name === "odai_routing_config");
+    const shown = await tool.execute({ action: "show" }, { agent });
+    assert.equal(shown.latestRoute.deniedActionsCount, 2);
+    assert.deepEqual(shown.latestRoute.actualRoute, routed.actualRoute);
+  } finally {
+    if (previousCommand === undefined) delete process.env.ODAI_AGY_COMMAND;
+    else process.env.ODAI_AGY_COMMAND = previousCommand;
+  }
 });

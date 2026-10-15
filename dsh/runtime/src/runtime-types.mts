@@ -1,15 +1,24 @@
+import type { LocalCliRoute as SharedLocalCliRoute } from "#odai-local-cli";
+
 export type UnknownRecord = Record<string, unknown>;
 
 export function isUnknownRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export interface ModelRoute extends UnknownRecord {
+export interface ApiModelRoute extends UnknownRecord {
   provider: string;
   model: string;
   reasoningEffort?: string;
   maxTokens?: number;
+  backend?: never;
+  cli?: never;
+  timeoutSeconds?: never;
 }
+
+export interface LocalCliRoute extends SharedLocalCliRoute, UnknownRecord {}
+
+export type ModelRoute = ApiModelRoute | LocalCliRoute;
 
 export type ResponsibilityDispatch = "same-turn" | "child";
 

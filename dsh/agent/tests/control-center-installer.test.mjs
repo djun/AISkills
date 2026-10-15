@@ -27,11 +27,12 @@ async function writeResolvedPackage(profileRoot, version, complete = true) {
     await writeFile(resolve(root, "preset/odai/odai-governance.mjs"), "export * from \"./runtime/index.mjs\";\n");
     await writeFile(resolve(root, "preset/odai/runtime/index.mjs"), "export function apply() {}\n");
     await writeFile(resolve(root, "preset/odai/skills/odai/SKILL.md"), "---\nname: odai\n---\n");
-    await writeFile(resolve(root, "preset/odai/package.json"), JSON.stringify({ type: "module", imports: { "#odai-contracts": "./skills/odai-orchestration/scripts/compose-contracts.mjs" } }));
+    await writeFile(resolve(root, "preset/odai/package.json"), JSON.stringify({ type: "module", imports: { "#odai-contracts": "./skills/odai-orchestration/scripts/compose-contracts.mjs", "#odai-local-cli": "./skills/odai-orchestration/scripts/local-cli.mjs" } }));
     await writeFile(resolve(root, "preset/odai/skills/odai/manifest.json"), "{}\n");
     await mkdir(resolve(root, "preset/odai/skills/odai-orchestration/scripts"), { recursive: true });
     await writeFile(resolve(root, "preset/odai/skills/odai-orchestration/manifest.json"), "{}\n");
     await writeFile(resolve(root, "preset/odai/skills/odai-orchestration/scripts/compose-contracts.mjs"), "export {};\n");
+    await writeFile(resolve(root, "preset/odai/skills/odai-orchestration/scripts/local-cli.mjs"), "export {};\n");
     await writeFile(resolve(root, "control-center.cordis.patch.yml"), "plugins:\n  - name: odai-dsh-agent\n");
     await writeFile(resolve(root, "preset/odai/runtime/control-center-host.mjs"), "export function apply() {}\n");
     await writeFile(resolve(root, "preset/odai/runtime/control-center-runtime.mjs"), "export const ok = true;\n");
@@ -279,12 +280,20 @@ test("missing import map or orchestration entry triggers repair instead of uncha
       ["preset/odai/package.json", "invalid-map"],
       ["preset/odai/package.json", "directory"],
       ["preset/odai/skills/odai-orchestration/scripts/compose-contracts.mjs", "directory"],
+      ["preset/odai/skills/odai-orchestration/scripts/local-cli.mjs", "missing"],
+      ["preset/odai/skills/odai-orchestration/scripts/local-cli.mjs", "directory"],
+      ["preset/odai/package.json", "invalid-local-cli-map"],
     ]) {
       const profileRoot = await writeProfile(dshHome, { dependency: targetVersion, bundles: ["odai-dsh-agent"], resolvedVersion: targetVersion });
       const file = resolve(profileRoot, "node_modules/odai-dsh-agent", path);
       const original = await readFile(file);
       await rm(file);
       if (damage === "invalid-map") await writeFile(file, '{}');
+      if (damage === "invalid-local-cli-map") {
+        const metadata = JSON.parse(original.toString());
+        delete metadata.imports["#odai-local-cli"];
+        await writeFile(file, JSON.stringify(metadata));
+      }
       if (damage === "directory") await mkdir(file);
       assert.equal((await inspectAgentControlCenter({ dshHome })).status, "partial-drift", `${path}: ${damage}`);
       const calls = [];

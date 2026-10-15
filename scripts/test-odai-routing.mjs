@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,17 +14,14 @@ const builder = path.join(skill, "scripts", "build-routing.mjs");
 const installer = path.join(skill, "scripts", "install-routing.mjs");
 const roles = ["controller", "planner", "reviewer"];
 
+const tests = [testBuilds, testCreativeRouting, testInstallLifecycle, testDirectoryOwnership,
+  testUninstallSettingsDriftIsAtomic, testManifestPathEscapeIsRejected, testParentSymlinkIsRejected,
+  testTargetSymlinkIsRejected, testUnmanagedResearcherConflict, testRetiredArguments,
+  testClaudeLocalBuild, testClaudeLocalLifecycle, testClaudeLocalRuntime, testClaudeLocalUserScope];
+let passed = 0;
 try {
-  testBuilds();
-  testInstallLifecycle();
-  testDirectoryOwnership();
-  testUninstallSettingsDriftIsAtomic();
-  testManifestPathEscapeIsRejected();
-  testParentSymlinkIsRejected();
-  testTargetSymlinkIsRejected();
-  testUnmanagedResearcherConflict();
-  testRetiredArguments();
-  console.log("odai routing keeps one controller, controller-owned implementation, and only configured researcher, planner, reviewer, or frontend responsibilities.");
+  for (const test of tests) { test(); passed += 1; }
+  console.log(`odai routing: ${passed} suites passed, 0 failed (native and local CLI routing, evidence, installation and recovery).`);
 } catch (error) {
   console.error(error?.stack || error);
   process.exitCode = 1;
@@ -84,6 +81,122 @@ function testBuilds() {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+function testCreativeRouting() {
+  for (const host of ["codex", "claude", "copilot"]) {
+    const project = temp("odai-routing-creative-");
+    const config = path.join(project, { codex: ".codex", claude: ".claude", copilot: ".github" }[host]);
+    const roleFile = path.join("agents", `odai-creative${{ codex: ".toml", claude: ".md", copilot: ".agent.md" }[host]}`);
+    const configured = [...installArgs(project, host), "--creative-model", "creative-model",
+      ...(host === "copilot" ? [] : ["--creative-effort", "high"])];
+    try {
+      const initial = runNode(installer, installArgs(project, host));
+      assert.equal(initial.status, 0, initial.stderr);
+      assert.equal(existsSync(path.join(config, roleFile)), false);
+      const absent = json(path.join(config, "odai-routing.json"));
+      assert.equal(absent.mapping.creative, undefined);
+      assert.equal(absent.routingPolicy.creative_activation, "unconfigured");
+
+      const enabled = runNode(installer, configured);
+      assert.equal(enabled.status, 0, enabled.stderr);
+      const manifest = json(path.join(config, "odai-routing.json"));
+      assert.deepEqual(manifest.mapping.creative, { provider: host, model: "creative-model", reasoning_effort: host === "copilot" ? null : "high" });
+      assert.ok(manifest.files[roleFile]);
+      const profile = readFileSync(path.join(config, roleFile), "utf8");
+      assert.ok(profile.includes(readFileSync(path.join(skill, "assets/routing-roles/creative.md"), "utf8").trim()));
+      assert.ok(profile.includes(readFileSync(path.join(repo, "skills/odai/references/craft.md"), "utf8").trim()));
+      assert.doesNotMatch(profile, /__ODAI_[A-Z0-9_]+__/u);
+      if (host === "codex") {
+        assert.match(profile, /^sandbox_mode = "read-only"$/mu);
+        assert.match(readFileSync(path.join(config, "config.toml"), "utf8"), /^\[agents\.odai_creative\]$/mu);
+        testCreativeCodexRuntime(project, config);
+      } else if (host === "claude") {
+        assert.match(profile, /^permissionMode: plan$/mu);
+      } else {
+        assert.match(profile, /^tools: \["view", "glob", "grep"\]$/mu);
+      }
+
+      const disabled = runNode(installer, installArgs(project, host));
+      assert.equal(disabled.status, 0, disabled.stderr);
+      assert.equal(existsSync(path.join(config, roleFile)), false);
+      assert.equal(json(path.join(config, "odai-routing.json")).mapping.creative, undefined);
+      if (host === "codex") assert.equal(existsSync(path.join(config, "role-contracts/odai-creative.md")), false);
+      const reenabled = runNode(installer, configured);
+      assert.equal(reenabled.status, 0, reenabled.stderr);
+      const removed = runNode(installer, ["--host", host, "--target", project, "--uninstall", "--yes"]);
+      assert.equal(removed.status, 0, removed.stderr);
+      assert.equal(existsSync(path.join(config, roleFile)), false);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  }
+
+  const root = temp("odai-routing-creative-invalid-");
+  try {
+    const effortOnly = runNode(builder, [...buildArgs("codex", root), "--creative-effort", "high"]);
+    assert.notEqual(effortOnly.status, 0);
+    assert.match(effortOnly.stderr, /--creative-effort requires --creative-model/u);
+    const installEffortOnly = runNode(installer, [...installArgs(root), "--creative-effort", "high"]);
+    assert.notEqual(installEffortOnly.status, 0);
+    assert.match(installEffortOnly.stderr, /--creative-effort 需要同时提供 --creative-model/u);
+    const config = path.join(root, ".codex/config.toml");
+    mkdirSync(path.dirname(config), { recursive: true });
+    const original = '[agents.odai_creative]\nconfig_file = "external-creative.toml"\n';
+    writeFileSync(config, original);
+    const conflict = runNode(installer, [...installArgs(root), "--creative-model", "creative-model"]);
+    assert.notEqual(conflict.status, 0);
+    assert.match(conflict.stderr, /既有 Codex 配置已声明 odai 角色/u);
+    assert.equal(readFileSync(config, "utf8"), original);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+function testCreativeCodexRuntime(project, config) {
+  const fakeCodex = path.join(project, "fake-codex.mjs");
+  writeFileSync(fakeCodex, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+writeFileSync(args[args.indexOf("-o") + 1], JSON.stringify(args));
+console.log(JSON.stringify({ type: "thread.started", thread_id: "creative-thread", model: "creative-model" }));
+`);
+  chmodSync(fakeCodex, 0o700);
+  const input = path.join(project, "input.md");
+  const evidence = path.join(project, "evidence.json");
+  writeFileSync(input, "给已定稿的商店页提供两个有明确取舍的标题候选。\n");
+  for (const resume of [false, true]) {
+    const result = runNode(path.join(config, "odai-run-role.mjs"), [
+      "--role", "creative", "--cwd", project, "--input", input,
+      "--codex-bin", fakeCodex, "--sandbox", "danger-full-access", "--evidence", evidence,
+      ...(resume ? ["--session-id", "creative-thread"] : []),
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const args = JSON.parse(result.stdout);
+    if (resume) assert.ok(args.includes('sandbox_mode="read-only"'));
+    else assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
+    assert.equal(args[args.indexOf("--model") + 1], "creative-model");
+    assert.ok(args.includes('model_reasoning_effort="high"'));
+    assert.equal(json(evidence).role, "creative");
+    assert.equal(json(evidence).observed.model_verified, true);
+  }
+
+  const sessions = path.join(project, "sessions");
+  mkdirSync(sessions);
+  const timestamp = new Date().toISOString();
+  const sessionFile = path.join(sessions, "creative.jsonl");
+  const records = [
+    { type: "session_meta", payload: { id: "creative-thread", agent_role: "odai_creative", cwd: project, timestamp,
+      source: { subagent: { thread_spawn: { agent_path: "/root/creative" } } } } },
+    { type: "turn_context", payload: { model: "creative-model", effort: "high" } },
+  ];
+  writeFileSync(sessionFile, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  const verifyArgs = ["--host", "codex", "--project", project, "--role", "odai_creative", "--after", timestamp,
+    "--agent-path", "/root/creative", "--sessions", sessions];
+  const verified = runNode(path.join(config, "odai-verify-routing.mjs"), verifyArgs);
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.equal(JSON.parse(verified.stdout).role, "odai_creative");
+  records[1].payload.model = "wrong-model";
+  writeFileSync(sessionFile, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  const mismatch = runNode(path.join(config, "odai-verify-routing.mjs"), verifyArgs);
+  assert.notEqual(mismatch.status, 0);
+  assert.match(mismatch.stderr, /模型不匹配/u);
 }
 
 function testInstallLifecycle() {
@@ -322,6 +435,282 @@ function testRetiredArguments() {
   }
 }
 
+function testClaudeLocalBuild() {
+  const root = temp("odai-routing-claude-local-build-");
+  try {
+    const extra = ["--reviewer-cli", "codex", "--reviewer-effort", "high",
+      "--planner-cli", "grok", "--researcher-model", "research-model", "--researcher-cli", "codex",
+      "--frontend-model", "front-model", "--frontend-cli", "antigravity",
+      "--creative-model", "creative-model", "--creative-cli", "grok"];
+    const result = runNode(builder, [...buildArgs("claude", root), ...extra]);
+    assert.equal(result.status, 0, result.stderr);
+    const config = path.join(root, "claude/.claude");
+    const adapter = json(path.join(root, "claude/ADAPTER.json"));
+    const manifest = json(path.join(config, "odai-routing.json"));
+    assert.equal(manifest.id, "odai-routing-installation");
+    assert.equal(manifest.host, "claude");
+    assert.deepEqual(manifest.mapping.reviewer, { backend: "local-cli", cli: "codex", model: "reviewer-model", reasoning_effort: "high" });
+    assert.deepEqual(adapter.mapping.reviewer, manifest.mapping.reviewer);
+    assert.equal(adapter.runtime_verification.roles.reviewer.mode, "role-executor-evidence");
+    assert.equal(adapter.runtime_verification.roles.controller.mode, "host-native-evidence-required");
+    for (const role of ["planner", "reviewer", "researcher", "frontend", "creative"]) {
+      assert.equal(existsSync(path.join(config, `agents/odai-${role}.md`)), false);
+      assert.ok(existsSync(path.join(config, `role-contracts/odai-${role}.md`)));
+    }
+    for (const [source, target] of [["run-role.mjs", "odai-run-role.mjs"], ["local-cli.mjs", "odai-local-cli.mjs"]]) {
+      assert.deepEqual(readFileSync(path.join(config, target)), readFileSync(path.join(skill, "scripts", source)));
+    }
+    const controller = readFileSync(path.join(config, "agents/odai-controller.md"), "utf8");
+    assert.match(controller, /node \.claude\/odai-run-role\.mjs --role reviewer --input <文件>/u);
+    assert.deepEqual(json(path.join(config, "settings.patch.json")), { agent: "odai-controller", permissions: { allow: ["Bash(node .claude/odai-run-role.mjs:*)"] } });
+
+    for (const host of ["codex", "copilot"]) {
+      for (const [entry, args] of [[builder, buildArgs(host, root)], [installer, installArgs(root, host)]]) {
+        const invalid = runNode(entry, [...args, "--reviewer-cli", "codex"]);
+        assert.notEqual(invalid.status, 0);
+        assert.match(invalid.stderr, /only supported with --host claude/u);
+      }
+    }
+    for (const invalid of [["--reviewer-cli", "claude"], ["--reviewer-cli", "gemini"],
+      ["--controller-cli", "codex"], ["--creative-cli", "grok"],
+      ["--reviewer-cli", "antigravity", "--reviewer-effort", "max"]]) {
+      for (const [entry, args] of [[builder, buildArgs("claude", root)], [installer, installArgs(root, "claude")]]) {
+        assert.notEqual(runNode(entry, [...args, ...invalid]).status, 0, invalid.join(" "));
+      }
+    }
+    assert.equal(existsSync(path.join(root, ".claude")), false, "invalid installation must not write files");
+    const nativeOverLocal = runNode(builder, buildArgs("claude", root));
+    assert.notEqual(nativeOverLocal.status, 0);
+    assert.match(nativeOverLocal.stderr, /fresh --out directory/u);
+    const nativeRoot = path.join(root, "native");
+    assert.equal(runNode(builder, buildArgs("claude", nativeRoot)).status, 0);
+    const localOverNative = runNode(builder, [...buildArgs("claude", nativeRoot), "--reviewer-cli", "codex"]);
+    assert.notEqual(localOverNative.status, 0);
+    assert.match(localOverNative.stderr, /fresh --out directory/u);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+function testClaudeLocalLifecycle() {
+  const rule = "Bash(node .claude/odai-run-role.mjs:*)";
+  for (const original of [null, {}, { permissions: {} }, { permissions: { allow: [] } },
+    { env: { KEEP: "yes" }, permissions: { allow: ["Read", "Read"], deny: ["Write"] } },
+    { permissions: { allow: [rule, "Read"], deny: ["Write"] } }]) {
+    const project = temp("odai-routing-claude-local-install-");
+    const config = path.join(project, ".claude");
+    const settingsFile = path.join(config, "settings.local.json");
+    const base = installArgs(project, "claude");
+    const local = [...base, "--reviewer-cli", "codex", "--reviewer-effort", "high"];
+    const remove = ["--host", "claude", "--target", project, "--uninstall", "--yes"];
+    try {
+      if (original !== null) { mkdirSync(config); writeFileSync(settingsFile, JSON.stringify(original)); }
+      assert.equal(runNode(installer, base).status, 0);
+      let result = runNode(installer, local);
+      assert.equal(result.status, 0, result.stderr);
+      const manifestFile = path.join(config, "odai-routing.json");
+      const manifest = json(manifestFile);
+      const localFiles = ["odai-run-role.mjs", "odai-local-cli.mjs", "role-contracts/odai-reviewer.md"];
+      for (const file of localFiles) assert.ok(manifest.files[file], file);
+      assert.equal(existsSync(path.join(config, "agents/odai-reviewer.md")), false);
+      assert.ok(existsSync(path.join(config, "agents/odai-planner.md")));
+      assert.ok(json(settingsFile).permissions.allow.includes(rule));
+      assert.equal(runNode(installer, local).status, 0);
+      assert.deepEqual(json(manifestFile).settings, manifest.settings, "updating preserves ownership");
+      // Permissions and every new file participate in drift checks before any mutation.
+      const settingsBytes = readFileSync(settingsFile);
+      const drifted = json(settingsFile);
+      drifted.permissions.allow = drifted.permissions.allow.filter(value => value !== rule);
+      writeFileSync(settingsFile, JSON.stringify(drifted));
+      for (const command of [local, remove]) {
+        result = runNode(installer, command);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /permissions.allow 已被外部修改/u);
+        for (const file of localFiles) assert.ok(existsSync(path.join(config, file)));
+      }
+      writeFileSync(settingsFile, settingsBytes);
+      for (const file of localFiles) {
+        const target = path.join(config, file);
+        const bytes = readFileSync(target);
+        writeFileSync(target, "external modification");
+        for (const command of [local, remove]) {
+          result = runNode(installer, command);
+          assert.notEqual(result.status, 0);
+          assert.match(result.stderr, /漂移/u);
+        }
+        assert.equal(readFileSync(target, "utf8"), "external modification");
+        writeFileSync(target, bytes);
+      }
+      assert.equal(runNode(installer, base).status, 0);
+      for (const file of localFiles) assert.equal(existsSync(path.join(config, file)), false);
+      assert.ok(existsSync(path.join(config, "agents/odai-reviewer.md")));
+      assert.deepEqual(json(settingsFile), { ...(original || {}), agent: "odai-controller" });
+      assert.equal(runNode(installer, local).status, 0);
+      // A user permission added later must survive uninstall.
+      const settings = json(settingsFile);
+      settings.permissions.allow.push("Grep");
+      writeFileSync(settingsFile, JSON.stringify(settings));
+      assert.equal(runNode(installer, remove).status, 0);
+      const expected = structuredClone(original || {});
+      expected.permissions ||= {};
+      expected.permissions.allow = [...(expected.permissions.allow || []), "Grep"];
+      assert.deepEqual(json(settingsFile), expected);
+      for (const file of [...localFiles, "odai-routing.json"]) assert.equal(existsSync(path.join(config, file)), false);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  }
+  // New unmanaged runner paths must never be overwritten.
+  const project = temp("odai-routing-claude-local-conflict-");
+  try {
+    const file = path.join(project, ".claude/odai-local-cli.mjs");
+    mkdirSync(path.dirname(file));
+    writeFileSync(file, "user module");
+    const result = runNode(installer, [...installArgs(project, "claude"), "--reviewer-cli", "codex"]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /非 odai/u);
+    assert.equal(readFileSync(file, "utf8"), "user module");
+    // Exact fixture file created above; remove it to test the opposite native path.
+    rmSync(file);
+    const native = path.join(project, ".claude/agents/odai-reviewer.md");
+    mkdirSync(path.dirname(native));
+    writeFileSync(native, "user native agent");
+    const localArgs = [...installArgs(project, "claude"), "--reviewer-cli", "codex"];
+    for (const afterInstall of [false, true]) {
+      if (afterInstall) {
+        rmSync(native);
+        assert.equal(runNode(installer, localArgs).status, 0);
+        writeFileSync(native, "user native agent");
+      }
+      const conflict = runNode(installer, localArgs);
+      assert.notEqual(conflict.status, 0);
+      assert.match(conflict.stderr, /原生代理/u);
+      assert.equal(readFileSync(native, "utf8"), "user native agent");
+    }
+  } finally { rmSync(project, { recursive: true, force: true }); }
+}
+
+function testClaudeLocalRuntime() {
+  const project = temp("odai-routing-claude-local-runtime-");
+  try {
+    const built = runNode(builder, [...buildArgs("claude", project), "--reviewer-cli", "codex", "--reviewer-effort", "high"]);
+    assert.equal(built.status, 0, built.stderr);
+    const config = path.join(project, "claude/.claude");
+    const runner = path.join(config, "odai-run-role.mjs");
+    const manifestFile = path.join(config, "odai-routing.json");
+    const manifest = json(manifestFile);
+    const input = path.join(project, "task.md");
+    const evidence = path.join(project, "evidence.json");
+    const output = path.join(project, "output.txt");
+    const capture = path.join(project, "capture.json");
+    const codexHome = path.join(project, "codex-home");
+    const fake = path.join(project, "fake-cli.mjs");
+    writeFileSync(input, "Review this bounded task, return the finding.");
+    writeFileSync(fake, `#!/usr/bin/env node
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+const mode = process.env.TEST_MODE;
+const prompt = args[0] === "-p" ? args[1] : readFileSync(0, "utf8");
+writeFileSync(process.env.TEST_CAPTURE, JSON.stringify({args, prompt, proxy: process.env.HTTPS_PROXY}));
+if (mode === "exit") process.exit(7);
+if (mode === "timeout") { setInterval(() => {}, 1000); }
+else if (args[0] === "-p") {
+  console.log(JSON.stringify({ event: "init", init: { model: "reviewer-model" } }));
+  console.log(JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "verified body", usage: {output_tokens: 8} } }));
+} else {
+  const id = "thread-" + mode;
+  if (mode !== "missing") {
+    mkdirSync(path.join(process.env.CODEX_HOME, "sessions"), {recursive: true});
+    const events = [{type: "session_meta", payload: {id, cwd: process.cwd()}},
+      {type: "turn_context", payload: {model: mode === "model" ? "wrong-model" : "reviewer-model", effort: mode === "effort" ? "low" : "high"}}];
+    writeFileSync(path.join(process.env.CODEX_HOME, "sessions", "rollout-" + id + ".jsonl"), events.map(x => JSON.stringify(x)).join("\\n"));
+  }
+  console.log(JSON.stringify({type: "thread.started", thread_id: id}));
+  console.log(JSON.stringify({type: "item.completed", item: {type: "agent_message", text: mode === "empty" ? "" : "verified body"}}));
+  console.log(JSON.stringify({type: "turn.completed", usage: {output_tokens: 8}}));
+}
+`);
+    chmodSync(fake, 0o700);
+    const env = { ODAI_CODEX_COMMAND: fake, ODAI_AGY_COMMAND: fake, CODEX_HOME: codexHome, TEST_CAPTURE: capture, HTTPS_PROXY: "http://fixture.invalid" };
+    const command = ["--role", "reviewer", "--cwd", project, "--input", input, "--evidence", evidence, "--output", output];
+    let result = runNode(runner, command, { ...env, TEST_MODE: "success" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "verified body\n");
+    const proof = json(evidence);
+    assert.equal(proof.version, 1);
+    assert.deepEqual(proof.requested, { provider: "local-cli:codex", model: "reviewer-model", reasoning_effort: "high" });
+    assert.equal(proof.observed.model_verified, true);
+    assert.deepEqual(proof.observed.models, ["reviewer-model"]);
+    assert.equal(proof.observed.reasoning_effort_verification, "verified");
+    assert.equal(proof.observed.exit_code, 0);
+    assert.deepEqual(proof.observed.usage, { output_tokens: 8 });
+    assert.ok(proof.observed.duration_ms >= 0);
+    const called = json(capture);
+    assert.equal(called.args[called.args.indexOf("--sandbox") + 1], "read-only");
+    assert.ok(called.args.includes("features.multi_agent=false"));
+    assert.ok(called.prompt.includes(readFileSync(path.join(config, "role-contracts/odai-reviewer.md"), "utf8")));
+    assert.ok(called.prompt.includes(readFileSync(input, "utf8")));
+    assert.equal(called.proxy, env.HTTPS_PROXY);
+    for (const mode of ["model", "missing", "effort", "empty", "exit", "timeout"]) {
+      writeFileSync(output, "previous output");
+      result = runNode(runner, [...command, ...(mode === "timeout" ? ["--timeout", "1"] : [])], { ...env, TEST_MODE: mode });
+      assert.notEqual(result.status, 0, mode);
+      assert.equal(result.stdout, "", mode);
+      assert.equal(readFileSync(output, "utf8"), "previous output");
+      const failure = json(evidence);
+      assert.ok(failure.observed.error, mode);
+      assert.equal(failure.output, null);
+      assert.equal(failure.observed.exit_code, mode === "exit" ? 7 : mode === "timeout" ? null : 0);
+      if (["missing", "model"].includes(mode)) assert.equal(failure.observed.model_verified, false);
+    }
+    const defaultEvidence = runNode(runner, ["--role", "reviewer", "--cwd", project, "--input", input], { ...env, TEST_MODE: "success" });
+    assert.equal(defaultEvidence.status, 0, defaultEvidence.stderr);
+    const saved = defaultEvidence.stderr.match(/odai evidence: (.+)/u)?.[1];
+    assert.ok(saved && existsSync(saved));
+    assert.equal(json(saved).observed.model_verified, true);
+    // Source-layout fallback must work without an installed-name module.
+    cpSync(path.join(skill, "scripts/local-cli.mjs"), path.join(config, "local-cli.mjs"));
+    rmSync(path.join(config, "odai-local-cli.mjs"));
+    result = runNode(runner, command, { ...env, TEST_MODE: "success" });
+    assert.equal(result.status, 0, result.stderr);
+    for (const [option, value] of [["--sandbox", "read-only"], ["--codex-bin", fake], ["--session-id", "thread-success"], ["--closeout-ids", "A1"]]) {
+      result = runNode(runner, [...command, option, value], env);
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /Codex 专有选项/u);
+    }
+    for (const effort of [null, "high"]) {
+      manifest.mapping.reviewer = { backend: "local-cli", cli: "antigravity", model: "reviewer-model", reasoning_effort: effort };
+      writeFileSync(manifestFile, JSON.stringify(manifest));
+      result = runNode(runner, command, env);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, "verified body\n");
+      assert.equal(json(evidence).observed.reasoning_effort_verification, "requested-only");
+      assert.ok(json(capture).args.includes("--disable-slash-commands"));
+    }
+    for (const mapping of [{ provider: "claude", model: "reviewer-model" }, { backend: "local-cli", cli: "claude", model: "opus" }]) {
+      manifest.mapping.reviewer = mapping;
+      writeFileSync(manifestFile, JSON.stringify(manifest));
+      result = runNode(runner, command, env);
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+    }
+  } finally { rmSync(project, { recursive: true, force: true }); }
+}
+
+function testClaudeLocalUserScope() {
+  const root = temp("odai-routing-claude-local-user-");
+  try {
+    const args = [...installArgs(root, "claude"), "--reviewer-cli", "codex"];
+    args[args.indexOf("--scope") + 1] = "user";
+    const result = runNode(installer, args);
+    assert.equal(result.status, 0, result.stderr);
+    const command = `node '${path.join(root, "odai-run-role.mjs")}'`;
+    assert.ok(readFileSync(path.join(root, "agents/odai-controller.md"), "utf8").includes(`${command} --role reviewer`));
+    assert.deepEqual(json(path.join(root, "settings.json")).permissions.allow, [`Bash(${command}:*)`]);
+    assert.equal(runNode(installer, args).status, 0);
+    assert.equal(runNode(installer, ["--host", "claude", "--scope", "user", "--target", root, "--uninstall", "--yes"]).status, 0);
+    assert.deepEqual(readdirSync(root), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 function buildArgs(host, out) {
   return [
     "--host", host, "--out", out,
@@ -341,11 +730,11 @@ function installArgs(project, host = "codex") {
   ];
 }
 
-function runNode(file, args) {
+function runNode(file, args, env = {}) {
   const scratch = temp("odai-routing-child-temp-");
   try {
     const result = spawnSync(process.execPath, [file, ...args], {
-      cwd: repo, encoding: "utf8", env: { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch },
+      cwd: repo, encoding: "utf8", env: { ...process.env, ...env, TMPDIR: scratch, TMP: scratch, TEMP: scratch },
     });
     assert.deepEqual(readdirSync(scratch), [], `temporary routing generation must be cleaned after ${path.basename(file)}: ${result.stderr}`);
     return result;
