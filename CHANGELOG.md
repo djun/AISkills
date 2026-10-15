@@ -2,7 +2,12 @@
 
 本文只记当前发布线与历史已发布版本的对外能力、架构、迁移和评测口径；registry 时间戳与 `gitHead` 只在事实产生后记录。试跑、复跑、中间分和临时输出不进入本日志；原始证据由临时运行目录与 Git 历史承担。
 
-## Unreleased — DSH 0.2.52 / canonical 0.7.1
+## Unreleased — DSH 0.2.53 / canonical 0.7.1
+
+- 修复本机 Claude Code 路由在短回答时被误判为模型不符：Claude Code 会把自身的辅助调用（如简短的 haiku 请求）一并记入 `modelUsage`，短回答时其输出可能多于所路由的模型；原规则取输出最多的条目作为实际模型，请求 `opus` 会被判成 haiku 而回退。现改为只要 `modelUsage` 中有条目匹配请求的模型即核实通过并记为实际模型，无匹配时才以输出最多的条目报告不符；Grok 的辅助模型同理。实测请求 `opus`、回复为“OK”时，原规则误判，修复后核实通过。
+- 官方 npm registry 确认 `odai-dsh-plugin@0.2.52` 于 `2026-10-15T08:12:37.980Z`、`odai-dsh-agent@0.2.52` 于 `2026-10-15T08:17:04.302Z` 发布。本次使用双包 `0.2.53`、编排 `0.2.2`，避免已发布编排文件 `local-cli.mjs` 同版本异内容；治理 `0.7.1`、runtime contract `9` 不变。
+
+## DSH 0.2.52 / canonical 0.7.1
 
 - Control Center 的映射编辑表单可直接新建或切换本机 CLI 映射：planner、frontend、creative 增加“渠道（API）/本机 CLI”接入方式切换，本机 CLI 下选择 Claude Code、Codex、Antigravity 或 Grok，填写模型、推理档与可选超时，不再显示 Provider 与最大 tokens；researcher、reviewer 不提供本机 CLI。此前表单只能编辑已有的本机 CLI 映射，新建时只能填写 API 渠道，需要在对话中设置。本机 CLI 映射不经过 API 模型预检，按钮显示为“保存”。
 - 官方 npm registry 确认 `odai-dsh-plugin@0.2.51` 于 `2026-10-15T07:34:39.681Z`、`odai-dsh-agent@0.2.51` 于 `2026-10-15T07:36:40.349Z` 发布。本次使用双包 `0.2.52`；治理 `0.7.1`、runtime contract `9`、编排 `0.2.1` 不变。

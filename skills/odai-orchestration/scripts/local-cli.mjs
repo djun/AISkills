@@ -124,16 +124,22 @@ function parseClaudeResult(stdout, requestedModel) {
     : [];
   const outputTokens = (usage) => typeof usage.outputTokens === "number" && Number.isFinite(usage.outputTokens)
     && usage.outputTokens >= 0 ? usage.outputTokens : 0;
-  models.sort((a, b) => outputTokens(b[1]) - outputTokens(a[1]));
-  if (models.length) {
-    const [model, usage] = models[0];
+  const requested = typeof requestedModel === "string" ? requestedModel.trim() : "";
+  const matches = ([model, usage]) => {
     const canonical = typeof usage.canonicalModel === "string" ? usage.canonicalModel : "";
-    const requested = typeof requestedModel === "string" ? requestedModel.trim() : "";
-    result.actualModel = model;
-    result.modelVerified = requested.length > 0 && (ALIASES.has(requested)
+    return requested.length > 0 && (ALIASES.has(requested)
       ? model.includes(requested) || canonical.includes(requested)
       : model === requested || canonical === requested || model.startsWith(`${requested}-`));
-    result.modelVerification = result.modelVerified ? "verified" : "mismatch";
+  };
+  // Claude Code records its own helper calls (e.g. a short haiku request) in modelUsage too, and on
+  // short answers they can out-produce the routed model. The requested model having run verifies the
+  // route; only when it is absent is the busiest entry reported as the mismatching actual model.
+  const matched = models.find(matches);
+  const busiest = [...models].sort((a, b) => outputTokens(b[1]) - outputTokens(a[1]))[0];
+  if (matched || busiest) {
+    result.actualModel = (matched ?? busiest)[0];
+    result.modelVerified = Boolean(matched);
+    result.modelVerification = matched ? "verified" : "mismatch";
   }
   if (payload.is_error || payload.subtype !== "success") {
     result.status = "error";
@@ -250,9 +256,12 @@ function parseGrokResult(stdout, route, { cwd, env }) {
   if (payload.modelUsage != null) {
     if (!isRecord(payload.modelUsage)) return result;
     const models = Object.entries(payload.modelUsage);
-    models.sort((a, b) => grokTokenCount(b[1]) - grokTokenCount(a[1]));
     if (models.length) {
-      exactModel(result, models[0][0], route.model);
+      // Grok helper models (web search, session summary) can also appear; as with Claude, the requested
+      // model having run verifies the route, otherwise the busiest entry is the mismatching actual model.
+      const matched = models.find(([model]) => model === route.model);
+      const busiest = [...models].sort((a, b) => grokTokenCount(b[1]) - grokTokenCount(a[1]))[0];
+      exactModel(result, (matched ?? busiest)[0], route.model);
       return result;
     }
   }

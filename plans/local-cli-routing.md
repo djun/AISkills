@@ -293,3 +293,10 @@
 - 用户在 Control Center 发现映射表单新建时只能填 API 渠道，无法选择本机 CLI（底层配置工具已支持，表单只显示已有的 CLI 映射）。总控补上“渠道（API）/本机 CLI”接入方式切换与 CLI 下拉（planner、frontend、creative；researcher、reviewer 不提供），保存请求由可测的 `routeEditorPayload` 生成；本机 CLI 不经 API 预检，按钮为“保存”。
 - 验证：Control Center 客户端测试 14/14（含新表单用例）、Plugin 331/331、Agent 24/24、客户端语法检查通过；界面外观未目视验证。
 - 版本：双包升至 `0.2.52`，CHANGELOG 在 0.2.52 条目记录 0.2.51 的 registry 发布时间；版本策略校验通过。
+
+## 发布后补充（0.2.53 候选）
+
+- 0.2.52 已发布（registry：Plugin 08:12:37Z、Agent 08:17:04Z）。
+- 用户配置 creative → 本机 Claude Code（`opus` / `max`）后实测：Claude Code 把自身的 haiku 辅助调用也记入 `modelUsage`，短回答时其输出多于路由模型，旧规则判为模型不符并回退。改为“有条目匹配请求模型即核实通过、无匹配才以输出最多者报告不符”，Grok 同理；回归测试含当次真实样例。复跑 Plugin 333/333、Agent 24/24，真机复测通过。
+- 另：本机 `claude` 2.1.224 不支持 Opus 5.5（API 要求 ≥ 2.1.280），用户更新到 2.1.300 后 `opus` 实际为 `claude-opus-5-5`。
+- 版本：双包 0.2.53、编排 0.2.2（已发布的 `local-cli.mjs` 内容变化，避免同版本异内容）。

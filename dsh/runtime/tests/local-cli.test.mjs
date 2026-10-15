@@ -91,7 +91,7 @@ test("parser preserves text, usage, cost and verified model evidence", () => {
   assert.equal(result.cliReportedCostUsd, 0.016755);
 });
 
-test("model evidence chooses the highest output count and applies alias and full-ID rules", () => {
+test("model evidence verifies the requested model among helper usage and applies alias and full-ID rules", () => {
   const stdout = payload({ modelUsage: {
     "claude-sonnet-4-6": { outputTokens: 10 },
     [model]: { outputTokens: 80, canonicalModel: "claude-haiku-4-5" },
@@ -99,12 +99,32 @@ test("model evidence chooses the highest output count and applies alias and full
   for (const requested of ["haiku", model, "claude-haiku-4-5"]) {
     assert.equal(parseLocalCliResult(stdout, requested).modelVerified, true);
   }
-  assert.equal(parseLocalCliResult(stdout, "sonnet").modelVerification, "mismatch");
+  // The requested model ran even though another entry produced more output.
+  const sonnet = parseLocalCliResult(stdout, "sonnet");
+  assert.equal(sonnet.modelVerified, true);
+  assert.equal(sonnet.actualModel, "claude-sonnet-4-6");
+  // Absent: the busiest entry is reported as the mismatching actual model.
+  const opus = parseLocalCliResult(stdout, "opus");
+  assert.equal(opus.modelVerification, "mismatch");
+  assert.equal(opus.actualModel, model);
   assert.equal(parseLocalCliResult(stdout, "claude-haiku-4").modelVerified, true);
   assert.equal(parseLocalCliResult(stdout, "claude-hai").modelVerified, false);
   const canonicalAlias = payload({ modelUsage: { opaque: { outputTokens: 2, canonicalModel: "claude-haiku-4-5" } } });
   assert.equal(parseLocalCliResult(canonicalAlias, "haiku").modelVerified, true);
   assert.equal(parseLocalCliResult(canonicalAlias, "claude-haiku-4-5").modelVerified, true);
+});
+
+test("a Claude Code helper call outproducing a short routed answer is not a mismatch", () => {
+  // Observed 2026-10-15 with `--model opus` and the reply "OK".
+  const stdout = payload({ result: "OK", modelUsage: {
+    "claude-haiku-4-5-20251001": { inputTokens: 521, outputTokens: 13, canonicalModel: "claude-haiku-4-5" },
+    "claude-opus-5": { inputTokens: 2, outputTokens: 4, cacheReadInputTokens: 2800, cacheCreationInputTokens: 3406, canonicalModel: "claude-opus-5" },
+  } });
+  const result = parseLocalCliResult(stdout, "opus");
+  assert.equal(result.modelVerified, true);
+  assert.equal(result.actualModel, "claude-opus-5");
+  assert.equal(parseLocalCliResult(stdout, "claude-opus-5").modelVerified, true);
+  assert.equal(parseLocalCliResult(stdout, "claude-opus-5-5").modelVerification, "mismatch");
 });
 
 test("missing and mismatched evidence stay distinguishable from process failure", () => {
@@ -601,3 +621,12 @@ for (const failure of ["spawn", "exit", "cancelled", "timeout", "overflow"]) {
     assert.equal(existsSync(join(promptFile, "..")), false);
   });
 }
+
+test("Grok verifies the requested model when a helper model used more tokens", () => {
+  const result = parseLocalCliResult(grokOutput({ modelUsage: {
+    "grok-helper": { total_tokens: 5000 },
+    [grokRoute.model]: { total_tokens: 12 },
+  } }), grokRoute);
+  assert.equal(result.modelVerified, true);
+  assert.equal(result.actualModel, grokRoute.model);
+});
